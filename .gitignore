@@ -1,0 +1,53 @@
+work/
+extracted/
+analysis/
+tools/
+*.nsp
+*.xci
+*.nsz
+*.xcz
+*.nca
+*.nso
+*.elf
+*.keys
+__pycache__/
+generated/
+build/
+
+# images and dumps
+*.bmp
+*.png
+*.jpg
+*.webp
+*.dds
+*.ktx
+*.tga
+# game formats
+*.drp
+*.wem
+*.bnk
+*.nutexb
+*.nushdb
+*.luo
+*.bfbs
+*.spv
+*.bin
+*.dat
+*.raw
+# build outputs
+*.lib
+*.obj
+*.o
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+# environments and logs
+.venv/
+venv*/
+*.log
+
+obj/
+bin/
+.vs/

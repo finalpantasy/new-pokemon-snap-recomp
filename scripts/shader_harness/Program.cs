@@ -1,0 +1,204 @@
+// Offline Maxwell -> SPIR-V harness. Derived from Ryujinx.ShaderTools (MIT, Ryujinx Team and Contributors).
+using Ryujinx.Graphics.Shader;
+using Ryujinx.Graphics.Shader.Translation;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+
+namespace ShaderHarness
+{
+    class Program
+    {
+        private class GpuAccessor : IGpuAccessor
+        {
+            private readonly byte[] _data;
+            private int _textures, _images;
+            public GpuAccessor(byte[] data) { _data = data; }
+            public SetBindingPair CreateConstantBufferBinding(int index) => new SetBindingPair(0, index + 1);
+            public SetBindingPair CreateImageBinding(int count, bool isBuffer) { int b = _images; _images += count; return new SetBindingPair(3, b); }
+            public SetBindingPair CreateStorageBufferBinding(int index) => new SetBindingPair(1, index);
+            public SetBindingPair CreateTextureBinding(int count, bool isBuffer) { int b = _textures; _textures += count; return new SetBindingPair(2, b); }
+            public ReadOnlySpan<ulong> GetCode(ulong address, int minimumSize) => MemoryMarshal.Cast<byte, ulong>(new ReadOnlySpan<byte>(_data)[(int)address..]);
+            public GpuGraphicsState QueryGraphicsState() => new GpuGraphicsState(false, InputTopology.Triangles, false, TessPatchType.Triangles,
+                TessSpacing.EqualSpacing, false, false, false, false, false, 1f, AlphaTestOp.Always, 0f, default, true, default, false, false, true /*originUpperLeft*/, false);
+            public int QuerySamplerArrayLengthFromPool() => 32;
+            public int QueryTextureArrayLengthFromBuffer(int slot) => 32;
+            public int QueryTextureArrayLengthFromPool() => 32;
+        }
+
+
+        // ---- NVN layer mode ----------------------------------------------------------------------------------
+        // Binding spaces are per stage so one fixed VkPipelineLayout serves every pipeline (see docs/nvn-vulkan-design.md):
+        //   set 0: binding 0 = Ryujinx support buffer, binding 1 + stage*16 + s = constant buffer c[s] of that stage
+        //   set 1: storage buffers, binding stage*16 + ordinal
+        //   set 2: combined image samplers, binding stage*32 + running counter
+        //   set 3: storage images, binding stage*8 + running counter
+        private class NvnAccessor : IGpuAccessor
+        {
+            private readonly byte[] _data; private readonly int _stage, _constOff, _codeOff;
+            private int _textures, _images;
+            public NvnAccessor(byte[] data, int stage, int constOff, int codeOff) { _data = data; _stage = stage; _constOff = constOff; _codeOff = codeOff; }
+            public uint ConstantBuffer1Read(int offset)
+            {
+                int o = _constOff + offset;
+                return (o >= 0 && o + 4 <= _data.Length) ? BitConverter.ToUInt32(_data, o) : 0;
+            }
+            public SetBindingPair CreateConstantBufferBinding(int index) => new SetBindingPair(0, 1 + _stage * 16 + index);
+            public SetBindingPair CreateImageBinding(int count, bool isBuffer) { int b = _images; _images += count; return new SetBindingPair(3, _stage * 8 + b); }
+            public SetBindingPair CreateStorageBufferBinding(int index) => new SetBindingPair(1, _stage * 16 + index);
+            public SetBindingPair CreateTextureBinding(int count, bool isBuffer) { int b = _textures; _textures += count; return new SetBindingPair(2, _stage * 32 + b); }
+            // address 0 = start of the SPH (graphics) or of the code (compute), i.e. data[_codeOff..]
+            public ReadOnlySpan<ulong> GetCode(ulong address, int minimumSize) => MemoryMarshal.Cast<byte, ulong>(new ReadOnlySpan<byte>(_data)[(_codeOff + (int)address)..(_constOff & ~7)]);
+            // NVN: window origin upper-left, depth near-is-zero (DepthMode=false means no [-1,1] -> [0,1] remap)
+            public GpuGraphicsState QueryGraphicsState() => new GpuGraphicsState(false, InputTopology.Triangles, false, TessPatchType.Triangles,
+                TessSpacing.EqualSpacing, false, false, false, false, false, 1f, AlphaTestOp.Always, 0f, default, true, default, false, false, true /*originUpperLeft*/, false);
+            public int QuerySamplerArrayLengthFromPool() => 32;
+            public int QueryTextureArrayLengthFromBuffer(int slot) => 32;
+            public int QueryTextureArrayLengthFromPool() => 32;
+            // Host profile (bump the cache salt in nvn_shader.cpp when this changes): the SPIR-V must not require
+            // capabilities that the layer's device does not enable. Fragment shader interlock is the one that the
+            // translator declares by default and that no consumer GPU path here provides.
+            public bool QueryHostSupportsFragmentShaderInterlock() => false;
+        }
+
+        static string J(string s) => "\"" + s + "\"";
+
+        // args: data.bin out.spv out.json stage(0 VS,1 FS,2 GS,5 CS) constOff codeOff
+        // The translator always declares gl_PerVertex with ClipDistance[8] + CullDistance[1]; that sums to 9 and exceeds
+        // maxCombinedClipAndCullDistances (8 on common GPUs), a validation error at pipeline creation. Shrink the clip array
+        // to 7 entries (a fresh OpConstant, so the shared constant 8 used by other arrays is untouched) unless clip distance 7
+        // is actually written.
+        static byte[] FixClipCull(byte[] spv, int clipWritten)
+        {
+            if ((clipWritten & 0x80) != 0) { Console.Error.WriteLine("warning: clip distance 7 written; leaving gl_PerVertex as translated"); return spv; }
+            uint[] w = new uint[spv.Length / 4];
+            Buffer.BlockCopy(spv, 0, w, 0, spv.Length);
+            uint structId = 0;
+            for (int i = 5; i < w.Length;)
+            {
+                uint op = w[i] & 0xFFFF, len = w[i] >> 16;
+                if (op == 72 && w[i + 3] == 11 && w[i + 4] == 3) structId = w[i + 1];   // OpMemberDecorate ... BuiltIn ClipDistance
+                i += (int)len;
+            }
+            if (structId == 0) return spv;
+            uint arrId = 0;
+            for (int i = 5; i < w.Length;)
+            {
+                uint op = w[i] & 0xFFFF, len = w[i] >> 16;
+                if (op == 30 && w[i + 1] == structId) arrId = w[i + 4];                     // OpTypeStruct: member 2 (+2 for result id and 2 earlier members)
+                i += (int)len;
+            }
+            if (arrId == 0) return spv;
+            int arrPos = -1; uint lenId = 0;
+            for (int i = 5; i < w.Length;)
+            {
+                uint op = w[i] & 0xFFFF, len = w[i] >> 16;
+                if (op == 28 && w[i + 1] == arrId) { arrPos = i; lenId = w[i + 3]; }
+                i += (int)len;
+            }
+            if (arrPos < 0) return spv;
+            int constEnd = -1; uint constType = 0;
+            for (int i = 5; i < w.Length;)
+            {
+                uint op = w[i] & 0xFFFF, len = w[i] >> 16;
+                if (op == 43 && w[i + 2] == lenId) { constEnd = i + (int)len; constType = w[i + 1]; }
+                i += (int)len;
+            }
+            if (constEnd < 0) return spv;
+            uint newId = w[3]; w[3] = newId + 1;
+            w[arrPos + 3] = newId;
+            var o = new List<uint>(w.Length + 4);
+            o.AddRange(w.Take(constEnd));
+            o.Add((4u << 16) | 43u); o.Add(constType); o.Add(newId); o.Add(7);
+            o.AddRange(w.Skip(constEnd));
+            // the array type may precede the constant (it cannot: its length operand must be defined first), so positions after constEnd shifted only
+            byte[] r = new byte[o.Count * 4];
+            Buffer.BlockCopy(o.ToArray(), 0, r, 0, r.Length);
+            return r;
+        }
+
+        static int Nvn(string[] a)
+        {
+            byte[] data = File.ReadAllBytes(a[0]);
+            int stage = int.Parse(a[3]), constOff = int.Parse(a[4]), codeOff = int.Parse(a[5]);
+            TranslationFlags flags = TranslationFlags.DebugMode;
+            if (stage == 5) flags |= TranslationFlags.Compute;
+            var ctx = Translator.CreateContext(0, new NvnAccessor(data, stage, constOff, codeOff), new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
+            ShaderProgram p = ctx.Translate();
+            File.WriteAllBytes(a[1], FixClipCull(p.BinaryCode, (int)p.Info.ClipDistancesWritten));
+            var sb = new System.Text.StringBuilder();
+            sb.Append("{\"stage\":" + stage + ",\"usesInstanceId\":" + (p.Info.UsesInstanceId ? 1 : 0) + ",\"usesFragCoord\":" + (p.Info.UsesFragCoord ? 1 : 0)
+                + ",\"clipDistances\":" + p.Info.ClipDistancesWritten + ",\"fragmentOutputMap\":" + p.Info.FragmentOutputMap);
+            sb.Append(",\"cbuffers\":[");
+            bool first = true;
+            foreach (var c in p.Info.CBuffers) { sb.Append((first ? "" : ",") + "{\"slot\":" + c.Slot + ",\"set\":" + c.Set + ",\"binding\":" + c.Binding + "}"); first = false; }
+            sb.Append("],\"sbuffers\":[");
+            first = true;
+            foreach (var c in p.Info.SBuffers) { sb.Append((first ? "" : ",") + "{\"slot\":" + c.Slot + ",\"set\":" + c.Set + ",\"binding\":" + c.Binding + ",\"sbCbSlot\":" + c.SbCbSlot + ",\"sbCbOffset\":" + c.SbCbOffset + ",\"write\":" + (((int)c.Flags & 1) != 0 ? 1 : 0) + "}"); first = false; }
+            sb.Append("],\"textures\":[");
+            first = true;
+            foreach (var t in p.Info.Textures) { sb.Append((first ? "" : ",") + "{\"set\":" + t.Set + ",\"binding\":" + t.Binding + ",\"handleIndex\":" + t.HandleIndex + ",\"cbufSlot\":" + t.CbufSlot + ",\"type\":" + (int)t.Type + ",\"array\":" + t.ArrayLength + ",\"separate\":" + (t.Separate ? 1 : 0) + "}"); first = false; }
+            sb.Append("],\"images\":[");
+            first = true;
+            foreach (var t in p.Info.Images) { sb.Append((first ? "" : ",") + "{\"set\":" + t.Set + ",\"binding\":" + t.Binding + ",\"handleIndex\":" + t.HandleIndex + ",\"cbufSlot\":" + t.CbufSlot + ",\"type\":" + (int)t.Type + ",\"array\":" + t.ArrayLength + ",\"flags\":" + (int)t.Flags + "}"); first = false; }
+            sb.Append("]}");
+            File.WriteAllText(a[2], sb.ToString());
+            return 0;
+        }
+
+        static int Batch(string list, string outDir)
+        {
+            Directory.CreateDirectory(outDir);
+            using var res = new StreamWriter(Path.Combine(outDir, "results.tsv"));
+            foreach (string line in File.ReadAllLines(list))
+            {
+                string[] f = line.Split('\t');
+                string name = Path.GetFileNameWithoutExtension(f[0]);
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    TranslationFlags flags = TranslationFlags.DebugMode;
+                    if (f[1] == "CS") flags |= TranslationFlags.Compute;
+                    var ctx = Translator.CreateContext(0, new GpuAccessor(File.ReadAllBytes(f[0])), new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
+                    ShaderProgram p = ctx.Translate();
+                    File.WriteAllBytes(Path.Combine(outDir, name + ".spv"), p.BinaryCode);
+                    res.WriteLine(name + "\tok\t" + p.BinaryCode.Length + "	" + p.Info.CBuffers.Count + "	" + p.Info.Textures.Count + "	" + p.Info.SBuffers.Count + "	" + sw.ElapsedMilliseconds);
+                }
+                catch (Exception e)
+                {
+                    string m = e.GetType().Name + ": " + e.Message.Replace('\n', ' ');
+                    string at = e.StackTrace == null ? "" : e.StackTrace.Split('\n')[0].Trim();
+                    res.WriteLine(name + "	FAIL	" + m + " @ " + at);
+                }
+                res.Flush();
+            }
+            return 0;
+        }
+
+        static int Main(string[] args)
+        {
+            // args: in.bin out.spv [compute]   |   --batch list.tsv outdir  (list: path<TAB>stage; writes results.tsv)
+            if (args.Length == 7 && args[0] == "--nvn") return Nvn(args[1..]);
+            if (args.Length == 3 && args[0] == "--batch") return Batch(args[1], args[2]);
+            if (args.Length < 2) { Console.Error.WriteLine("usage: in.bin out.spv [compute]"); return 2; }
+            TranslationFlags flags = TranslationFlags.DebugMode;
+            if (args.Length > 2 && args[2] == "compute") flags |= TranslationFlags.Compute;
+            byte[] data = File.ReadAllBytes(args[0]);
+            var opts = new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags);
+            var ctx = Translator.CreateContext(0, new GpuAccessor(data), opts);
+            ShaderProgram program = ctx.Translate();
+            if (program.BinaryCode != null) File.WriteAllBytes(args[1], program.BinaryCode);
+            else File.WriteAllText(args[1], program.Code);
+            Console.WriteLine("ok stage=" + program.Info.Stage + " cb=" + program.Info.CBuffers.Count + " tex=" + program.Info.Textures.Count + " ssbo=" + program.Info.SBuffers.Count + " spv=" + (program.BinaryCode?.Length ?? 0));
+            if (args.Length > 3 && args[3] == "info")
+            {
+                foreach (var t in program.Info.Textures) Console.WriteLine("  tex set=" + t.Set + " bind=" + t.Binding + " cbufSlot=" + t.CbufSlot + " handleIdx=" + t.HandleIndex + " type=" + t.Type + " fmt=" + t.Format + " flags=" + t.Flags);
+                foreach (var c in program.Info.CBuffers) Console.WriteLine("  cbuf set=" + c.Set + " bind=" + c.Binding + " slot=" + c.Slot);
+                foreach (var c in program.Info.SBuffers) Console.WriteLine("  sbuf set=" + c.Set + " bind=" + c.Binding + " slot=" + c.Slot + " sbCbSlot=" + c.SbCbSlot + " sbCbOff=" + c.SbCbOffset);
+            }
+            return 0;
+        }
+    }
+}
