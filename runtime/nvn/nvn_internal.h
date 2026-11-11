@@ -151,6 +151,7 @@ struct PoolImpl {
 bool EnsureBacking(PoolImpl* p);
 // Copy [off, off+size) of the guest storage into the Vulkan mirror (call before the GPU reads that range).
 void SyncPoolRange(PoolImpl* p, uint64_t off, uint64_t size);
+void MarkGpuWritten(PoolImpl* p, uint64_t off, uint64_t size);   // the GPU writes this range from now on
 
 struct BufferImpl { PoolImpl* pool = nullptr; int64_t offset = 0; uint64_t size = 0; };
 struct SamplerImpl { Host* host = nullptr; VkSampler sampler = VK_NULL_HANDLE; SamplerBuilder b{}; };

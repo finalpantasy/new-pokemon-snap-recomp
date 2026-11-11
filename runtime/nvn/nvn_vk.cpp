@@ -576,7 +576,37 @@ void SyncPoolRange(PoolImpl* p, uint64_t off, uint64_t size) {
   if (!p->buffer && !EnsureBacking(p)) return;
   if (!p->mapped) return;
   size = std::min<uint64_t>(size, p->size - off);
-  memcpy(p->mapped + off, static_cast<uint8_t*>(p->storage) + off, (size_t)size);
+  uint64_t pos = off;
+  const uint64_t end = off + size;
+  std::lock_guard<std::mutex> lk(p->gpuMutex);
+  // copy [off, end) except the ranges the GPU owns (their CPU bytes are stale: the GPU wrote the real data)
+  while (pos < end) {
+    uint64_t next = end;
+    bool skip = false;
+    for (auto& r : p->gpuRanges) {
+      if (r.second <= pos || r.first >= end) continue;
+      if (r.first <= pos) { pos = std::max(pos, std::min(r.second, end)); skip = true; break; }
+      next = std::min(next, r.first);
+    }
+    if (skip) continue;
+    memcpy(p->mapped + pos, static_cast<uint8_t*>(p->storage) + pos, (size_t)(next - pos));
+    pos = next;
+  }
+}
+void MarkGpuWritten(PoolImpl* p, uint64_t off, uint64_t size) {
+  if (!p || !size || off >= p->size) return;
+  const uint64_t end = std::min<uint64_t>(off + size, p->size);
+  std::lock_guard<std::mutex> lk(p->gpuMutex);
+  for (auto& r : p->gpuRanges) if (r.first <= off && end <= r.second) return;   // already covered
+  p->gpuRanges.push_back({off, end});
+  // merge overlapping ranges so the list stays short
+  std::sort(p->gpuRanges.begin(), p->gpuRanges.end());
+  size_t w = 0;
+  for (size_t i = 1; i < p->gpuRanges.size(); i++) {
+    if (p->gpuRanges[i].first <= p->gpuRanges[w].second) p->gpuRanges[w].second = std::max(p->gpuRanges[w].second, p->gpuRanges[i].second);
+    else p->gpuRanges[++w] = p->gpuRanges[i];
+  }
+  p->gpuRanges.resize(w + 1);
 }
 void DestroyPool(PoolImpl* p) {
   if (!p) return;

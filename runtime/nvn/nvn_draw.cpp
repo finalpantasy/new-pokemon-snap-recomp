@@ -42,7 +42,7 @@ struct Dummies {
               v1d = VK_NULL_HANDLE, v1da = VK_NULL_HANDLE;
 };
 
-struct BufBind { VkBuffer buf = VK_NULL_HANDLE; uint64_t off = 0, range = 0; };
+struct BufBind { VkBuffer buf = VK_NULL_HANDLE; uint64_t off = 0, range = 0; PoolImpl* pool = nullptr; };
 
 struct DrawState {
   ProgramImpl* prog = nullptr;        // effective program (ProgramResolve of stageProg)
@@ -489,7 +489,7 @@ BufBind ResolveBuf(Host* h, uint64_t addr, uint64_t size, uint64_t cap) {
   if (!pool->buffer && !EnsureBacking(pool)) return b;
   uint64_t n = std::min<uint64_t>(size ? size : pool->size - off, pool->size - off);
   SyncPoolRange(pool, off, n);
-  b.buf = pool->buffer; b.off = off; b.range = cap ? std::min(n, cap) : n;
+  b.buf = pool->buffer; b.off = off; b.range = cap ? std::min(n, cap) : n; b.pool = pool;
   return b;
 }
 
@@ -579,6 +579,9 @@ bool WriteDescriptors(ReplayCtx& cx, DrawState& d, ProgramImpl* p, const std::ve
     for (auto& sb : sp.sb) {
       BufBind b = {dm->zero, 0, 4096};
       if (sb.slot >= 0 && sb.slot < 16 && d.ssbo[s][sb.slot].buf) b = d.ssbo[s][sb.slot];   // ordinal == NVN index (unverified)
+      if (sb.write && b.pool && DebugDrawLogActive()) DebugDrawLog("  SSBO write stage %d slot %d pool %p off 0x%llx size 0x%llx poolsize 0x%llx
+", s, sb.slot, (void*)b.pool, (unsigned long long)b.off, (unsigned long long)b.range, (unsigned long long)b.pool->size);
+      if (sb.write && b.pool) MarkGpuWritten(b.pool, b.off, b.range);   // later CPU->GPU syncs must not clobber what the shader writes
       if (sets[sb.set]) wBuf(sb.set, sb.binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b);
     }
   }

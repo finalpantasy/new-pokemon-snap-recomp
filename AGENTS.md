@@ -368,6 +368,12 @@ User NSP/XCI
 
 ## Repository hygiene
 
+- **Git:** the repo is private on GitHub at `finalpantasy/new-pokemon-snap-recomp`, created 2026-11-11 with code only.
+  - The local git identity is `finalpantasy` with its noreply email. Never use the global identity.
+  - Only the coordinator commits and pushes. Before every push, check that `git grep -i` finds no owner name or email and that `git ls-files` contains no game formats or images.
+  - Push using the finalpantasy token (`gh auth token -u finalpantasy`) through a per-command credential helper. The active gh account is a different one.
+  - Making the repo public is the owner's decision.
+
 - `work/`, `extracted/`, `analysis/`, and `tools/` are generated/local and ignored.
 - Never commit `.nsp`, `.xci`, `.nca`, `.nso`, `.keys`, extracted RomFS, generated C from the game, NVIDIA binaries, or proprietary SDK files.
 - Keep research/source code separate from game-derived artifacts and record tool versions and input hashes for reproducibility.
