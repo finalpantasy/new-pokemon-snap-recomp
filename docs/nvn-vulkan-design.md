@@ -121,7 +121,7 @@ Derived from the VS/PS pair `vdkEfxSystemConstantVS/PS` and the game's bind loop
 |---|---|---|
 | 0 | 0 | Ryujinx support buffer (1408 B, render_scale entries 1.0f); not an NVN binding |
 | 0 | 1 + stage*16 + s | constant buffer c[s] of that stage |
-| 1 | stage*16 + n | storage buffer n (NVN index assumed equal to the ordinal) |
+| 1 | stage*16 + n | storage buffer n (NVN index assumed equal to the ordinal; `sbCbOffset` is in words, graphics base 68, so index = (off-68)/4, which matches the ordinal on every program seen) |
 | 2 | stage*32 + n | combined image sampler n |
 | 3 | stage*8 + n | storage image n |
 
@@ -248,12 +248,42 @@ Both found on the loading screen (`analysis/boot/first_screen.png`); fixed captu
 - *Regression test:* `tests/nvn/linear_test.cpp` (`tests
 vnuild.bat linear_test`) checks the viewport mapping numerically (both origins, scale, default viewport) and creates a linear R8 texture with stride greater than the width, reads it back through `CopyTextureToBuffer`, rewrites the pool memory and reads it again.
 
+## Fixes: validation cleanup and invisible characters (2026-11-11)
+
+A 2-minute boot with `NVN_VK_VALIDATION=1` now reports 0 Vulkan validation errors, 0 warnings and 0 `[nvn][error]` lines (before: about 16,500 skipped draws and 8 distinct VUIDs in 90 s). Capture `analysis/boot/validation_clean.png` matches `fixed_screen.png`. Regression test: `tests/nvn/mip_test.cpp`.
+
+**Render target also sampled (draws skipped).**
+- *Root cause:* `SetRenderTargets` dropped the `NVNtextureView`, so every attachment was the whole image, and the layer refused any draw whose sampled texture was also an attachment. The game's bloom chain (960x540, 6 levels) renders level N while sampling level N-1, which is legal in Vulkan when the subresources differ.
+- *Fix:* the view (level, layers) is recorded with the command. Attachments are per-subresource views (`RenderView`); layouts are tracked per subresource (`subLayout`, `TransitionRange`, `InLayout`) with coalesced barriers; the sampled view range excludes the attachment's subresource (`ExcludeAttachment`); clears and masked clears touch only the bound level and layers. A true same-subresource feedback binds a typed dummy and logs one error (0 seen in the boot).
+- *Evidence:* skip count 16,500 to 0 on the boot; `mip_test` renders a 4-level chain by sampling the level above and checks every level, plus per-layer clears on a 3-layer array (a masked clear on layer 2 must not touch layers 0 and 1).
+
+**`vkResetQueryPool` without `hostQueryReset`.** The feature was not enabled in the Vulkan 1.2 feature struct. It is now requested whenever the device offers it (`Host::hostQueryReset`), and the query pools are not created when it is missing.
+
+**Sampled-view type mismatches (2D vs 2D array, cube, 3D, 1D).**
+- *Root cause:* one whole-image view per texture was bound regardless of the dimension the shader declares (for example `vp_t_tcb_14` declares a 2D array sampler and was given a 2D view).
+- *Fix:* `TextureImpl::View(view, sampled, shaderType, range)` builds the view type from the translator's `SamplerType` and the image (`1`=1D, `3`=2D, `4`=3D, `5`=cube, bit `0x100` array), cached by type, format, aspect and ranges. When the texture cannot be viewed that way (cube on a plain 2D image, and so on) a typed dummy (2D array x6, cube, cube array, 3D, 1D, all white) is bound. Square 2D arrays with 6 or more layers are created `CUBE_COMPATIBLE`.
+- *Evidence:* `mip_test` checks the view type for 13 texture and shader combinations, the cache hit, level and layer windows and the attachment view.
+
+**Dual-source blend.** The harness compiles every fragment shader with `DualSourceBlendEnable=false`, so the translated module writes a second color output at location 1, while the game's blend state uses SRC1 factors on attachment 0. The pipeline now decides per draw: when blend uses an SRC1 factor, the `dualSrcBlend` feature exists, and the shader has 2 or more outputs, `PatchFragmentOutputs` (`nvn_alpha.cpp`) re-decorates the two lowest outputs as Location L Index 0 and 1 and drops the rest; otherwise the SRC1 factors fall back to the matching SRC factors. Outputs at a location with no attachment become private variables (removes the "FS writes Location N but there is no attachment" warnings). Variants are keyed by alpha func, attachment count and dual flag.
+
+**Other validation messages, all fixed.**
+- `StorageImageWriteWithoutFormat` missing on one shader: `SpvAddStorageImageCaps` adds the capability.
+- "Vertex attribute not consumed by vertex shader": attributes whose location the VS does not read are dropped from the pipeline (`SpvVertexInputMask`).
+- Depth-compare sampling of an `R32_SFLOAT` view: the game binds an 8x8 R32F texture with a compare sampler as a "no shadow map" stand-in. Vulkan has no compare sampling on color formats, so a shadow-typed binding (`SamplerType & 0x400`) of a color texture gets a 1x1 `D32_SFLOAT` = 1.0 stand-in and a compare sampler (everything lit).
+- The masked-clear shader modules and pipeline layout were static and leaked at device destruction; the host now owns and frees them.
+
+**Characters and Pokemon invisible (skinning compute ran with 1 thread per group).**
+- *Trace:* the character draws were issued. `NVN_DRAW_LOG` (with the new `NVN_DRAW_LOG_SEC=a-b` window, shader keys, vertex layout, uniform and storage bindings and `POSBOUNDS`/`GPUPOS` position bounds) showed their vertex buffers all zero in guest memory and a compute program dispatched 20 times per frame just before them with a storage buffer (slot 2, written) at the same pool offset as those vertex buffers. So the compute shader is the skinning pass and writes the final vertex positions.
+- *Root cause:* the translator cannot know the workgroup size (it is not in the SASS), so every compute module came out with `LocalSize 1 1 1`. Only 1 invocation in 256 ran per group, and about 99.6% of the skinned vertices stayed zero. The size is three u32 at control-section offset `+0x748` (1x1x1, 16x16x1, 16x16x1 on the three resource.drp compute programs, 256x1x1 on the skinning programs).
+- *Fix:* `BuildStage` reads it and `SpvSetLocalSize` rewrites the `OpExecutionMode LocalSize` operands. A related guard: ranges a shader writes through a storage buffer (`MarkGpuWritten`) are skipped by `SyncPoolRange`, so a later CPU-to-GPU mirror copy of the stale guest bytes can no longer overwrite GPU-written data (it ran at record time of the next command buffer).
+- *Evidence:* the same draws now show `GPUPOS` bounds of a 1.6 m character with 0 zero vertices; `analysis/boot/characters_visible.png` shows Professor Mirror, Rita, Pikachu and Eevee.
+
 ## Remaining work
 
 - The cube-array layer count rule, the ASTC format codes and BC2 are not covered by any game file or test.
 - GPU-written indirect argument buffers; transform feedback; primitive restart.
 - `viewport_inverse` in the support buffer is unfilled; depth mode NEAR_IS_MINUS_W is not remapped.
-- Texture feedback loops are rejected; very large pools make `EnsureBacking` expensive.
+- A draw that samples the very subresource it renders to (true feedback) gets a typed dummy and logs an error (none seen); a per-texture copy would be the fix. Shadow-compare sampling of color-format textures uses a constant lit stand-in. Very large pools make `EnsureBacking` expensive.
 - Instance divisors above 1, separate textures and samplers, multi-viewport.
 - `CopyBufferToTexture` into block-compressed or ASTC textures copies raw data without ASTC-aware sizing.
 

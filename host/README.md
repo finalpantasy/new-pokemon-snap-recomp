@@ -31,11 +31,20 @@ Debug: `SNAP_FNTRACE=0xaddr[,..]` logs every entry of those lifted functions; `S
 
 ## Play (live input)
 
-    powershell -File host\play.ps1
+    powershell -File host\play.ps1              play
+    powershell -File host\play.ps1 -SkipIntro   scripted input through loading, name entry and the lab intro (about 3.5 minutes), real input stays active
+    powershell -File host\play.ps1 -ListPads    list the controllers the game sees and show live pad input for 15 s
 
-waits for and takes `build\heavy.lock`, starts the game at normal priority with no timeout and Vulkan validation off, and releases the
-lock when the game window closes (also on Ctrl+C or a crash). Logs: `analysis\boot\play_stderr.log`, `play_trace.log`. Click the game
-window once so it has focus: keyboard and gamepad input are ignored while another window is in front.
+`play.ps1` takes `build\heavy.lock` only while it copies `build\snap\snap_boot.exe` (plus `SDL3.dll`, the PDB and `nvn_cache`) to `build\play\`,
+releases it, creates `build\play.lock` (workers must not start boot runs while it exists), runs the copy at normal priority with no timeout and
+validation off, and deletes `play.lock` when the game exits (window closed, crash or Ctrl+C). Builds can continue during play. Logs:
+`analysis\boot\play_stderr.log`, `play_stdout.log` (device list), `play_trace.log`. Click the game window once so it has focus: keyboard and
+gamepad input are ignored while another window is in front.
+
+Saves: the player's save is `%APPDATA%\SnapRecomp\save` (`SNAP_SAVE_DIR` overrides it). `host\run_boot.ps1` and all test runs use
+`build\testsave`, wiped per run (`-KeepSave` keeps it), so tests never touch the player's save. The game writes the profile (language, voice,
+appearance, name) when "Are you ready to start?" is confirmed; a later launch skips those screens and goes straight to the opening cutscene. No
+later write was seen up to the first tutorial step, so the opening cutscene and tutorial replay until the game saves its progress.
 
 Default controls (editable in `%APPDATA%\SnapRecomp\config\input_map.json`, written on first run). Buttons use the Switch layout by
 position, so on an Xbox pad Switch A is the right face button (Xbox B) and Switch B is the bottom one (Xbox A).
@@ -52,10 +61,12 @@ position, so on an Xbox pad Switch A is the right face button (Xbox B) and Switc
 | Touch screen | | left mouse button |
 
 The game polls only the Full-key (Pro controller) npad 0 state, the touch screen and gestures; it never asks for six-axis (motion) data.
-Gamepads are read through SDL3 when `tools\dl_sdl3\x\SDL3-3.4.20` exists (the build copies `SDL3.dll` next to the exe), else XInput.
+Pads: every gamepad SDL3 reports is opened and merged with every XInput slot into npad 0 (buttons OR-ed, larger stick value wins), the
+joystick list is rescanned every second (hot-plug, wake-up) and each device is printed (`pad:` lines in `play_stdout.log`). SDL3 is used when
+`tools\dl_sdl3\x\SDL3-3.4.20` exists (the build copies `SDL3.dll` next to the exe); XInput is always read as well.
 The player name is fixed to "Ash" (no on-screen keyboard yet; `SNAP_PLAYER_NAME` overrides it).
-Scripted input for unattended runs: `SNAP_INPUT_SCRIPT=<file>` (lines `<start> <hold> <buttons or lx= ly= rx= ry=>` or
-`repeat <start> <end> <period> <hold> ...`, seconds since the first poll), OR-ed onto the real input.
+Scripted input for unattended runs: `SNAP_INPUT_SCRIPT=<file>` (lines `<start> <hold> <buttons or lx= ly= rx= ry=>`, `repeat <start> <end> <period>
+<hold> ...` and `anchor <event>`; seconds since the first poll or since the event), OR-ed onto the real input. `host\skip_intro.txt` is the intro script.
 
 ## Layers and registration order (`bind_host_layers` in `boot.cpp`)
 

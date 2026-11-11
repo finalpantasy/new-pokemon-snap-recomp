@@ -1,0 +1,12 @@
+# Scripted input for play.ps1 -SkipIntro (SNAP_INPUT_SCRIPT): loading, language/voice/appearance select, name entry, the lab intro
+# cutscene, up to the first tutorial step. Real input stays active and is OR-ed in. See runtime/hle/input_core.cpp for the format.
+# Segment 0: A every 2.5 s until the name prompt opens (the game calls nn::swkbd::ShowKeyboard).
+repeat 12 200 2.5 0.3 A
+anchor swkbd
+# Segment 1 (seconds after the name prompt): the "Are you ready to start?" dialog defaults to No: move up to Yes, confirm, then
+# advance the cutscene dialogue until the tutorial starts.
+2.5 0.2 Up
+3.5 0.2 Up
+4.5 0.2 Up
+5.5 0.3 A
+repeat 9 170 1.2 0.25 A

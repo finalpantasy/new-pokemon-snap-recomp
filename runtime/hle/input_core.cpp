@@ -2,6 +2,7 @@
 #include "input_core.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -335,14 +336,21 @@ bool Hub::load_mapping(const std::string& path, std::string* err) {
 // One entry per line, '#' starts a comment, times are seconds since the first poll:
 //   <start> <hold> <token>...                      press the tokens from start for hold seconds
 //   repeat <start> <end> <period> <hold> <token>...  the same press every period seconds in [start, end)
+//   anchor <event>                                 starts a new segment: its entries count seconds from the moment the game
+//                                                  raises <event> (script_event; "swkbd" = the name prompt opened) and the
+//                                                  entries of earlier segments stop. Until the event fires the old segment runs on.
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
   std::vector<ScriptEntry> e;
+  std::vector<std::string> seg_event;   // seg_event[k] raises segment k+1
+  int load_seg = 0;                      // segment being parsed
+  std::atomic<int> cur{0};               // segment running
+  std::atomic<uint64_t> cur_t0{0};       // start time (ns) of the running segment
 };
 Script g_script;
 
@@ -377,7 +385,13 @@ void script_load() {
     std::istringstream is(line);
     std::string w;
     if (!(is >> w)) continue;
+    if (w == "anchor") {
+      std::string ev;
+      if (is >> ev) { g_script.seg_event.push_back(ev); ++g_script.load_seg; }
+      continue;
+    }
     ScriptEntry en{};
+    en.seg = g_script.load_seg;
     bool rep = w == "repeat";
     if (rep) {
       if (!(is >> en.start >> en.end >> en.period >> en.hold) || en.period <= 0) { log("input script: bad line '%s'", line.c_str()); continue; }
@@ -397,10 +411,13 @@ void script_load() {
 }
 
 // Applies the script at time `now` (seconds since the first poll) to `p`.
-void script_apply(double now, PadSample& p) {
+void script_apply(uint64_t now_ns_v, PadSample& p) {
   static uint64_t last = ~0ull;
   uint64_t cur = 0;
+  const int seg = g_script.cur.load();
+  const double now = (double)(now_ns_v - g_script.cur_t0.load()) * 1e-9;
   for (const ScriptEntry& en : g_script.e) {
+    if (en.seg != seg) continue;
     bool on;
     if (en.end > en.start) {   // repeat
       on = now >= en.start && now < en.end && std::fmod(now - en.start, en.period) < en.hold;
@@ -413,9 +430,19 @@ void script_apply(double now, PadSample& p) {
     for (int i = 0; i < 4; ++i) if (en.has_ax[i]) (&p.lx)[i] = en.ax[i];
     p.connected = true;
   }
-  if (cur != last) { last = cur; log("input script: t=%.2f buttons=%#llx", now, (unsigned long long)cur); }
+  if (cur != last) { last = cur; log("input script: seg %d t=%.2f buttons=%#llx", seg, now, (unsigned long long)cur); }
 }
 }  // namespace
+
+void script_event(const char* name) {
+  if (!g_script.loaded) return;
+  int k = g_script.cur.load();
+  if (k < (int)g_script.seg_event.size() && g_script.seg_event[(size_t)k] == name) {
+    g_script.cur_t0 = now_ns();
+    g_script.cur = k + 1;
+    log("input script: event '%s' starts segment %d", name, k + 1);
+  }
+}
 
 void Hub::poll(int min_interval_ms) {
   std::lock_guard<std::mutex> g(mu_);
@@ -427,8 +454,8 @@ void Hub::poll(int min_interval_ms) {
   backend_->poll(r);
   raw_ = r;
   pad_ = map_pad(map_, r);
-  if (!g_script.loaded) { script_load(); g_script.t0 = t; }
-  if (!g_script.e.empty()) script_apply((double)(t - g_script.t0) * 1e-9, pad_);
+  if (!g_script.loaded) { script_load(); g_script.t0 = t; g_script.cur_t0 = t; }
+  if (!g_script.e.empty()) script_apply(t, pad_);
   touch_ = map_touch(map_, r);
   ++seq_;
 }

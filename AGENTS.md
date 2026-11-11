@@ -100,6 +100,17 @@ This is the durable project plan and working agreement. Read it before changing 
     3. 305 requested-but-unregistered NVN names, none called yet.
     4. Spin-loop gating is not done.
   - **Indirect-call misses:** 0 so far.
+  - **Characters and validation fixed (2026-11-11; `docs/nvn-vulkan-design.md`, "Fixes: validation cleanup and invisible characters"):**
+    - **Invisible characters:** skinning is a compute shader whose real workgroup size (256x1x1) is in the nushdb control section at `+0x748`. The translator always emitted 1x1x1, so the size is now patched into the SPIR-V. SSBO-written ranges are marked GPU-written, so CPU copies don't overwrite them.
+    - **Render targets:** attachments now use per-subresource views and layouts.
+    - **Other fixes:** typed view cache, `hostQueryReset`, and dual-source blend output patching.
+    - **Result:** a 125 s boot shows 0 validation errors and 0 skipped draws (`analysis/boot/characters_visible.png`).
+    - **Test scripts:** the Python texture-compare scripts need `python -E -P` (user-site numpy).
+  - **Live play (2026-11-11):** `host\play.ps1` runs a copy of the exe from `build\play\` under `build\play.lock`.
+    - **Switches:** `-SkipIntro` (scripted input to the camera tutorial, about 4 min) and `-ListPads`.
+    - **Test runs:** `run_boot.ps1` refuses to start while `play.lock` is live, and tests use `SNAP_SAVE_DIR=build\testsave`.
+    - **Input:** the game reads npad 0 in Pro controller style only, never six-axis. Every SDL3 gamepad plus XInput slots 0-3 are merged, with a rescan every 1 s.
+    - **Boot crashes fixed:** the host supplies the `ProfanityFilter` vtable, and the software keyboard returns "Ash" (`SNAP_PLAYER_NAME`).
   - **First UI (2026-11-11):** the game reaches the autosave notice and then the voice-language select screen. Text is legible and the image is upright (`analysis/boot/fixed_screen.png`).
     - **Upside-down image:** the game selects the UPPER_LEFT window origin, which now gets a negative-height viewport.
     - **Garbled text:** the glyph atlas is an R8 512x2048 pitch-linear texture that the CPU keeps writing. It is now read with its stride and re-uploaded when its hash changes.

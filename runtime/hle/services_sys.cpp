@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "hle_config.h"
+#include "input_core.h"
 #include "svc_common.h"
 
 #ifdef _WIN32
@@ -378,6 +379,7 @@ void swkbd_show_keyboard(Cpu* c) {
   static bool once = false;
   if (!once) { once = true; log("swkbd::ShowKeyboard: String ptr %p cap %d (host answers with a fixed name)", (void*)out, cap); }
   if (!out) { ret(c, kResultSwkbdCanceled); return; }
+  input::script_event("swkbd");
   const char* nm = std::getenv("SNAP_PLAYER_NAME");
   if (!nm || !*nm) nm = "Ash";
   int n = 0;

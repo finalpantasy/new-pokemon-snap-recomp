@@ -4,6 +4,9 @@
 // API (any controller SDL knows), keyboard and mouse from SDL's state, which the window owner keeps fresh by pumping
 // events. make_default_backend picks SDL3 when built with it, otherwise Win32.
 #include <algorithm>
+#include <cstdarg>
+#include <cstdio>
+#include <vector>
 #include <cmath>
 #include <cstdlib>
 
@@ -43,42 +46,111 @@ int vk_for_key(int k) {
   return 0;
 }
 
+// Folds the pad fields of `src` into `dst`: buttons OR-ed, the larger stick or trigger value wins. Several devices (an XInput
+// interface and a HID interface of the same physical pad, or two pads) therefore act as one npad 0 and a press is never counted twice.
+void merge_pad(RawInput& dst, const RawInput& src) {
+  if (!src.pad_connected) return;
+  dst.pad_connected = true;
+  dst.pad |= src.pad;
+  auto big = [](float& d, float s) { if (std::fabs(s) > std::fabs(d)) d = s; };
+  big(dst.lx, src.lx); big(dst.ly, src.ly); big(dst.rx, src.rx); big(dst.ry, src.ry);
+  dst.lt = std::max(dst.lt, src.lt); dst.rt = std::max(dst.rt, src.rt);
+}
+
 #ifdef HLE_WITH_SDL3
 // Gamepads through SDL3 (PlayStation, Switch Pro, Xbox, generic HID) for the Win32 backend, which keeps keyboard and mouse
-// (the game window is a plain HWND, so SDL's keyboard state has no focus window to read). Works while the window is in the
-// background; the Win32 backend zeroes the pad when the game is not the foreground window unless SNAP_INPUT_BACKGROUND is set.
+// (the game window is a plain HWND, so SDL's keyboard state has no focus window to read). Every gamepad SDL knows is opened and
+// merged; the joystick list is rescanned once a second, so a pad that is plugged in or wakes up later is picked up (SDL events are
+// never pumped here). Each enumerated device is printed to stdout and logged.
 struct SdlPads {
   bool inited = false;
-  SDL_Gamepad* pad = nullptr;
+  uint64_t last_scan_ns = 0;
+  std::vector<SDL_Gamepad*> pads;
+  std::vector<SDL_JoystickID> seen;   // joystick ids already reported
+
+  static const char* type_name(SDL_GamepadType t) {
+    switch (t) {
+      case SDL_GAMEPAD_TYPE_XBOX360: return "xbox360"; case SDL_GAMEPAD_TYPE_XBOXONE: return "xboxone";
+      case SDL_GAMEPAD_TYPE_PS3: return "ps3"; case SDL_GAMEPAD_TYPE_PS4: return "ps4"; case SDL_GAMEPAD_TYPE_PS5: return "ps5";
+      case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO: return "switch-pro"; case SDL_GAMEPAD_TYPE_STANDARD: return "standard";
+      default: return "other";
+    }
+  }
+  void say(const char* fmt, ...) __attribute__((format(printf, 2, 3))) {
+    char b[512];
+    va_list ap; va_start(ap, fmt); std::vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
+    std::fprintf(stdout, "pad: %s\n", b); std::fflush(stdout);
+    log("pad: %s", b);
+  }
+  void init() {
+    if (inited) return;
+    inited = true;
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // The RAWINPUT driver delivers through window messages that nobody pumps here; WGI, XInput, DirectInput and HIDAPI poll.
+    SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) say("sdl3 init failed: %s", SDL_GetError());
+  }
+  void scan() {
+    int n = 0;
+    SDL_JoystickID* ids = SDL_GetJoysticks(&n);
+    // drop closed or unplugged pads
+    for (size_t i = 0; i < pads.size();) {
+      if (!SDL_GamepadConnected(pads[i])) {
+        say("sdl gamepad removed: '%s'", SDL_GetGamepadName(pads[i]));
+        SDL_CloseGamepad(pads[i]);
+        pads.erase(pads.begin() + (long)i);
+      } else ++i;
+    }
+    for (int k = 0; k < n; ++k) {
+      SDL_JoystickID id = ids[k];
+      bool open = false;
+      for (SDL_Gamepad* g : pads) if (SDL_GetGamepadID(g) == id) open = true;
+      if (open) continue;
+      bool is_pad = SDL_IsGamepad(id);
+      bool first = std::find(seen.begin(), seen.end(), id) == seen.end();
+      if (first) {
+        seen.push_back(id);
+        char* map = is_pad ? SDL_GetGamepadMappingForID(id) : nullptr;
+        say("sdl device %u: '%s' vid:pid=%04x:%04x gamepad=%s type=%s mapping=%s", (unsigned)id,
+            SDL_GetJoystickNameForID(id) ? SDL_GetJoystickNameForID(id) : "?", SDL_GetJoystickVendorForID(id),
+            SDL_GetJoystickProductForID(id), is_pad ? "yes" : "no", is_pad ? type_name(SDL_GetGamepadTypeForID(id)) : "-",
+            map ? "yes" : "no");
+        SDL_free(map);
+      }
+      if (!is_pad) continue;
+      if (SDL_Gamepad* g = SDL_OpenGamepad(id)) { pads.push_back(g); say("sdl gamepad opened: '%s'", SDL_GetGamepadName(g)); }
+      else say("sdl gamepad open failed (id %u): %s", (unsigned)id, SDL_GetError());
+    }
+    // forget ids that disappeared so a re-plug is reported again
+    seen.erase(std::remove_if(seen.begin(), seen.end(), [&](SDL_JoystickID id) {
+      for (int k = 0; k < n; ++k) if (ids && ids[k] == id) return false;
+      return true; }), seen.end());
+    SDL_free(ids);
+  }
+  // Merges every open gamepad into `out`; false when none is open.
   bool poll(RawInput& out) {
-    if (!inited) {
-      inited = true;
-      SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-      if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) log("sdl3: gamepad init failed: %s", SDL_GetError());
-    }
+    init();
+    uint64_t t = (uint64_t)SDL_GetTicksNS();
+    if (!last_scan_ns || t - last_scan_ns > 1000000000ull) { last_scan_ns = t; scan(); }
     SDL_UpdateGamepads();
-    if (!pad || !SDL_GamepadConnected(pad)) {
-      if (pad) { SDL_CloseGamepad(pad); pad = nullptr; }
-      int n = 0;
-      SDL_JoystickID* ids = SDL_GetGamepads(&n);
-      if (ids && n > 0) { pad = SDL_OpenGamepad(ids[0]); if (pad) log("sdl3: gamepad '%s'", SDL_GetGamepadName(pad)); }
-      SDL_free(ids);
+    for (SDL_Gamepad* pad : pads) {
+      RawInput r;
+      r.pad_connected = true;
+      auto b = [&](SDL_GamepadButton sb, int bit) { if (SDL_GetGamepadButton(pad, sb)) r.pad.set((size_t)bit); };
+      b(SDL_GAMEPAD_BUTTON_SOUTH, kPadSouth); b(SDL_GAMEPAD_BUTTON_EAST, kPadEast);
+      b(SDL_GAMEPAD_BUTTON_WEST, kPadWest); b(SDL_GAMEPAD_BUTTON_NORTH, kPadNorth);
+      b(SDL_GAMEPAD_BUTTON_BACK, kPadBack); b(SDL_GAMEPAD_BUTTON_GUIDE, kPadGuide); b(SDL_GAMEPAD_BUTTON_START, kPadStart);
+      b(SDL_GAMEPAD_BUTTON_LEFT_STICK, kPadLStick); b(SDL_GAMEPAD_BUTTON_RIGHT_STICK, kPadRStick);
+      b(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, kPadLShoulder); b(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, kPadRShoulder);
+      b(SDL_GAMEPAD_BUTTON_DPAD_UP, kPadDUp); b(SDL_GAMEPAD_BUTTON_DPAD_DOWN, kPadDDown);
+      b(SDL_GAMEPAD_BUTTON_DPAD_LEFT, kPadDLeft); b(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, kPadDRight);
+      auto ax = [&](SDL_GamepadAxis a) { return std::clamp(SDL_GetGamepadAxis(pad, a) / 32767.0f, -1.0f, 1.0f); };
+      r.lx = ax(SDL_GAMEPAD_AXIS_LEFTX); r.ly = -ax(SDL_GAMEPAD_AXIS_LEFTY);  // SDL y is down positive
+      r.rx = ax(SDL_GAMEPAD_AXIS_RIGHTX); r.ry = -ax(SDL_GAMEPAD_AXIS_RIGHTY);
+      r.lt = std::max(0.0f, ax(SDL_GAMEPAD_AXIS_LEFT_TRIGGER)); r.rt = std::max(0.0f, ax(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
+      merge_pad(out, r);
     }
-    if (!pad) return false;
-    out.pad_connected = true;
-    auto b = [&](SDL_GamepadButton sb, int bit) { if (SDL_GetGamepadButton(pad, sb)) out.pad.set((size_t)bit); };
-    b(SDL_GAMEPAD_BUTTON_SOUTH, kPadSouth); b(SDL_GAMEPAD_BUTTON_EAST, kPadEast);
-    b(SDL_GAMEPAD_BUTTON_WEST, kPadWest); b(SDL_GAMEPAD_BUTTON_NORTH, kPadNorth);
-    b(SDL_GAMEPAD_BUTTON_BACK, kPadBack); b(SDL_GAMEPAD_BUTTON_GUIDE, kPadGuide); b(SDL_GAMEPAD_BUTTON_START, kPadStart);
-    b(SDL_GAMEPAD_BUTTON_LEFT_STICK, kPadLStick); b(SDL_GAMEPAD_BUTTON_RIGHT_STICK, kPadRStick);
-    b(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, kPadLShoulder); b(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, kPadRShoulder);
-    b(SDL_GAMEPAD_BUTTON_DPAD_UP, kPadDUp); b(SDL_GAMEPAD_BUTTON_DPAD_DOWN, kPadDDown);
-    b(SDL_GAMEPAD_BUTTON_DPAD_LEFT, kPadDLeft); b(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, kPadDRight);
-    auto ax = [&](SDL_GamepadAxis a) { return std::clamp(SDL_GetGamepadAxis(pad, a) / 32767.0f, -1.0f, 1.0f); };
-    out.lx = ax(SDL_GAMEPAD_AXIS_LEFTX); out.ly = -ax(SDL_GAMEPAD_AXIS_LEFTY);  // SDL y is down positive
-    out.rx = ax(SDL_GAMEPAD_AXIS_RIGHTX); out.ry = -ax(SDL_GAMEPAD_AXIS_RIGHTY);
-    out.lt = std::max(0.0f, ax(SDL_GAMEPAD_AXIS_LEFT_TRIGGER)); out.rt = std::max(0.0f, ax(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
-    return true;
+    return !pads.empty();
   }
 };
 #endif
@@ -106,31 +178,38 @@ class Win32Backend final : public Backend {
     DWORD pid = 0;
     if (fg) GetWindowThreadProcessId(fg, &pid);
     out.focused = background_ || (fg && pid == GetCurrentProcessId());
-    bool have_sdl = false;
+    // Pads: every SDL gamepad and every XInput slot, merged. XInput is always read as well (not only as a fallback), so a pad SDL
+    // lists as an unmapped joystick or fails to open still works through its XInput interface.
 #ifdef HLE_WITH_SDL3
-    have_sdl = sdl_.poll(out);
-    if (have_sdl && !out.focused) { out.pad.reset(); out.lx = out.ly = out.rx = out.ry = out.lt = out.rt = 0; }
+    sdl_.poll(out);
 #endif
-    if (get_ && !have_sdl) {
+    if (get_) {
       for (DWORD i = 0; i < 4; ++i) {
         XState s{};
-        if (get_(i, &s) == 0) {  // ERROR_SUCCESS
-          pad_index_ = i;
-          out.pad_connected = true;
-          WORD b = s.buttons;
-          auto set = [&](int bit, bool v) { if (v) out.pad.set((size_t)bit); };
-          set(kPadSouth, b & 0x1000); set(kPadEast, b & 0x2000); set(kPadWest, b & 0x4000); set(kPadNorth, b & 0x8000);
-          set(kPadBack, b & 0x20); set(kPadStart, b & 0x10); set(kPadLStick, b & 0x40); set(kPadRStick, b & 0x80);
-          set(kPadLShoulder, b & 0x100); set(kPadRShoulder, b & 0x200);
-          set(kPadDUp, b & 0x1); set(kPadDDown, b & 0x2); set(kPadDLeft, b & 0x4); set(kPadDRight, b & 0x8);
-          auto ax = [](SHORT v) { return std::clamp(v / 32767.0f, -1.0f, 1.0f); };
-          out.lx = ax(s.lx); out.ly = ax(s.ly); out.rx = ax(s.rx); out.ry = ax(s.ry);
-          out.lt = s.lt / 255.0f; out.rt = s.rt / 255.0f;
-          break;
+        bool ok = get_(i, &s) == 0;  // ERROR_SUCCESS
+        if (ok != xslot_[i]) {
+          xslot_[i] = ok;
+          std::fprintf(stdout, "pad: xinput slot %u %s\n", (unsigned)i, ok ? "connected" : "disconnected");
+          std::fflush(stdout);
+          log("pad: xinput slot %u %s", (unsigned)i, ok ? "connected" : "disconnected");
         }
+        if (!ok) continue;
+        if (pad_index_ == 0 || !xslot_[pad_index_]) pad_index_ = i;
+        RawInput r;
+        r.pad_connected = true;
+        WORD b = s.buttons;
+        auto set = [&](int bit, bool v) { if (v) r.pad.set((size_t)bit); };
+        set(kPadSouth, b & 0x1000); set(kPadEast, b & 0x2000); set(kPadWest, b & 0x4000); set(kPadNorth, b & 0x8000);
+        set(kPadBack, b & 0x20); set(kPadStart, b & 0x10); set(kPadLStick, b & 0x40); set(kPadRStick, b & 0x80);
+        set(kPadLShoulder, b & 0x100); set(kPadRShoulder, b & 0x200);
+        set(kPadDUp, b & 0x1); set(kPadDDown, b & 0x2); set(kPadDLeft, b & 0x4); set(kPadDRight, b & 0x8);
+        auto ax = [](SHORT v) { return std::clamp(v / 32767.0f, -1.0f, 1.0f); };
+        r.lx = ax(s.lx); r.ly = ax(s.ly); r.rx = ax(s.rx); r.ry = ax(s.ry);
+        r.lt = s.lt / 255.0f; r.rt = s.rt / 255.0f;
+        merge_pad(out, r);
       }
-      if (!out.focused) { out.pad.reset(); out.lx = out.ly = out.rx = out.ry = out.lt = out.rt = 0; }
     }
+    if (!out.focused) { out.pad.reset(); out.lx = out.ly = out.rx = out.ry = out.lt = out.rt = 0; }
     if (out.focused) {
       for (int k = 1; k < kKeyCount; ++k) {
         int vk = vk_for_key(k);
@@ -172,6 +251,7 @@ class Win32Backend final : public Backend {
   GetFn get_ = nullptr;
   SetFn set_ = nullptr;
   DWORD pad_index_ = 0;
+  bool xslot_[4] = {false, false, false, false};
   bool rumbling_ = false, background_ = false, have_last_ = false;
 #ifdef HLE_WITH_SDL3
   SdlPads sdl_;
@@ -268,6 +348,41 @@ class Sdl3Backend final : public Backend {
 
 }  // namespace
 #endif
+
+// Diagnostics for `snap_boot pads [seconds]` (host\play.ps1 -ListPads): enumerates every device (SDL joysticks and XInput slots, printed to
+// stdout) and then, for `seconds`, prints the merged npad state whenever it changes, so a pad can be checked by pressing its buttons.
+void list_pads(int seconds) {
+#ifdef _WIN32
+  _putenv_s("SNAP_INPUT_BACKGROUND", "1");   // this console is not the game window
+  Win32Backend b;
+  std::fprintf(stdout, "pad: backend %s, SDL3 %s; monitoring %d s (press buttons)\n", b.name(),
+#ifdef HLE_WITH_SDL3
+               "built in",
+#else
+               "not built in (XInput only)",
+#endif
+               seconds);
+  std::fflush(stdout);
+  uint64_t last_buttons = ~0ull;
+  int32_t last_axes = 0;
+  ULONGLONG t0 = GetTickCount64();
+  while (GetTickCount64() - t0 < (ULONGLONG)seconds * 1000) {
+    RawInput r;
+    b.poll(r);
+    int32_t axes = (int32_t)(r.lx * 10) * 1000003 + (int32_t)(r.ly * 10) * 10007 + (int32_t)(r.rx * 10) * 101 + (int32_t)(r.ry * 10) + (int32_t)(r.lt * 4) * 7 + (int32_t)(r.rt * 4) * 13;
+    uint64_t btn = r.pad.to_ullong();
+    if (btn != last_buttons || axes != last_axes) {
+      last_buttons = btn; last_axes = axes;
+      std::fprintf(stdout, "pad: connected=%d buttons=%#llx L=(%.2f,%.2f) R=(%.2f,%.2f) LT=%.2f RT=%.2f\n", (int)r.pad_connected,
+                   (unsigned long long)btn, r.lx, r.ly, r.rx, r.ry, r.lt, r.rt);
+      std::fflush(stdout);
+    }
+    Sleep(15);
+  }
+#else
+  (void)seconds;
+#endif
+}
 
 std::unique_ptr<Backend> make_default_backend() {
 #ifdef _WIN32

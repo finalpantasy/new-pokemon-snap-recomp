@@ -38,6 +38,8 @@ struct Dummies {
   // typed fallbacks for a shader-declared dimension the bound texture cannot be viewed as (nvn_draw.cpp DummyView)
   VkImage arrImg = VK_NULL_HANDLE, img3d = VK_NULL_HANDLE, img1d = VK_NULL_HANDLE;                 // 2D x6 (cube-compatible), 3D 1x1x1, 1D x2
   VkDeviceMemory arrMem = VK_NULL_HANDLE, mem3d = VK_NULL_HANDLE, mem1d = VK_NULL_HANDLE;
+  VkImage depImg = VK_NULL_HANDLE; VkDeviceMemory depMem = VK_NULL_HANDLE; VkImageView vdep = VK_NULL_HANDLE;   // 1x1 D32F = 1.0: stand-in for a shadow-map binding the texture cannot serve
+  VkSampler cmpSampler = VK_NULL_HANDLE;                                                                      // compare (LEQUAL) sampler for it
   VkImageView v2d = VK_NULL_HANDLE, v2da = VK_NULL_HANDLE, vcube = VK_NULL_HANDLE, vcubea = VK_NULL_HANDLE, v3d = VK_NULL_HANDLE,
               v1d = VK_NULL_HANDLE, v1da = VK_NULL_HANDLE;
 };
@@ -198,18 +200,35 @@ Dummies* GetDummies(Host* h) {
     mkTyped(VK_IMAGE_TYPE_1D, {1, 1, 1}, 2, 0, &d->img1d, &d->mem1d);
     d->v1d = mkView(d->img1d, VK_IMAGE_VIEW_TYPE_1D, 1); d->v1da = mkView(d->img1d, VK_IMAGE_VIEW_TYPE_1D_ARRAY, 2);
   }
+  {
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.imageType = VK_IMAGE_TYPE_2D; ci.format = VK_FORMAT_D32_SFLOAT; ci.extent = {1, 1, 1}; ci.mipLevels = 1; ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL; ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    vkCreateImage(h->device, &ci, nullptr, &d->depImg);
+    VkMemoryRequirements mr; vkGetImageMemoryRequirements(h->device, d->depImg, &mr);
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = mr.size; mai.memoryTypeIndex = h->FindMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vkAllocateMemory(h->device, &mai, nullptr, &d->depMem);
+    vkBindImageMemory(h->device, d->depImg, d->depMem, 0);
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = d->depImg; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = ci.format; vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    vkCreateImageView(h->device, &vi, nullptr, &d->vdep);
+    VkSamplerCreateInfo cs = sci;
+    cs.compareEnable = VK_TRUE; cs.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    vkCreateSampler(h->device, &cs, nullptr, &d->cmpSampler);
+  }
   h->dummies = d;
   return d;
 }
 
-void ImgBarrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to, uint32_t layers = 1) {
+void ImgBarrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to, uint32_t layers = 1, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
   VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
   b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   b.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_2_MEMORY_WRITE_BIT;
   b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
   b.oldLayout = from; b.newLayout = to;
   b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.image = img; b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
+  b.image = img; b.subresourceRange = {aspect, 0, 1, 0, layers};
   VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &b;
   vkCmdPipelineBarrier2(cb, &di);
@@ -390,6 +409,7 @@ VkDescriptorSet AllocSet(ReplayCtx& cx, VkDescriptorSetLayout layout) {
 }
 
 struct ResolvedTex {
+  bool shadowDummy = false;   // a depth-compare binding served by the 1.0 depth stand-in
   TextureImpl* t = nullptr; VkImageView view = VK_NULL_HANDLE; VkSampler samp = VK_NULL_HANDLE;
   SubRange range{};        // subresources the view covers (what must be in the sampled layout)
   bool feedback = false;   // the same subresource is also an attachment of this draw (handled by a copy)
@@ -423,6 +443,15 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
       const SubRange a = RtRange(r.t, cx.rtHasView[i] ? &cx.rtView[i] : nullptr);
       if (!ExcludeAttachment(r.range, a)) r.feedback = true;
     }
+  }
+  if (!image && (shaderType & 0x400) && (r.t->fi->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
+    // depth-compare sampling of a color-format texture (the game binds a small R32F stand-in for "no shadow map"): Vulkan has
+    // no compare sampling on color formats, so the draw gets a 1.0 depth stand-in (everything lit)
+    static int logged = 0;
+    if (logged++ < 4) Log("shadow-compare binding on color texture %p (%dx%d, format 0x%x): using the depth stand-in", (void*)r.t, r.t->b.width, r.t->b.height, r.t->b.format);
+    r.t = nullptr;
+    r.shadowDummy = true;
+    return r;
   }
   if (!r.feedback) r.view = r.t->View(tv, !image, shaderType, &r.range);
   if (!image && d.sp) {
@@ -510,7 +539,6 @@ bool PrepareTextures(ReplayCtx& cx, DrawState& d, ProgramImpl* p, std::vector<Te
         ResolvedTex r;
         if (bi >= 0 && bi < 32 && d.texSet[s][bi]) r = ResolveHandle(cx, d, d.tex[s][bi], false, t.type);
         texWrites.push_back({t.set, t.binding, k, r, false, t.type});
-        if ((t.type & 0x400) && r.t && (r.t->fi->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) { static int dbg = 0; if (dbg++ < 4) LogError("DBG shadow-sampled color tex %p %dx%d fmt %x vk %d targetFlags %x", (void*)r.t, r.t->b.width, r.t->b.height, r.t->b.format, (int)r.t->fi->vk, r.t->b.flags); }
         if (r.t && r.view) wantLayout.push_back({r.t, SampledLayout(r.t), r.range});
       }
     }
@@ -579,8 +607,7 @@ bool WriteDescriptors(ReplayCtx& cx, DrawState& d, ProgramImpl* p, const std::ve
     for (auto& sb : sp.sb) {
       BufBind b = {dm->zero, 0, 4096};
       if (sb.slot >= 0 && sb.slot < 16 && d.ssbo[s][sb.slot].buf) b = d.ssbo[s][sb.slot];   // ordinal == NVN index (unverified)
-      if (sb.write && b.pool && DebugDrawLogActive()) DebugDrawLog("  SSBO write stage %d slot %d pool %p off 0x%llx size 0x%llx poolsize 0x%llx
-", s, sb.slot, (void*)b.pool, (unsigned long long)b.off, (unsigned long long)b.range, (unsigned long long)b.pool->size);
+      if (sb.write && b.pool && DebugDrawLogActive()) DebugDrawLog("  SSBO write stage %d slot %d pool %p off 0x%llx size 0x%llx poolsize 0x%llx\n", s, sb.slot, (void*)b.pool, (unsigned long long)b.off, (unsigned long long)b.range, (unsigned long long)b.pool->size);
       if (sb.write && b.pool) MarkGpuWritten(b.pool, b.off, b.range);   // later CPU->GPU syncs must not clobber what the shader writes
       if (sets[sb.set]) wBuf(sb.set, sb.binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b);
     }
@@ -596,8 +623,9 @@ bool WriteDescriptors(ReplayCtx& cx, DrawState& d, ProgramImpl* p, const std::ve
       if (texWrites[k].image) {
         ii.imageView = r.view ? r.view : dm->storageView; ii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
       } else {
-        ii.imageView = r.view ? r.view : DummyView(dm, texWrites[k].stype);
-        ii.sampler = r.samp ? r.samp : dm->sampler;
+        const bool shadow = (texWrites[k].stype & 0x400) != 0 && !r.view;
+        ii.imageView = r.view ? r.view : shadow ? dm->vdep : DummyView(dm, texWrites[k].stype);
+        ii.sampler = shadow ? (r.samp ? r.samp : dm->cmpSampler) : r.samp ? r.samp : dm->sampler;
         ii.imageLayout = (r.t && r.view) ? SampledLayout(r.t) : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       }
       imgInfos.push_back(ii);
@@ -700,17 +728,20 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
       PoolImpl *ip = nullptr, *vp = nullptr; uint64_t io = 0, vo = 0;
       const int s0 = (d.attr[0].v >> 9) & 15; const uint32_t o0 = d.attr[0].v >> 13;
       if (h->ResolveAddress(c.a[0], &ip, &io) && ip->storage && h->ResolveAddress(d.vbAddr[s0], &vp, &vo) && vp->storage) {
-        float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f}; int bad = 0, zero = 0; uint32_t maxIdx = 0;
-        const uint8_t* ib = static_cast<const uint8_t*>(ip->storage) + io; const uint8_t* vbp = static_cast<const uint8_t*>(vp->storage) + vo;
-        for (int k = 0; k < c.i[2]; k++) {
-          const uint32_t ix = c.i[1] == IDX_U32 ? ((const uint32_t*)ib)[k] : c.i[1] == IDX_U16 ? ((const uint16_t*)ib)[k] : ib[k];
-          maxIdx = std::max(maxIdx, ix);
-          const float* f = (const float*)(vbp + (uint64_t)ix * d.stream[s0].stride + o0);
-          if (!std::isfinite(f[0]) || !std::isfinite(f[1]) || !std::isfinite(f[2])) { bad++; continue; }
-          if (f[0] == 0 && f[1] == 0 && f[2] == 0) zero++;
-          for (int j = 0; j < 3; j++) { mn[j] = std::min(mn[j], f[j]); mx[j] = std::max(mx[j], f[j]); }
+        for (int src = 0; src < 2; src++) {   // 0: CPU view of guest memory, 1: the Vulkan mirror (what the GPU wrote)
+          if (src == 1 && !vp->mapped) break;
+          float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f}; int bad = 0, zero = 0; uint32_t maxIdx = 0;
+          const uint8_t* ib = static_cast<const uint8_t*>(ip->storage) + io; const uint8_t* vbp = (src ? vp->mapped : static_cast<const uint8_t*>(vp->storage)) + vo;
+          for (int k = 0; k < c.i[2]; k++) {
+            const uint32_t ix = c.i[1] == IDX_U32 ? ((const uint32_t*)ib)[k] : c.i[1] == IDX_U16 ? ((const uint16_t*)ib)[k] : ib[k];
+            maxIdx = std::max(maxIdx, ix);
+            const float* f = (const float*)(vbp + (uint64_t)ix * d.stream[s0].stride + o0);
+            if (!std::isfinite(f[0]) || !std::isfinite(f[1]) || !std::isfinite(f[2])) { bad++; continue; }
+            if (f[0] == 0 && f[1] == 0 && f[2] == 0) zero++;
+            for (int j = 0; j < 3; j++) { mn[j] = std::min(mn[j], f[j]); mx[j] = std::max(mx[j], f[j]); }
+          }
+          DebugDrawLog(" %s[%.2f %.2f %.2f .. %.2f %.2f %.2f bad=%d zero=%d maxIdx=%u vboff=0x%llx]", src ? "GPUPOS" : "POSBOUNDS", mn[0], mn[1], mn[2], mx[0], mx[1], mx[2], bad, zero, maxIdx, (unsigned long long)vo);
         }
-        DebugDrawLog(" POSBOUNDS[%.2f %.2f %.2f .. %.2f %.2f %.2f bad=%d zero=%d maxIdx=%u]", mn[0], mn[1], mn[2], mx[0], mx[1], mx[2], bad, zero, maxIdx);
       }
     }
     DebugDrawLog(" sbo:");
@@ -890,6 +921,9 @@ void DoMaskedClear(ReplayCtx& cx, TextureImpl* t, const TexView* tv, int mask, c
     VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     li.pushConstantRangeCount = 1; li.pPushConstantRanges = &pr;
     vkCreatePipelineLayout(h->device, &li, nullptr, &layout);
+    h->clearLayout = layout;   // freed with the host (DestroyHostExtras); the modules join the host's variant list
+    std::lock_guard<std::mutex> lk(h->pipeMutex);
+    for (VkShaderModule m : mods) h->variantMods.push_back(m);
   }
   const int kind = t->fi->kind;   // 0 float/norm, 1 uint, 2 sint
   const std::string key = "CLR" + std::to_string((int)t->fi->vk) + "_" + std::to_string(mask) + "_" + std::to_string(t->b.samples > 1 ? t->b.samples : 1);
@@ -962,6 +996,11 @@ void ReplayBegin(ReplayCtx& c) {
     vkCmdClearColorImage(c.cb, d->sampledImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &rg);
     ImgBarrier(c.cb, d->sampledImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     ImgBarrier(c.cb, d->storageImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    ImgBarrier(c.cb, d->depImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VK_IMAGE_ASPECT_DEPTH_BIT);
+    VkClearDepthStencilValue one{1.0f, 0};
+    VkImageSubresourceRange drg{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    vkCmdClearDepthStencilImage(c.cb, d->depImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &one, 1, &drg);
+    ImgBarrier(c.cb, d->depImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, VK_IMAGE_ASPECT_DEPTH_BIT);
     const struct { VkImage img; uint32_t layers; } typed[] = {{d->arrImg, 6}, {d->img3d, 1}, {d->img1d, 2}};
     for (auto& ty : typed) {
       ImgBarrier(c.cb, ty.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ty.layers);
@@ -1045,6 +1084,16 @@ void ReplayDrawOp(ReplayCtx& cx, const Cmd& c) {
       DoIndirectDraw(cx, c); break;
     case Op::Dispatch:
       if (DebugDrawLogActive()) DebugDrawLog("DISPATCH prog=%d %d %d %d cs=%s\n", d.prog ? (int)d.prog->id : -1, c.i[0], c.i[1], c.i[2], d.prog ? d.prog->st[5].key : "");
+      if (DebugDrawLogActive() && d.prog) {
+        for (auto& cb : d.prog->st[5].cb) {
+          if (cb.slot < 3 || cb.slot - 3 >= 16) continue;
+          const BufBind& ub = d.ubo[5][cb.slot - 3];
+          DebugDrawLog("   cb%d off 0x%llx range %llu:", cb.slot - 3, (unsigned long long)ub.off, (unsigned long long)ub.range);
+          if (ub.pool && ub.pool->storage) { const uint32_t* w = (const uint32_t*)((const uint8_t*)ub.pool->storage + ub.off); for (int k = 0; k < 12 && (uint64_t)k * 4 < ub.range; k++) DebugDrawLog(" %08x", w[k]); }
+          DebugDrawLog("\n");
+        }
+        for (int i = 0; i < 4; i++) if (d.ssbo[5][i].pool) DebugDrawLog("   ssbo%d off 0x%llx size 0x%llx\n", i, (unsigned long long)d.ssbo[5][i].off, (unsigned long long)d.ssbo[5][i].range);
+      }
       DoDispatch(cx, c); break;
     case Op::CopyTextureToBuffer: DoCopyTextureToBuffer(cx, c); break;
     case Op::CopyTextureToTexture: DoCopyTextureToTexture(cx, c); break;
@@ -1097,6 +1146,7 @@ void DestroyHostExtras(Host* h) {
   h->pipelines.clear();
   for (VkShaderModule m : h->variantMods) vkDestroyShaderModule(h->device, m, nullptr);
   h->variantMods.clear();
+  if (h->clearLayout) { vkDestroyPipelineLayout(h->device, h->clearLayout, nullptr); h->clearLayout = VK_NULL_HANDLE; }
   if (Dummies* d = h->dummies) {
     if (d->zero) vkDestroyBuffer(h->device, d->zero, nullptr);
     if (d->support) vkDestroyBuffer(h->device, d->support, nullptr);
@@ -1111,6 +1161,10 @@ void DestroyHostExtras(Host* h) {
     for (VkImageView v : {d->v2da, d->vcube, d->vcubea, d->v3d, d->v1d, d->v1da}) if (v) vkDestroyImageView(h->device, v, nullptr);
     for (VkImage i : {d->arrImg, d->img3d, d->img1d}) if (i) vkDestroyImage(h->device, i, nullptr);
     for (VkDeviceMemory m : {d->arrMem, d->mem3d, d->mem1d}) if (m) vkFreeMemory(h->device, m, nullptr);
+    if (d->vdep) vkDestroyImageView(h->device, d->vdep, nullptr);
+    if (d->depImg) vkDestroyImage(h->device, d->depImg, nullptr);
+    if (d->depMem) vkFreeMemory(h->device, d->depMem, nullptr);
+    if (d->cmpSampler) vkDestroySampler(h->device, d->cmpSampler, nullptr);
     if (d->sampler) vkDestroySampler(h->device, d->sampler, nullptr);
     delete d;
     h->dummies = nullptr;

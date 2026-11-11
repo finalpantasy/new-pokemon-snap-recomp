@@ -477,7 +477,7 @@ VkImageView TextureImpl::View(const TexView* v, bool sampled, int shaderType, co
   ci.subresourceRange = {asp, r.lb, r.ln, r.yb, r.yn};
   VkImageView iv = VK_NULL_HANDLE;
   if (vkCreateImageView(host->device, &ci, nullptr, &iv) != VK_SUCCESS) { LogError("vkCreateImageView failed"); return VK_NULL_HANDLE; }
-  views[key] = iv;
+  views[key] = iv; viewTypes[iv] = ci.viewType;
   return iv;
 }
 VkImageView TextureImpl::RenderView(const TexView* v, SubRange* out) {
@@ -494,7 +494,7 @@ VkImageView TextureImpl::RenderView(const TexView* v, SubRange* out) {
   ci.subresourceRange = {fi->aspect, r.lb, 1, r.yb, r.yn};
   VkImageView iv = VK_NULL_HANDLE;
   if (vkCreateImageView(host->device, &ci, nullptr, &iv) != VK_SUCCESS) { LogError("vkCreateImageView (attachment) failed"); return VK_NULL_HANDLE; }
-  views[key] = iv;
+  views[key] = iv; viewTypes[iv] = ci.viewType;
   return iv;
 }
 

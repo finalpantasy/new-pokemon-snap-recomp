@@ -129,6 +129,10 @@ class Hub {
   uint64_t last_poll_ns_ = 0;
 };
 Hub& hub();
+// Raises a game event for SNAP_INPUT_SCRIPT "anchor" lines (no effect without a script).
+void script_event(const char* name);
+// Prints every pad device and then the live pad state for `seconds` (snap_boot pads).
+void list_pads(int seconds);
 
 // Writes the default mapping JSON (used on first run and by the tests); returns false on I/O error.
 bool write_default_mapping(const std::string& path);

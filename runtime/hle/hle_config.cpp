@@ -105,6 +105,7 @@ bool load_config(const std::string& path_in) {
   }
   if (const char* e = std::getenv("SNAP_ROMFS")) if (*e) c.romfs_root = e;
   if (const char* e = std::getenv("SNAP_SAVE_ROOT")) if (*e) c.save_root = e;
+  if (const char* e = std::getenv("SNAP_SAVE_DIR")) if (*e) c.save_root = e;   // wins over SNAP_SAVE_ROOT; default %APPDATA%\SnapRecomp\save
   if (const char* e = std::getenv("SNAP_HLE_HEADLESS")) if (*e && *e != '0') c.headless = true;
   g_cfg_init = false;
   apply_defaults();

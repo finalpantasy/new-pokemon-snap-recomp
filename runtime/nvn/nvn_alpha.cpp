@@ -288,4 +288,18 @@ bool PatchFragmentOutputs(const std::vector<uint32_t>& in, int nColor, bool dual
   return true;
 }
 
+// The translator cannot know a compute shader's workgroup size (it lives in the NVN control section), so the module is
+// emitted with LocalSize 1 1 1; the shader indexes everything through the invocation / workgroup ids, so setting the real
+// size here is all it takes. Returns false when the module has no LocalSize execution mode.
+bool SpvSetLocalSize(std::vector<uint32_t>& spv, uint32_t x, uint32_t y, uint32_t z) {
+  if (spv.size() < 6 || spv[0] != 0x07230203) return false;
+  for (size_t i = 5; i < spv.size();) {
+    const uint32_t wc = spv[i] >> 16, op = spv[i] & 0xFFFF;
+    if (!wc || i + wc > spv.size()) return false;
+    if (op == 16 && wc >= 6 && spv[i + 2] == 17) { spv[i + 3] = x; spv[i + 4] = y; spv[i + 5] = z; return true; }   // OpExecutionMode ... LocalSize
+    i += wc;
+  }
+  return false;
+}
+
 }  // namespace nvn

@@ -146,6 +146,9 @@ struct PoolImpl {
   VkBuffer buffer = VK_NULL_HANDLE;
   VkDeviceMemory memory = VK_NULL_HANDLE;
   uint8_t* mapped = nullptr;
+  // Byte ranges the GPU writes (storage-buffer outputs, e.g. skinning compute). SyncPoolRange skips them: the CPU copy is stale there.
+  std::mutex gpuMutex;
+  std::vector<std::pair<uint64_t, uint64_t>> gpuRanges;   // [begin, end)
   bool Cpu() const { return !(flags & MP_CPU_NO_ACCESS); }
 };
 bool EnsureBacking(PoolImpl* p);
@@ -173,6 +176,8 @@ struct TextureImpl {
   bool uploaded = false;   // contents defined (static data uploaded, copied to, or rendered to)
   uint64_t srcHash = 0, hashSeq = 0;   // CPU-written (linear) pool textures: hash of the guest bytes at the last upload, replay that checked it
   std::unordered_map<std::string, VkImageView> views;   // see TextureImpl::View
+  std::unordered_map<VkImageView, VkImageViewType> viewTypes;   // the type each cached view was created with (tests, diagnostics)
+  VkImageViewType ViewTypeOf(VkImageView v) const { auto it = viewTypes.find(v); return it == viewTypes.end() ? VK_IMAGE_VIEW_TYPE_MAX_ENUM : it->second; }
   // Per-subresource layouts. `layout` is the layout of every subresource while subLayout is empty; after a ranged transition
   // subLayout holds one entry per (layer * imgLevels + level) and `layout` is meaningless until it collapses again.
   std::vector<VkImageLayout> subLayout;
@@ -227,6 +232,7 @@ struct ProgramImpl {
   VkPipelineLayout layout = VK_NULL_HANDLE;
 };
 bool PatchAlphaTest(const std::vector<uint32_t>& in, int func, std::vector<uint32_t>& out);   // nvn_alpha.cpp
+bool SpvSetLocalSize(std::vector<uint32_t>& spv, uint32_t x, uint32_t y, uint32_t z);   // compute workgroup size from the NVN control section
 bool SpvAddStorageImageCaps(std::vector<uint32_t>& spv);                  // nvn_alpha.cpp: SPIR-V fixes for the translated modules
 uint32_t SpvVertexInputMask(const std::vector<uint32_t>& in);
 std::vector<int> SpvFragmentOutputs(const std::vector<uint32_t>& in);
@@ -345,6 +351,7 @@ struct Host {
   uint64_t nextProgramId = 1;
   std::mutex compMutex;                       // composite programs (ProgramResolve), keyed by the source program id per stage
   std::map<std::array<uint64_t, 6>, ProgramImpl*> composites;
+  VkPipelineLayout clearLayout = VK_NULL_HANDLE;   // masked-clear pipeline layout
   std::vector<VkShaderModule> variantMods;    // patched fragment modules (alpha test / output rewrite); freed at shutdown, guarded by pipeMutex
   struct Dummies* dummies = nullptr;          // fallback resources for unbound descriptors (nvn_draw.cpp)
   // queries (nvn_xfer.cpp): timestamps and samples-passed counters

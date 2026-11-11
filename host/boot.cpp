@@ -20,6 +20,7 @@
 #include "os/os.h"
 #include "hle/hle.h"
 #include "hle/hle_config.h"
+#include "hle/input_core.h"
 #include "audio/audio_out.h"
 #include "nvn/nvn_host.h"
 
@@ -732,6 +733,10 @@ int main(int argc, char **argv) {
         else if (a == "--stub" && i + 1 < argc) g_o.stubs.push_back(argv[++i]);
         else if (!g_o.cmd.empty()) g_o.arg = a;
         else g_o.cmd = a;
+    }
+    if (g_o.cmd == "pads") {   // device list and live pad monitor, no game: snap_boot pads [seconds]
+        hle::input::list_pads(g_o.arg.empty() ? 10 : atoi(g_o.arg.c_str()));
+        return 0;
     }
     if (g_o.cmd.empty()) { fprintf(stderr, "usage: snap_boot [--main elf] [--sdk elf] info|shared|init [--probe N] [--libc]|run [--probe N] [--trace file] [--timeout s] [--stop-after-init]|eh|lua|bench [--iters N]|all\n"); return 2; }
     // guest calls are host calls: run on a thread with a large host stack
