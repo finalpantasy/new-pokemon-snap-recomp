@@ -168,16 +168,19 @@ class Win32Backend final : public Backend {
     background_ = bg && *bg && *bg != '0';
   }
   ~Win32Backend() override {
+    if (clipped_) ClipCursor(nullptr);
     if (set_ && rumbling_) { XVibration v{0, 0}; set_(pad_index_, &v); }
     if (xinput_) FreeLibrary(xinput_);
   }
   const char* name() const override { return "win32"; }
+  void set_cursor_mode(bool lock, bool recenter) override { lock_ = lock; recenter_ = recenter; }
 
   void poll(RawInput& out) override {
     HWND fg = GetForegroundWindow();
     DWORD pid = 0;
     if (fg) GetWindowThreadProcessId(fg, &pid);
-    out.focused = background_ || (fg && pid == GetCurrentProcessId());
+    const bool fg_ours = fg && pid == GetCurrentProcessId();   // the cursor policy only ever acts on our own foreground window
+    out.focused = background_ || fg_ours;
     // Pads: every SDL gamepad and every XInput slot, merged. XInput is always read as well (not only as a fallback), so a pad SDL
     // lists as an unmapped joystick or fails to open still works through its XInput interface.
 #ifdef HLE_WITH_SDL3
@@ -223,16 +226,36 @@ class Win32Backend final : public Backend {
           out.mouse_in_window = c.x >= 0 && c.y >= 0 && c.x < rc.right && c.y < rc.bottom;
           out.mouse_x = (float)c.x / (float)rc.right;
           out.mouse_y = (float)c.y / (float)rc.bottom;
+          // cursor policy: confine to the client area while locked; mouse-look re-centers it after every read
+          POINT tl{0, 0}, br{rc.right, rc.bottom};
+          ClientToScreen(fg, &tl); ClientToScreen(fg, &br);
+          if (lock_ && fg_ours) {
+            RECT clip{tl.x, tl.y, br.x, br.y};
+            if (!clipped_ || memcmp(&clip, &clip_, sizeof clip) != 0) { ClipCursor(&clip); clip_ = clip; clipped_ = true; }
+          } else if (clipped_) { ClipCursor(nullptr); clipped_ = false; }
+          if (recenter_ && fg_ours) {
+            POINT mid{(tl.x + br.x) / 2, (tl.y + br.y) / 2};
+            if (have_last_ && was_recenter_) { out.mouse_dx = (float)(p.x - mid.x); out.mouse_dy = (float)(p.y - mid.y); }
+            SetCursorPos(mid.x, mid.y);
+            last_ = mid;
+            have_last_ = true;
+            was_recenter_ = true;
+          } else {
+            was_recenter_ = false;
+            if (have_last_) { out.mouse_dx = (float)(p.x - last_.x); out.mouse_dy = (float)(p.y - last_.y); }
+            last_ = p;
+            have_last_ = true;
+          }
         }
-        if (have_last_) { out.mouse_dx = (float)(p.x - last_.x); out.mouse_dy = (float)(p.y - last_.y); }
-        last_ = p;
-        have_last_ = true;
       }
       if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) out.mouse_buttons |= 1;
       if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) out.mouse_buttons |= 2;
       if (GetAsyncKeyState(VK_MBUTTON) & 0x8000) out.mouse_buttons |= 4;
+      if (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) out.mouse_buttons |= 8;
+      if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) out.mouse_buttons |= 16;
     } else {
       have_last_ = false;
+      if (clipped_) { ClipCursor(nullptr); clipped_ = false; }   // window lost the focus: free the cursor
     }
   }
 
@@ -253,6 +276,8 @@ class Win32Backend final : public Backend {
   DWORD pad_index_ = 0;
   bool xslot_[4] = {false, false, false, false};
   bool rumbling_ = false, background_ = false, have_last_ = false;
+  bool lock_ = false, recenter_ = false, clipped_ = false, was_recenter_ = false;
+  RECT clip_{};
 #ifdef HLE_WITH_SDL3
   SdlPads sdl_;
 #endif

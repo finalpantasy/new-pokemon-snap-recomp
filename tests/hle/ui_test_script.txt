@@ -1,0 +1,28 @@
+# Scripted controls-menu test (SNAP_UI_TEST). Times are seconds after the first present. See runtime/ui/ui_test.cpp.
+25 expect_open 0
+26 key F1
+28 expect_open 1
+29 tab Bindings
+30 rebind A kb 0
+31 expect_rebinding 1
+32 press key:P 1.0
+35 expect_rebinding 0
+35.5 expect_bind A kb 0 key:P
+36 press key:P 1.0
+37 expect_preview A 1
+37.2 expect_button A 0
+39 rebind B kb 1
+40 press key:Space 1.0
+43 expect_bind B kb 1 key:Space
+44 key F1
+46 expect_open 0
+47 press key:P 1.5
+48 expect_button A 1
+50 press key:L 1.0
+51 expect_button A 0
+53 key F1
+55 expect_open 1
+56 tab Bindings
+58 shot build/testconfig/menu.bmp
+62 save
+63 quit

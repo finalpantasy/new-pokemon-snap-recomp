@@ -10,8 +10,17 @@
 #include <cstring>
 
 #include "nvn_internal.h"
+#include "os/perf.h"   // SNAP_PERF instrumentation (off unless the env var is set)
+#include "ui/ui_present.h"   // controls overlay hook (runtime/ui); the stub below keeps nvn-only builds linking
+extern "C" void snap_ui_present_none(const SnapUiFrame*) {}
+#pragma comment(linker, "/alternatename:snap_ui_present=snap_ui_present_none")
 
 namespace nvn {
+
+int PerfGpuBegin(Host* h, VkCommandBuffer cb);   // nvn_perf.cpp (SNAP_PERF only)
+void PerfGpuEnd(Host* h, VkCommandBuffer cb, int slot);
+void PerfGpuSubmitted(int slot, uint64_t value);
+void PerfFrameMark(QueueImpl* q, uint64_t presentNo);
 
 Host* g_host = nullptr;
 std::atomic<uint32_t> g_valErrors{0}, g_valWarnings{0};
@@ -576,6 +585,8 @@ void SyncPoolRange(PoolImpl* p, uint64_t off, uint64_t size) {
   if (!p->buffer && !EnsureBacking(p)) return;
   if (!p->mapped) return;
   size = std::min<uint64_t>(size, p->size - off);
+  snap_perf::Scope perfScope(snap_perf::C_POOLSYNC);
+  snap_perf::count(snap_perf::V_POOLSYNC_CALLS); snap_perf::count(snap_perf::V_POOLSYNC_BYTES, size);
   uint64_t pos = off;
   const uint64_t end = off + size;
   std::lock_guard<std::mutex> lk(p->gpuMutex);
@@ -657,6 +668,7 @@ VkCommandBuffer QueueImpl::AcquireCb() {
   return cb;
 }
 void QueueImpl::Reap(bool wait_all) {
+  snap_perf::Scope perfScope(snap_perf::C_REAP);
   if (wait_all && value) {
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wi.semaphoreCount = 1; wi.pSemaphores = &timeline; wi.pValues = &value;
@@ -688,6 +700,7 @@ static VkAccessFlags2 AccessFor(VkImageLayout l) {
 
 uint8_t* NewScratch(ReplayCtx& cx, uint64_t size, VkBuffer* out, VkBufferUsageFlags extra) {
   Host* h = cx.h;
+  snap_perf::Scope perfScope(snap_perf::C_SCRATCH); snap_perf::count(snap_perf::V_SCRATCH_ALLOCS);
   VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   bi.size = std::max<uint64_t>(size, 16); bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | extra;
   ScratchBuf sb;
@@ -889,6 +902,7 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
   std::vector<VkCommandBufferSubmitInfo> infos;
   std::vector<Retired> pending;
   std::vector<Readback> readbacksOut;
+  std::vector<int> perfSlots;
   for (int k = 0; k < n; k++) {
     CmdList* l = lists[k];
     if (!l) continue;
@@ -897,6 +911,8 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cb, &bi);
+    const int perfSlot = snap_perf::on ? PerfGpuBegin(h, cb) : -1;
+    perfSlots.push_back(perfSlot);
     ReplayCtx cx;
     cx.h = h; cx.cb = cb; cx.q = q;
     std::vector<VkDescriptorPool> pools;
@@ -905,7 +921,8 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
     cx.scratch = &scratch;
     std::vector<Readback> rbs;
     cx.readbacks = &rbs;
-    Replay(cx, *l);
+    { snap_perf::Scope perfScope(snap_perf::C_REPLAY); snap_perf::count(snap_perf::V_CMDS, l->cmds.size()); Replay(cx, *l); }
+    if (perfSlot >= 0) PerfGpuEnd(h, cb, perfSlot);
     vkEndCommandBuffer(cb);
     VkCommandBufferSubmitInfo ci{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
     ci.commandBuffer = cb;
@@ -920,7 +937,8 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
   VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
   si.commandBufferInfoCount = (uint32_t)infos.size(); si.pCommandBufferInfos = infos.data();
   si.signalSemaphoreInfoCount = 1; si.pSignalSemaphoreInfos = &sig;
-  VKCHK(vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE));
+  { snap_perf::Scope perfScope(snap_perf::C_QSUBMIT); snap_perf::count(snap_perf::V_SUBMITS); VKCHK(vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE)); }
+  for (int ps : perfSlots) PerfGpuSubmitted(ps, v);
   for (auto& r : pending) { r.value = v; q->inflight.push_back(r); }
   if (!readbacksOut.empty()) {
     std::lock_guard<std::mutex> rl(h->rbMutex);
@@ -941,12 +959,14 @@ void QueueFence(QueueImpl* q, SyncImpl* s) {
 }
 
 void QueueFinishImpl(QueueImpl* q) {
+  snap_perf::Scope perfScope(snap_perf::C_FINISH);
   { std::lock_guard<std::mutex> lk(q->host->queueMutex); q->Reap(true); }
   FlushReadbacks(q->host, false);
 }
 
 static SyncWaitResult WaitSyncRaw(const SyncImpl* s, uint64_t timeoutNs);
 SyncWaitResult WaitSync(const SyncImpl* s, uint64_t timeoutNs) {
+  snap_perf::Scope perfScope(snap_perf::C_WAITSYNC);
   SyncWaitResult r = WaitSyncRaw(s, timeoutNs);
   if (s->armed) FlushReadbacks(s->host, false);
   return r;
@@ -1009,7 +1029,7 @@ bool WindowImpl::Recreate() {
   ci.imageColorSpace = pick.colorSpace;
   ci.imageExtent = ext;
   ci.imageArrayLayers = 1;
-  ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);   // color attachment: overlay
   ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   ci.preTransform = caps.currentTransform;
   ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -1144,6 +1164,7 @@ bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
   const bool same = (sw == dw && sh == dh);
   vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                  same ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+  { SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, dst, w->scFormat, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd}; snap_ui_present(&uf); }   // overlay: image stays TRANSFER_DST
   imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
   vkEndCommandBuffer(cb);
 

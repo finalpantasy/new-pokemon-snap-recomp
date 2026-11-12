@@ -32,6 +32,13 @@ std::string default_data_root() {
 #endif
 }
 
+std::string default_input_path() {
+  const char* d = std::getenv("SNAP_CONFIG_DIR");
+  if (d && *d) return join(d, "input.json");
+  return join(g_cfg.data_root.empty() ? default_data_root() : g_cfg.data_root, "input.json");
+}
+std::string legacy_input_path() { return join(join(g_cfg.data_root.empty() ? default_data_root() : g_cfg.data_root, "config"), "input_map.json"); }
+
 std::string uid_dir_name(const uint64_t uid[2]) {
   char b[40];
   std::snprintf(b, sizeof b, "%016llx%016llx", (unsigned long long)uid[0], (unsigned long long)uid[1]);
@@ -42,7 +49,7 @@ void apply_defaults() {
   Config& c = g_cfg;
   if (c.data_root.empty()) c.data_root = default_data_root();
   if (c.save_root.empty()) c.save_root = join(c.data_root, "save");
-  if (c.input_map_path.empty()) c.input_map_path = join(join(c.data_root, "config"), "input_map.json");
+  if (c.input_map_path.empty()) c.input_map_path = default_input_path();
   if (c.screenshot_dir.empty()) c.screenshot_dir = join(c.data_root, "screenshots");
   g_cfg_init = true;
 }

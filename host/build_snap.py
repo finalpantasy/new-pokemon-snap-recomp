@@ -61,10 +61,15 @@ def main():
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'os').glob('*.cpp'))]
     for d in ('hle', 'audio', 'nvn'):
         srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / d).glob('*.cpp'))]
+    # in-game controls overlay (runtime/ui): our files plus the vendored Dear ImGui core and its Vulkan / Win32 backends
+    srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'ui').glob('*.cpp'))]
+    imgui = ROOT / 'runtime' / 'ui' / 'third_party' / 'imgui'
+    srcs += [(imgui / f, 17) for f in ('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_vulkan.cpp', 'imgui_impl_win32.cpp')]
     # audio: one backend file is the null sink fallback, the others real; all are part of the runtime target
     srcs += [(ROOT / 'generated' / 'boot' / 'nvn_bridge.cpp', 20), (ROOT / 'generated' / 'unimplemented.cpp', 20)]
     cflags = ['-O2', '-march=x86-64-v3', '-fno-strict-aliasing', '-w', '-D_CRT_SECURE_NO_WARNINGS', '-DNOMINMAX', '-g',
               '-I', str(ROOT / 'runtime'), '-I', str(ROOT / 'host'), '-I', str(ROOT / 'runtime' / 'nvn'), '-I', str(VK / 'Include'),
+              '-I', str(ROOT / 'runtime' / 'ui'), '-I', str(ROOT / 'runtime' / 'ui' / 'third_party' / 'imgui'),
               '-DNVN_HARNESS_DLL="' + (ROOT / 'tools' / 'shader_harness' / 'bin' / 'Release' / 'net10.0' / 'ShaderHarness.dll').as_posix() + '"']
     # Gamepads through SDL3 when the SDK is unpacked under tools/dl_sdl3 (the DLL is copied next to the exe); XInput otherwise.
     sdl = ROOT / 'tools' / 'dl_sdl3' / 'x' / 'SDL3-3.4.20'
@@ -97,7 +102,7 @@ def main():
         print(f'{fail} compile failures')
         return 1
     exe = out / f'{args.name}.exe'
-    libs = [args.main_lib, args.sdk_lib, str(VK / 'Lib' / 'vulkan-1.lib'), '-luser32', '-lgdi32', '-lbcrypt', '-lole32', '-lavrt', '-lshell32', '-ladvapi32', '-lwinmm', '-loleaut32', '-ldbghelp']
+    libs = [args.main_lib, args.sdk_lib, str(VK / 'Lib' / 'vulkan-1.lib'), '-luser32', '-lgdi32', '-lbcrypt', '-lole32', '-lavrt', '-lshell32', '-ladvapi32', '-lwinmm', '-loleaut32', '-ldbghelp', '-ldwmapi']
     if sdl_ok:
         libs.append(str(sdl / 'lib' / 'x64' / 'SDL3.lib'))
         shutil.copyfile(sdl / 'lib' / 'x64' / 'SDL3.dll', out / 'SDL3.dll')

@@ -46,8 +46,27 @@ Saves: the player's save is `%APPDATA%\SnapRecomp\save` (`SNAP_SAVE_DIR` overrid
 appearance, name) when "Are you ready to start?" is confirmed; a later launch skips those screens and goes straight to the opening cutscene. No
 later write was seen up to the first tutorial step, so the opening cutscene and tutorial replay until the game saves its progress.
 
-Default controls (editable in `%APPDATA%\SnapRecomp\config\input_map.json`, written on first run). Buttons use the Switch layout by
-position, so on an Xbox pad Switch A is the right face button (Xbox B) and Switch B is the bottom one (Xbox A).
+## Controls menu (F1)
+
+F1, or holding Back/View + Start on a controller for 0.5 s, opens the in-game controls menu (Dear ImGui overlay, native resolution); the same
+keys close it (Esc closes too). While it is open the game sees no input. Keyboard and mouse drive it, and every controller the game accepts drives
+it through ImGui gamepad navigation (D-pad or left stick moves, south button activates).
+
+- **Bindings tab:** every Switch input (A B X Y L R ZL ZR + - D-pad, stick clicks, the four directions of each stick) with two slots each for
+  Keyboard, Mouse (buttons, X1/X2, wheel up/down) and Controller (buttons, triggers, stick directions). Click a slot, then press the input; Esc cancels,
+  Delete or right-click clears. Conflicts are marked with `!` and allowed. Per-device "Reset to defaults" buttons.
+- **Mouse tab:** mouse look (right stick) with sensitivity, invert X/Y and smoothing (off by default), touch screen on the left button, cursor lock
+  (the cursor is confined to the window while playing; released while the menu is open and when the window loses focus).
+- **Controller tab:** face layout (by position, default, or Nintendo labels), swap sticks, inner and outer dead zone and invert Y per stick, ZL/ZR
+  thresholds, live stick plots.
+- **Accessibility tab:** toggle-or-hold for ZL and ZR, UI scale.  **Test input tab:** live readout of what npad 0 would report.
+- Settings apply live and are saved atomically to `%APPDATA%\SnapRecomp\input.json` (`SNAP_CONFIG_DIR` overrides the folder). An invalid file is kept as
+  `input.json.invalid`, defaults are used and a notice shows on screen. The old `config\input_map.json` is migrated once.
+- Test: `tests\hleun_tests.ps1` (binding resolution, JSON round trip, migration, capture) and `tests\hleun_ui_test.ps1` (boots the game, posts F1,
+  rebinds a key, checks the npad; `SNAP_UI_TEST=<script>`).
+
+Default controls (before any edit). Buttons use the Switch layout by position, so on an Xbox pad Switch A is the right face button (Xbox B) and
+Switch B is the bottom one (Xbox A); the Controller tab can switch to Nintendo labels.
 
 | Switch | Gamepad (XInput or SDL3: Xbox, PlayStation, Switch Pro) | Keyboard |
 |---|---|---|

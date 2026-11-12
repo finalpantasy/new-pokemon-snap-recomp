@@ -27,7 +27,7 @@ struct Config {
   bool docked = true;                                  // nn::oe::GetOperationMode: Console
   std::string display_version = "2.0.1";
   bool headless = false;                               // nn::err::Show* only logs (tests, CI); env SNAP_HLE_HEADLESS=1
-  std::string input_map_path;                          // default <data_root>\config\input_map.json
+  std::string input_map_path;                          // default %SNAP_CONFIG_DIR% or <data_root>, file input.json
   std::string screenshot_dir;                          // nn::album::SaveScreenshot; default <data_root>\screenshots
   int controller_style = 0;                            // 0 Pro Controller (FullKey, id No1), 1 Handheld (id 0x20)
 };
@@ -38,6 +38,8 @@ Config& config();                                      // process-wide, filled b
 bool load_config(const std::string& path = "");
 void apply_defaults();                                 // derived paths from data_root; called by load_config
 std::string default_data_root();                       // %APPDATA%\SnapRecomp (HOME/.local/share/SnapRecomp elsewhere)
+std::string default_input_path();                      // %SNAP_CONFIG_DIR%\input.json, else <data_root>\input.json
+std::string legacy_input_path();                       // <data_root>\config\input_map.json (version 1, migrated on first load)
 std::string uid_dir_name(const uint64_t uid[2]);       // 32 lowercase hex digits
 
 }  // namespace hle

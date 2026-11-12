@@ -378,7 +378,7 @@ static void snap_capture_window(HWND h) {
     static const char *at = getenv("SNAP_SHOT_AT");
     static ULONGLONG t0 = GetTickCount64();
     static int done;
-    if (!path || done >= 6 || (GetTickCount64() - t0) < (ULONGLONG)((at ? atoi(at) : 10) + done * (getenv("SNAP_SHOT_EVERY") ? atoi(getenv("SNAP_SHOT_EVERY")) : 10)) * 1000) return;
+    if (!path || done >= (getenv("SNAP_SHOT_MAX") ? atoi(getenv("SNAP_SHOT_MAX")) : 6) || (GetTickCount64() - t0) < (ULONGLONG)((at ? atoi(at) : 10) + done * (getenv("SNAP_SHOT_EVERY") ? atoi(getenv("SNAP_SHOT_EVERY")) : 10)) * 1000) return;
     char pathn[512]; snprintf(pathn, sizeof pathn, "%s.%d.bmp", path, done++);
     SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     UpdateWindow(h);

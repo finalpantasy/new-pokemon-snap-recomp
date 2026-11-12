@@ -33,11 +33,10 @@ uint32_t active_style() { return config().controller_style == 1 ? kStyleHandheld
 void ensure_init() {
   if (g_hid.inited) return;
   g_hid.inited = true;
-  std::string err;
-  if (!input::hub().load_mapping(config().input_map_path, &err)) {
-    log("hid: %s; using the built-in default mapping", err.c_str());
-    input::hub().set_mapping(input::Mapping::defaults());
-  }
+  // input.json (version 2); the version 1 input_map.json is migrated once. An invalid file falls back to the defaults and
+  // leaves a message for the controls menu (Hub::message).
+  const std::string legacy = config().input_map_path == default_input_path() ? legacy_input_path() : std::string();
+  input::hub().load_config(config().input_map_path, legacy);
 }
 
 void write_npad_state(void* dst, uint32_t id, uint32_t style) {

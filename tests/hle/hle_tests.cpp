@@ -4,6 +4,7 @@
 //   fs    : RomFS reads checked against SHA-256 in analysis/romfs/files.tsv, layered overlay, result codes
 //   save  : write / commit / reload, crash mid-write, crash at every commit stage, backups and restore
 //   hid   : fake gamepad / keyboard / mouse through the JSON mapping into Npad and touch states
+//   input : binding resolution, slot editing, input.json round trip / migration / invalid fallback, capture, toggle, suppression
 //   misc  : registry, account, oe, settings, time, album PNG, unimplemented backstop
 // Usage: hle_tests [project_root]   (default: three levels above this file)
 #include <chrono>
@@ -669,6 +670,447 @@ static void test_hid() {
   hub().set_backend(nullptr);
 }
 
+
+// ---- input mapping: binding resolution, slot editing, JSON round trip and migration, capture, toggle, suppression
+static input::PadSample mapped(const input::Mapping& m, const input::RawInput& r) { return input::map_pad(m, r); }
+static uint64_t bit(int b) { return 1ull << b; }
+static input::Source SRC(const char* t) { input::Source s; bool ok = input::parse_source(t, &s); (void)ok; return s; }
+
+static void test_input_mapping() {
+  g_test = "input.mapping";
+  using namespace input;
+  Mapping m = Mapping::defaults();
+  RawInput r;
+  r.pad_connected = true;
+
+  // --- binding resolution: every device drives the same Switch button
+  r.keys.set((size_t)key_from_name("L"));
+  CHECK(mapped(m, r).buttons & bit(kA));
+  r = RawInput{}; r.pad.set(kPadEast);
+  CHECK(mapped(m, r).buttons & bit(kA));
+  // mouse buttons and the wheel can be bound to any button
+  slot_set(m.buttons[kX], kDevMouse, 0, SRC("mouse:right"));
+  slot_set(m.buttons[kY], kDevMouse, 0, SRC("mouse:wheel_up"));
+  slot_set(m.buttons[kB], kDevMouse, 0, SRC("mouse:x1"));
+  r = RawInput{}; r.mouse_buttons = 1u << kMouseRight;
+  CHECK(mapped(m, r).buttons & bit(kX));
+  r.mouse_buttons = 1u << kMouseWheelUp;
+  CHECK(mapped(m, r).buttons & bit(kY));
+  CHECK(!(mapped(m, r).buttons & bit(kX)));
+  r.mouse_buttons = 1u << kMouseX1;
+  CHECK(mapped(m, r).buttons & bit(kB));
+  r.focused = false;   // keyboard and mouse bindings are released without the focus
+  CHECK(!(mapped(m, r).buttons & bit(kB)));
+  // a controller axis (stick direction, trigger) as a button source
+  slot_set(m.buttons[kPlus], kDevController, 1, SRC("pad:rstick_up"));
+  r = RawInput{}; r.pad_connected = true; r.ry = 0.8f;
+  CHECK(mapped(m, r).buttons & bit(kPlus));
+  r.ry = 0.2f;
+  CHECK(!(mapped(m, r).buttons & bit(kPlus)));
+
+  // --- face layout: by position (default) and Nintendo by label
+  m = Mapping::defaults();
+  r = RawInput{}; r.pad.set(kPadSouth);
+  CHECK(mapped(m, r).buttons & bit(kB));
+  set_face_layout(m, 1);
+  CHECK_EQ(m.face_layout, 1);
+  CHECK(mapped(m, r).buttons & bit(kA));     // Xbox A = Switch A
+  CHECK(!(mapped(m, r).buttons & bit(kB)));
+  r = RawInput{}; r.pad.set(kPadNorth);
+  CHECK(mapped(m, r).buttons & bit(kY));     // Xbox Y = Switch Y
+  set_face_layout(m, 0);
+  CHECK(mapped(m, r).buttons & bit(kX));
+  r = RawInput{}; r.pad.set(kPadSouth);
+  CHECK(mapped(m, r).buttons & bit(kB));
+
+  // --- trigger thresholds are per trigger
+  m = Mapping::defaults();
+  m.zl_threshold = 0.2f; m.zr_threshold = 0.9f;
+  r = RawInput{}; r.pad_connected = true; r.lt = 0.3f; r.rt = 0.5f;
+  CHECK(mapped(m, r).buttons & bit(kZL));
+  CHECK(!(mapped(m, r).buttons & bit(kZR)));
+  r.rt = 0.95f;
+  CHECK(mapped(m, r).buttons & bit(kZR));
+
+  // --- sticks: inner and outer dead zone, invert Y, swap
+  m = Mapping::defaults();
+  m.left.deadzone = 0.2f; m.left.outer_deadzone = 0.8f;
+  r = RawInput{}; r.pad_connected = true; r.lx = 0.15f;
+  CHECK_EQ(mapped(m, r).lx, 0);                      // inside the inner dead zone
+  r.lx = 0.5f;
+  CHECK(mapped(m, r).lx > 15000 && mapped(m, r).lx < 18000);   // (0.5-0.2)/(0.8-0.2) = 0.5
+  r.lx = 0.85f;
+  CHECK_EQ(mapped(m, r).lx, kStickMax);              // past the outer dead zone: full deflection
+  m = Mapping::defaults();
+  m.left.invert_y = true;
+  r = RawInput{}; r.pad_connected = true; r.ly = 1.0f;
+  CHECK(mapped(m, r).ly < -30000);
+  CHECK(mapped(m, r).ry == 0);
+  m = Mapping::defaults();
+  m.swap_sticks = true;
+  r = RawInput{}; r.pad_connected = true; r.lx = 1.0f; r.ry = -1.0f;
+  PadSample p = mapped(m, r);
+  CHECK(p.lx == 0 && p.rx > 30000 && p.ry == 0 && p.ly < -30000);   // physical left drives the right stick and the other way round
+  m = Mapping::defaults();
+  m.left.analog = "none";
+  r = RawInput{}; r.pad_connected = true; r.lx = 1.0f;
+  CHECK_EQ(mapped(m, r).lx, 0);
+
+  // --- keyboard stick directions are rebindable
+  m = Mapping::defaults();
+  slot_set(m.right.up, kDevKeyboard, 0, SRC("key:Numpad8"));   // replaces the Up arrow in slot 0
+  r = RawInput{}; r.keys.set((size_t)key_from_name("Numpad8"));
+  CHECK(mapped(m, r).ry > 30000);
+  r = RawInput{}; r.keys.set((size_t)key_from_name("Up"));
+  CHECK_EQ(mapped(m, r).ry, 0);
+
+  // --- mouse-look: velocity drives the right stick, invert, off by default, disables mouse touch
+  m = Mapping::defaults();
+  CHECK(!m.mouse_look);
+  r = RawInput{}; r.mouse_vx = 3000;
+  CHECK_EQ(mapped(m, r).rx, 0);
+  m.mouse_look = true;
+  r.mouse_vx = kMouseLookFullPxPerSec / 2; r.mouse_vy = -kMouseLookFullPxPerSec / 4;   // right and up
+  p = mapped(m, r);
+  CHECK(p.rx > 15000 && p.rx < 17500);
+  CHECK(p.ry > 7500 && p.ry < 9000);
+  m.mouse_invert_y = true; m.mouse_invert_x = true;
+  p = mapped(m, r);
+  CHECK(p.rx < -15000 && p.ry < -7500);
+  m.mouse_invert_x = m.mouse_invert_y = false;
+  m.mouse_sensitivity = 2.0f;
+  r.mouse_vx = kMouseLookFullPxPerSec; r.mouse_vy = 0;
+  CHECK(mapped(m, r).rx > 30000);                    // saturates
+  r = RawInput{}; r.mouse_in_window = true; r.mouse_buttons = 1; r.mouse_x = r.mouse_y = 0.5f;
+  CHECK_EQ(map_touch(m, r).count, 0);                // mouse-look owns the mouse
+  m.mouse_look = false;
+  CHECK_EQ(map_touch(m, r).count, 1);
+
+  // --- slots: two per device, replacement, clear, duplicates, wrong device
+  std::vector<Source> v;
+  CHECK(slot_set(v, kDevKeyboard, 0, SRC("key:W")));
+  CHECK(slot_set(v, kDevKeyboard, 1, SRC("key:Up")));
+  CHECK(slot_set(v, kDevController, 0, SRC("pad:south")));
+  CHECK(!slot_set(v, kDevMouse, 0, SRC("key:Q")));    // a key cannot go in a mouse slot
+  CHECK(!slot_set(v, kDevKeyboard, 2, SRC("key:Q"))); // only two slots
+  CHECK_EQ(slot_count(v, kDevKeyboard), 2);
+  CHECK(slot_get(v, kDevKeyboard, 1) == SRC("key:Up"));
+  CHECK(slot_get(v, kDevController, 0) == SRC("pad:south"));
+  CHECK(slot_get(v, kDevMouse, 0).kind == Source::None);
+  CHECK(slot_set(v, kDevKeyboard, 0, SRC("key:S")));  // replace slot 0
+  CHECK(slot_get(v, kDevKeyboard, 0) == SRC("key:S") && slot_get(v, kDevKeyboard, 1) == SRC("key:Up"));
+  CHECK(slot_set(v, kDevKeyboard, 1, SRC("key:S")));  // same key in the other slot: the old copy goes
+  CHECK_EQ(slot_count(v, kDevKeyboard), 1);
+  CHECK(slot_get(v, kDevKeyboard, 0) == SRC("key:S"));
+  slot_clear(v, kDevKeyboard, 0);
+  CHECK_EQ(slot_count(v, kDevKeyboard), 0);
+  CHECK_EQ(slot_count(v, kDevController), 1);         // other devices untouched
+  CHECK(slot_set(v, kDevMouse, 1, SRC("mouse:left")));  // an empty slot 1 fills the first free slot
+  CHECK(slot_get(v, kDevMouse, 0) == SRC("mouse:left"));
+
+  // --- conflicts are reported and allowed
+  m = Mapping::defaults();
+  CHECK_EQ(actions_using(m, SRC("key:Space")).size(), 1u);
+  slot_set(m.buttons[kA], kDevKeyboard, 1, SRC("key:Space"));
+  std::vector<int> users = actions_using(m, SRC("key:Space"));
+  CHECK_EQ(users.size(), 2u);
+  r = RawInput{}; r.keys.set((size_t)key_from_name("Space"));
+  CHECK((mapped(m, r).buttons & bit(kA)) && (mapped(m, r).buttons & bit(kZR)));   // both fire
+
+  // --- per-device reset keeps the other devices
+  m = Mapping::defaults();
+  slot_set(m.buttons[kA], kDevKeyboard, 0, SRC("key:P"));
+  slot_set(m.buttons[kA], kDevController, 0, SRC("pad:lshoulder"));
+  slot_set(m.buttons[kB], kDevMouse, 0, SRC("mouse:left"));
+  m.swap_sticks = true; m.zl_threshold = 0.9f; m.mouse_look = true;
+  reset_device(m, kDevController);
+  CHECK(slot_get(m.buttons[kA], kDevController, 0) == SRC("pad:east"));
+  CHECK(!m.swap_sticks && m.zl_threshold == 0.5f);
+  CHECK(slot_get(m.buttons[kA], kDevKeyboard, 0) == SRC("key:P"));   // keyboard kept
+  CHECK(slot_get(m.buttons[kB], kDevMouse, 0) == SRC("mouse:left")); // mouse kept
+  CHECK(m.mouse_look);
+  reset_device(m, kDevKeyboard);
+  CHECK(slot_get(m.buttons[kA], kDevKeyboard, 0) == SRC("key:L"));
+  reset_device(m, kDevMouse);
+  CHECK_EQ(slot_count(m.buttons[kB], kDevMouse), 0);
+  CHECK(!m.mouse_look);
+}
+
+static void test_input_config() {
+  g_test = "input.config";
+  using namespace input;
+  namespace fs = std::filesystem;
+  fs::path dir = g_tmp / "inputcfg";
+  fs::create_directories(dir);
+  auto dump = [](const Mapping& m) { std::string t; json_dump(m.to_json(), t); return t; };
+
+  // --- JSON round trip of a heavily edited mapping
+  Mapping m = Mapping::defaults();
+  slot_set(m.buttons[kA], kDevKeyboard, 0, SRC("key:P"));
+  slot_set(m.buttons[kA], kDevKeyboard, 1, SRC("key:Numpad5"));
+  slot_set(m.buttons[kZL], kDevMouse, 0, SRC("mouse:wheel_down"));
+  slot_set(m.buttons[kZL], kDevController, 1, SRC("pad:lstick_left"));
+  slot_set(m.right.up, kDevMouse, 0, SRC("mouse:x2"));
+  m.left.deadzone = 0.25f; m.left.outer_deadzone = 0.9f; m.right.invert_y = true; m.right.analog = "left";
+  m.swap_sticks = true; m.face_layout = 1; m.zl_threshold = 0.3f; m.zr_threshold = 0.7f;
+  m.mouse_look = true; m.mouse_sensitivity = 1.75f; m.mouse_invert_x = true; m.mouse_smoothing = 0.4f; m.lock_cursor = false;
+  m.toggle_zl = true; m.toggle_zr = true; m.ui_scale = 1.5f;
+  Json parsed; std::string err;
+  CHECK(json_parse(dump(m), parsed, err));
+  CHECK_EQ((int)parsed.get("version")->num(), 2);
+  Mapping back;
+  CHECK(back.from_json(parsed, &err));
+  CHECK_EQ(dump(back) == dump(m), true);
+  CHECK(slot_get(back.buttons[kA], kDevKeyboard, 1) == SRC("key:Numpad5"));
+  CHECK(back.face_layout == 1 && back.swap_sticks && back.toggle_zr && !back.lock_cursor && back.mouse_invert_x && back.ui_scale == 1.5f);
+  CHECK(back.right.analog == "left" && back.right.invert_y && back.left.outer_deadzone == 0.9f);
+
+  // --- save atomically, then load it back through the hub
+  std::string path = (dir / "input.json").string();
+  Hub h;
+  h.set_mapping(m);
+  CHECK(write_mapping_file(m, path, &err));
+  CHECK(!fs::exists(path + ".tmp"));
+  CHECK(h.load_config(path, ""));
+  CHECK_EQ(dump(h.mapping()) == dump(m), true);
+  CHECK(h.message().empty());
+  Mapping m3 = h.mapping();
+  m3.swap_sticks = false;
+  h.set_mapping(m3);
+  CHECK(h.save(&err));          // live edit saved over the file
+  CHECK(!fs::exists(path + ".tmp"));
+  Hub h2;
+  CHECK(h2.load_config(path, ""));
+  CHECK(!h2.mapping().swap_sticks && h2.mapping().face_layout == 1);
+
+  // --- a newer format version is refused, a missing key keeps its default, unknown keys are ignored
+  {
+    std::ofstream f(dir / "future.json"); f << "{\"version\": 3}";
+  }
+  Hub hf;
+  CHECK(!hf.load_config((dir / "future.json").string(), ""));
+  CHECK(hf.message().find("newer") != std::string::npos);
+  {
+    std::ofstream f(dir / "partial.json"); f << "{\"version\": 2, \"whatever\": 5, \"mouse\": {\"look\": true}}";
+  }
+  Hub hp;
+  CHECK(hp.load_config((dir / "partial.json").string(), ""));
+  CHECK(hp.mapping().mouse_look && hp.mapping().mouse_sensitivity == 1.0f);
+  CHECK(slot_get(hp.mapping().buttons[kA], kDevController, 0) == SRC("pad:east"));
+
+  // --- invalid file: defaults, a visible message, the bad file kept
+  {
+    std::ofstream f(dir / "bad.json"); f << "{\"version\": 2, \"buttons\": {\"A\": [\"pad:nonsense\"]}}";
+  }
+  Hub hb;
+  uint64_t serial0 = hb.message_serial();
+  CHECK(!hb.load_config((dir / "bad.json").string(), ""));
+  CHECK(!hb.message().empty());
+  CHECK(hb.message_serial() > serial0);
+  CHECK(fs::exists(dir / "bad.json.invalid"));
+  CHECK_EQ(dump(hb.mapping()) == dump(Mapping::defaults()), true);
+  {
+    std::ofstream f(dir / "garbage.json"); f << "this is not json";
+  }
+  Hub hg;
+  CHECK(!hg.load_config((dir / "garbage.json").string(), ""));
+  CHECK(hg.message().find("invalid") != std::string::npos);
+
+  // --- version 1 file (input_map.json): migrated to input.json, the old file stays
+  {
+    std::ofstream f(dir / "input_map.json");
+    f << "{\"version\": 1, \"trigger_threshold\": 0.7, \"mouse\": {\"touch\": false, \"look_sensitivity\": 0.05},"
+         " \"buttons\": {\"A\": [\"pad:south\", \"key:Z\"]}, \"left_stick\": {\"deadzone\": 0.3, \"up\": [\"key:Up\"]}}";
+  }
+  Hub hm;
+  std::string newp = (dir / "migrated" / "input.json").string();
+  CHECK(hm.load_config(newp, (dir / "input_map.json").string()));
+  CHECK(fs::exists(newp));
+  CHECK(fs::exists(dir / "input_map.json"));
+  CHECK(!hm.message().empty());
+  Mapping mm = hm.mapping();
+  CHECK(slot_get(mm.buttons[kA], kDevController, 0) == SRC("pad:south"));
+  CHECK(slot_get(mm.buttons[kA], kDevKeyboard, 0) == SRC("key:Z"));
+  CHECK(mm.zl_threshold == 0.7f && mm.zr_threshold == 0.7f);
+  CHECK(!mm.mouse_touch && mm.mouse_look);
+  CHECK(mm.left.deadzone == 0.3f);
+  Hub hm2;   // second start reads the new file, no migration note
+  CHECK(hm2.load_config(newp, (dir / "input_map.json").string()));
+  CHECK(hm2.message().empty());
+  CHECK_EQ(dump(hm2.mapping()) == dump(mm), true);
+
+  // --- first run writes the defaults
+  Hub hn;
+  std::string fresh = (dir / "fresh" / "input.json").string();
+  CHECK(hn.load_config(fresh, ""));
+  CHECK(fs::exists(fresh));
+  CHECK_EQ(dump(hn.mapping()) == dump(Mapping::defaults()), true);
+
+  // --- SNAP_CONFIG_DIR picks the folder
+  _putenv_s("SNAP_CONFIG_DIR", (dir / "envdir").string().c_str());
+  CHECK_EQ(default_input_path() == (dir / "envdir").string() + "\\input.json", true);
+  _putenv_s("SNAP_CONFIG_DIR", "");
+  CHECK(default_input_path().find("input.json") != std::string::npos);
+}
+
+static void test_input_hub() {
+  g_test = "input.hub";
+  using namespace input;
+  static RawInput raw;
+  raw = RawInput{};
+  Hub h;
+  h.set_backend(std::make_unique<FakeBackend>(&raw));
+  h.set_mapping(Mapping::defaults());
+  auto poll = [&]() { std::this_thread::sleep_for(std::chrono::milliseconds(3)); h.poll(1); };
+
+  // --- toggle mode: a press flips ZL on, it stays after the release, the next press flips it off
+  Mapping m = Mapping::defaults();
+  m.toggle_zl = true;
+  h.set_mapping(m);
+  raw.keys.set((size_t)key_from_name("LShift"));
+  poll();
+  CHECK(h.pad().buttons & bit(kZL));
+  raw.keys.reset();
+  poll();
+  CHECK(h.pad().buttons & bit(kZL));
+  raw.keys.set((size_t)key_from_name("LShift"));
+  poll();
+  CHECK(!(h.pad().buttons & bit(kZL)));   // second press flips it off
+  raw.keys.reset();
+  poll();
+  CHECK(!(h.pad().buttons & bit(kZL)));
+  raw.keys.set((size_t)key_from_name("Space"));   // ZR keeps hold behavior
+  poll();
+  CHECK(h.pad().buttons & bit(kZR));
+  raw.keys.reset();
+  poll();
+  CHECK(!(h.pad().buttons & bit(kZR)));
+  h.set_mapping(Mapping::defaults());
+
+  // --- menu open: the game sees an idle pad, the mapped state stays in preview()
+  raw = RawInput{};
+  raw.keys.set((size_t)key_from_name("L"));
+  raw.keys.set((size_t)key_from_name("D"));
+  poll();
+  CHECK(h.pad().buttons & bit(kA));
+  h.set_menu_open(true);
+  poll();
+  CHECK_EQ(h.pad().buttons, 0u);
+  CHECK_EQ(h.pad().lx, 0);
+  CHECK(h.pad().connected);
+  CHECK(h.preview().buttons & bit(kA));
+  CHECK(h.preview().lx > 30000);
+  raw.mouse_in_window = true; raw.mouse_buttons = 1; raw.mouse_x = raw.mouse_y = 0.5f;
+  poll();
+  CHECK_EQ(h.touch().count, 0);
+  h.set_menu_open(false);
+  poll();
+  CHECK(h.pad().buttons & bit(kA));
+  raw = RawInput{};
+
+  // --- rebinding capture: held sources are ignored, device filter, F1 never captured, one result
+  raw.keys.set((size_t)key_from_name("Q"));          // already held when the capture starts
+  poll();
+  h.capture_begin(1u << kDevKeyboard);
+  CHECK(h.capturing());
+  poll();
+  Source got;
+  CHECK(!h.capture_result(&got));
+  raw.keys.set((size_t)key_from_name("F1"));
+  poll();
+  CHECK(!h.capture_result(&got));                    // F1 belongs to the menu
+  raw.keys.reset();
+  raw.pad.set(kPadSouth);                            // a controller press while a keyboard slot waits
+  poll();
+  CHECK(!h.capture_result(&got) && h.capturing());
+  raw.pad.reset();
+  poll();
+  raw.keys.set((size_t)key_from_name("Q"));          // released and pressed again: now it counts
+  poll();
+  CHECK(h.capture_result(&got));
+  CHECK(got == SRC("key:Q"));
+  CHECK(!h.capturing());
+  CHECK(!h.capture_result(&got));                    // reported once
+  raw = RawInput{};
+  poll();
+  h.capture_begin(1u << kDevController);
+  raw.pad_connected = true; raw.ry = -0.9f;          // an axis counts as a source
+  poll();
+  CHECK(h.capture_result(&got));
+  CHECK(got == SRC("pad:rstick_down"));
+  raw = RawInput{};
+  poll();
+  h.capture_begin(1u << kDevMouse);
+  raw.mouse_buttons = 1u << kMouseWheelDown;
+  poll();
+  CHECK(h.capture_result(&got));
+  CHECK(got == SRC("mouse:wheel_down"));
+  raw = RawInput{};
+  poll();
+  h.capture_begin(1u << kDevKeyboard);
+  h.capture_cancel();
+  CHECK(!h.capturing());
+
+  // --- the wheel arrives as window messages: a notch is a short press
+  post_wheel(120);
+  poll();
+  CHECK(h.raw().mouse_buttons & (1u << kMouseWheelUp));
+  std::this_thread::sleep_for(std::chrono::milliseconds(130));
+  poll();
+  CHECK(!(h.raw().mouse_buttons & (1u << kMouseWheelUp)));
+  m = Mapping::defaults();
+  slot_set(m.buttons[kR], kDevMouse, 0, SRC("mouse:wheel_down"));
+  h.set_mapping(m);
+  post_wheel(-120);
+  poll();
+  CHECK(h.pad().buttons & bit(kR));
+
+  // --- mouse-look velocity comes from the movement of the last 40 ms
+  m = Mapping::defaults();
+  m.mouse_look = true;
+  h.set_mapping(m);
+  raw = RawInput{};
+  raw.mouse_dx = 30;                                  // 30 px in one poll
+  poll();
+  raw.mouse_dx = 0;
+  CHECK(h.raw().mouse_vx > 300);
+  CHECK(h.pad().rx > 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  poll();
+  CHECK_EQ(h.pad().rx, 0);                            // movement stopped: the stick returns to center
+
+  // --- chord: Back + Start for 0.5 s toggles the menu once
+  raw = RawInput{};
+  raw.pad_connected = true;
+  raw.pad.set(kPadBack); raw.pad.set(kPadStart);
+  poll();
+  CHECK(!h.consume_menu_toggle());
+  std::this_thread::sleep_for(std::chrono::milliseconds(560));
+  poll();
+  CHECK(h.consume_menu_toggle());
+  poll();
+  CHECK(!h.consume_menu_toggle());                    // still held: no repeat
+  raw.pad.reset();
+  poll();
+  raw.pad.set(kPadBack); raw.pad.set(kPadStart);
+  poll();
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  poll();
+  raw.pad.reset();                                    // released early: nothing
+  poll();
+  CHECK(!h.consume_menu_toggle());
+
+  // --- injected sources (scripted UI test) behave like a device
+  raw = RawInput{};
+  h.set_mapping(Mapping::defaults());
+  h.inject_source(SRC("key:L"), true);
+  poll();
+  CHECK(h.pad().buttons & bit(kA));
+  h.inject_source(SRC("key:L"), false);
+  poll();
+  CHECK(!(h.pad().buttons & bit(kA)));
+}
+
 // ---- other services
 static void test_services() {
   g_test = "services";
@@ -786,6 +1228,9 @@ int main(int argc, char** argv) {
       {"save.crash_commit", test_save_crash_commit_stages},
       {"save.backups", test_save_backups},
       {"hid", test_hid},
+      {"input.mapping", test_input_mapping},
+      {"input.config", test_input_config},
+      {"input.hub", test_input_hub},
       {"services", test_services},
   };
   int before_failed;

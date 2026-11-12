@@ -122,7 +122,7 @@ Pipeline: backend (Win32 XInput + keyboard + mouse, or SDL3) fills `RawInput` ->
   (`GetSixAxisSensorStates` stride 0x60, angular velocity at +0x1c, 0x4c15ec). No PC gyro source yet.
 - Vibration: the two actuators forward to XInput / SDL rumble.
 - Focus: when the window is not in the foreground all input reads as released (env `SNAP_INPUT_BACKGROUND=1` disables).
-- Default mapping (Nintendo layout, A = east button). First run writes it to `%APPDATA%\SnapRecomp\config\input_map.json`.
+- Default mapping (by position, A = east button). Stored in `%APPDATA%\SnapRecomp\input.json` (format version 2; `SNAP_CONFIG_DIR` overrides the folder; the version 1 `config\input_map.json` is migrated). Edited live by the F1 controls menu (`runtime/ui`); schema in `Mapping::to_json`. Menu open: the npad reads idle.
 
 | Switch | Gamepad | Keyboard / mouse |
 | --- | --- | --- |
@@ -200,7 +200,7 @@ account 124-5, swkbd 101-1.
 | `language`, `region` | 1 (en-US), "US". Language numbers: 0 ja, 1 en-US, 2 fr, 3 de, 4 it, 5 es, 6 zh-CN, 7 ko, 8 nl, 9 pt, 10 ru, 11 zh-TW, 12 en-GB, 13 fr-CA, 14 es-419, 15 zh-Hans-CN, 16 zh-Hant-TW, 17 pt-BR |
 | `docked` | true |
 | `controller_style` | 0 (Pro Controller); `"handheld"` or 1 for Handheld |
-| `input_map` | `<data_root>\config\input_map.json` |
+| `input_map` | `%SNAP_CONFIG_DIR%` or `<data_root>`, file `input.json` |
 | `screenshot_dir` | `<data_root>\screenshots` |
 | `headless` | false (env `SNAP_HLE_HEADLESS=1`): error dialogs only log |
 

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <vector>
 
@@ -29,7 +30,11 @@ int button_from_name(const std::string& n) {
 
 static const char* kPadNames[kPadCount] = {"south", "east", "west", "north", "back", "guide", "start", "lstick", "rstick",
                                            "lshoulder", "rshoulder", "dpad_up", "dpad_down", "dpad_left", "dpad_right",
-                                           "ltrigger", "rtrigger"};
+                                           "ltrigger", "rtrigger", "lstick_left", "lstick_right", "lstick_up", "lstick_down",
+                                           "rstick_left", "rstick_right", "rstick_up", "rstick_down"};
+static_assert(sizeof(kPadNames) / sizeof(kPadNames[0]) == kPadCount, "pad names");
+static const char* kMouseNames[kMouseCount] = {"left", "right", "middle", "x1", "x2", "wheel_up", "wheel_down"};
+const char* mouse_name(int b) { return b >= 0 && b < kMouseCount ? kMouseNames[b] : "?"; }
 const char* pad_button_name(int b) { return b >= 0 && b < kPadCount ? kPadNames[b] : "?"; }
 int pad_button_from_name(const std::string& n) {
   for (int i = 0; i < kPadCount; ++i) if (n == kPadNames[i]) return i;
@@ -88,7 +93,8 @@ bool parse_source(const std::string& s, Source* out) {
   }
   if (kind == "mouse") {
     std::string l = lower(name);
-    int id = l == "left" ? 0 : l == "right" ? 1 : l == "middle" ? 2 : -1;
+    int id = -1;
+    for (int i = 0; i < kMouseCount; ++i) if (l == kMouseNames[i]) id = i;
     if (id < 0) return false;
     out->kind = Source::Mouse; out->id = id;
     return true;
@@ -99,9 +105,47 @@ std::string source_to_string(const Source& s) {
   switch (s.kind) {
     case Source::Pad: return std::string("pad:") + pad_button_name(s.id);
     case Source::KeyboardKey: return std::string("key:") + key_name(s.id);
-    case Source::Mouse: return std::string("mouse:") + (s.id == 0 ? "left" : s.id == 1 ? "right" : "middle");
+    case Source::Mouse: return std::string("mouse:") + mouse_name(s.id);
     default: return "";
   }
+}
+
+const char* device_name(Device d) { return d == kDevKeyboard ? "Keyboard" : d == kDevMouse ? "Mouse" : "Controller"; }
+Device device_of(const Source& s) { return s.kind == Source::Pad ? kDevController : s.kind == Source::Mouse ? kDevMouse : kDevKeyboard; }
+
+std::string source_label(const Source& s) {
+  switch (s.kind) {
+    case Source::KeyboardKey: {
+      std::string n = key_name(s.id);
+      static const char* const from[] = {"LShift", "RShift", "LCtrl", "RCtrl", "LAlt", "RAlt", "PageUp", "PageDown", "LBracket", "RBracket",
+                                         "Backslash", "Semicolon", "Comma", "Period", "Slash", "Quote", "Minus", "Equals", "Grave"};
+      static const char* const to[] = {"Left Shift", "Right Shift", "Left Ctrl", "Right Ctrl", "Left Alt", "Right Alt", "Page Up", "Page Down", "[", "]",
+                                       "\\", ";", ",", ".", "/", "'", "-", "=", "`"};
+      for (size_t i = 0; i < sizeof from / sizeof from[0]; ++i) if (n == from[i]) return to[i];
+      if (n.rfind("Numpad", 0) == 0) return "Num " + n.substr(6);
+      return n;
+    }
+    case Source::Mouse: {
+      static const char* const t[kMouseCount] = {"Mouse Left", "Mouse Right", "Mouse Middle", "Mouse Back", "Mouse Forward", "Wheel Up", "Wheel Down"};
+      return s.id >= 0 && s.id < kMouseCount ? t[s.id] : "Mouse ?";
+    }
+    case Source::Pad: {
+      static const char* const t[kPadCount] = {"South (Xbox A)", "East (Xbox B)", "West (Xbox X)", "North (Xbox Y)", "Back / View", "Guide", "Start / Menu",
+                                               "L-Stick click", "R-Stick click", "L Shoulder", "R Shoulder", "D-pad Up", "D-pad Down", "D-pad Left",
+                                               "D-pad Right", "L Trigger", "R Trigger", "L-Stick Left", "L-Stick Right", "L-Stick Up", "L-Stick Down",
+                                               "R-Stick Left", "R-Stick Right", "R-Stick Up", "R-Stick Down"};
+      return s.id >= 0 && s.id < kPadCount ? t[s.id] : "?";
+    }
+    default: return "";
+  }
+}
+
+const char* action_label(int a) {
+  static const char* const t[kActionCount] = {"A", "B", "X", "Y", "Left stick click", "Right stick click", "L", "R", "ZL", "ZR", "Plus (+)", "Minus (-)",
+                                              "D-pad Left", "D-pad Up", "D-pad Right", "D-pad Down",
+                                              "Left stick up", "Left stick down", "Left stick left", "Left stick right",
+                                              "Right stick up", "Right stick down", "Right stick left", "Right stick right"};
+  return a >= 0 && a < kActionCount ? t[a] : "?";
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -144,6 +188,8 @@ static Json stick_json(const StickMap& s) {
   Json o = Json::object();
   o.set("analog", Json::string(s.analog));
   o.set("deadzone", Json::number(s.deadzone));
+  o.set("outer_deadzone", Json::number(s.outer_deadzone));
+  o.set("invert_y", Json::boolean_(s.invert_y));
   o.set("up", sources_json(s.up));
   o.set("down", sources_json(s.down));
   o.set("left", sources_json(s.left));
@@ -153,13 +199,29 @@ static Json stick_json(const StickMap& s) {
 
 Json Mapping::to_json() const {
   Json j = Json::object();
-  j.set("version", Json::number(1));
-  j.set("_comment", Json::string("Sources: pad:<south|east|west|north|back|guide|start|lstick|rstick|lshoulder|rshoulder|dpad_up|dpad_down|dpad_left|dpad_right|ltrigger|rtrigger>, key:<name>, mouse:<left|right|middle>. Switch button names: A B X Y StickL StickR L R ZL ZR Plus Minus Left Up Right Down."));
-  j.set("trigger_threshold", Json::number(trigger_threshold));
+  j.set("version", Json::number(kVersion));
+  j.set("_comment", Json::string("Sources: pad:<south|east|west|north|back|guide|start|lstick|rstick|lshoulder|rshoulder|dpad_up|dpad_down|dpad_left|dpad_right|ltrigger|rtrigger|lstick_left..rstick_down>, key:<name>, mouse:<left|right|middle|x1|x2|wheel_up|wheel_down>. Switch button names: A B X Y StickL StickR L R ZL ZR Plus Minus Left Up Right Down. Edited by the in-game controls menu (F1)."));
+  Json c = Json::object();
+  c.set("face_layout", Json::string(face_layout == 1 ? "nintendo" : "position"));
+  c.set("swap_sticks", Json::boolean_(swap_sticks));
+  c.set("zl_threshold", Json::number(zl_threshold));
+  c.set("zr_threshold", Json::number(zr_threshold));
+  c.set("stick_button_threshold", Json::number(stick_button_threshold));
+  j.set("controller", c);
   Json mouse = Json::object();
   mouse.set("touch", Json::boolean_(mouse_touch));
-  mouse.set("look_sensitivity", Json::number(mouse_look_sensitivity));
+  mouse.set("look", Json::boolean_(mouse_look));
+  mouse.set("sensitivity", Json::number(mouse_sensitivity));
+  mouse.set("invert_x", Json::boolean_(mouse_invert_x));
+  mouse.set("invert_y", Json::boolean_(mouse_invert_y));
+  mouse.set("smoothing", Json::number(mouse_smoothing));
+  mouse.set("lock_cursor", Json::boolean_(lock_cursor));
   j.set("mouse", mouse);
+  Json acc = Json::object();
+  acc.set("toggle_zl", Json::boolean_(toggle_zl));
+  acc.set("toggle_zr", Json::boolean_(toggle_zr));
+  acc.set("ui_scale", Json::number(ui_scale));
+  j.set("accessibility", acc);
   Json b = Json::object();
   for (int i = 0; i <= kDown; ++i) b.set(button_name(i), sources_json(buttons[(size_t)i]));
   j.set("buttons", b);
@@ -184,6 +246,9 @@ static bool read_stick(const Json& j, StickMap* s, std::string* err, const std::
     if (s->analog != "left" && s->analog != "right" && s->analog != "none") { *err = where + ".analog must be left, right or none"; return false; }
   }
   if (auto* v = j.get("deadzone")) s->deadzone = std::clamp((float)v->num(0.15), 0.0f, 0.9f);
+  if (auto* v = j.get("outer_deadzone")) s->outer_deadzone = std::clamp((float)v->num(1.0), 0.5f, 1.0f);
+  if (auto* v = j.get("invert_y")) s->invert_y = v->boolean(false);
+  s->outer_deadzone = std::max(s->outer_deadzone, s->deadzone + 0.05f);
   if (auto* v = j.get("up")) if (!read_sources(*v, &s->up, err, where + ".up")) return false;
   if (auto* v = j.get("down")) if (!read_sources(*v, &s->down, err, where + ".down")) return false;
   if (auto* v = j.get("left")) if (!read_sources(*v, &s->left, err, where + ".left")) return false;
@@ -195,10 +260,42 @@ bool Mapping::from_json(const Json& j, std::string* err) {
   Mapping m = defaults();
   std::string e;
   if (j.type != Json::Obj) { *err = "input map must be a JSON object"; return false; }
-  if (auto* v = j.get("trigger_threshold")) m.trigger_threshold = std::clamp((float)v->num(0.5), 0.05f, 1.0f);
+  int version = 1;
+  if (auto* v = j.get("version")) version = (int)v->num(1);
+  if (version > kVersion) { *err = "format version " + std::to_string(version) + " is newer than this build understands (" + std::to_string(kVersion) + ")"; return false; }
+  auto clampf = [](const Json* v, double def, float lo, float hi) { return std::clamp((float)v->num(def), lo, hi); };
+  if (auto* v = j.get("trigger_threshold")) m.zl_threshold = m.zr_threshold = clampf(v, 0.5, 0.05f, 1.0f);   // version 1
+  if (auto* c = j.get("controller")) {
+    if (c->type != Json::Obj) { *err = "\"controller\" must be an object"; return false; }
+    if (auto* v = c->get("face_layout")) {
+      std::string f = v->str("position");
+      if (f != "position" && f != "nintendo") { *err = "controller.face_layout must be position or nintendo"; return false; }
+      m.face_layout = f == "nintendo" ? 1 : 0;
+    }
+    if (auto* v = c->get("swap_sticks")) m.swap_sticks = v->boolean(false);
+    if (auto* v = c->get("zl_threshold")) m.zl_threshold = clampf(v, 0.5, 0.05f, 1.0f);
+    if (auto* v = c->get("zr_threshold")) m.zr_threshold = clampf(v, 0.5, 0.05f, 1.0f);
+    if (auto* v = c->get("stick_button_threshold")) m.stick_button_threshold = clampf(v, 0.5, 0.1f, 0.95f);
+  }
   if (auto* v = j.get("mouse")) {
+    if (v->type != Json::Obj) { *err = "\"mouse\" must be an object"; return false; }
     if (auto* t = v->get("touch")) m.mouse_touch = t->boolean(true);
-    if (auto* s = v->get("look_sensitivity")) m.mouse_look_sensitivity = std::max(0.0f, (float)s->num(0));
+    if (auto* t = v->get("look")) m.mouse_look = t->boolean(false);
+    if (auto* t = v->get("sensitivity")) m.mouse_sensitivity = clampf(t, 1.0, 0.05f, 10.0f);
+    if (auto* t = v->get("invert_x")) m.mouse_invert_x = t->boolean(false);
+    if (auto* t = v->get("invert_y")) m.mouse_invert_y = t->boolean(false);
+    if (auto* t = v->get("smoothing")) m.mouse_smoothing = clampf(t, 0.0, 0.0f, 1.0f);
+    if (auto* t = v->get("lock_cursor")) m.lock_cursor = t->boolean(true);
+    if (auto* s = v->get("look_sensitivity")) {   // version 1: > 0 turned mouse-look on
+      float old = std::max(0.0f, (float)s->num(0));
+      if (old > 0) { m.mouse_look = true; m.mouse_sensitivity = 1.0f; }
+    }
+  }
+  if (auto* v = j.get("accessibility")) {
+    if (v->type != Json::Obj) { *err = "\"accessibility\" must be an object"; return false; }
+    if (auto* t = v->get("toggle_zl")) m.toggle_zl = t->boolean(false);
+    if (auto* t = v->get("toggle_zr")) m.toggle_zr = t->boolean(false);
+    if (auto* t = v->get("ui_scale")) m.ui_scale = clampf(t, 1.0, 0.5f, 3.0f);
   }
   if (auto* b = j.get("buttons")) {
     if (b->type != Json::Obj) { *err = "\"buttons\" must be an object"; return false; }
@@ -214,12 +311,90 @@ bool Mapping::from_json(const Json& j, std::string* err) {
   return true;
 }
 
-static bool source_down(const Source& s, const RawInput& in, float trigger_thr) {
+// ---- action table and slot editing
+std::vector<Source>& action_sources(Mapping& m, int a) {
+  static std::vector<Source> dummy;
+  if (a >= 0 && a <= kDown) return m.buttons[(size_t)a];
+  if (a >= 16 && a < 20) { StickMap& s = m.left; return a == 16 ? s.up : a == 17 ? s.down : a == 18 ? s.left : s.right; }
+  if (a >= 20 && a < 24) { StickMap& s = m.right; return a == 20 ? s.up : a == 21 ? s.down : a == 22 ? s.left : s.right; }
+  dummy.clear();
+  return dummy;
+}
+const std::vector<Source>& action_sources(const Mapping& m, int a) { return action_sources(const_cast<Mapping&>(m), a); }
+
+int slot_count(const std::vector<Source>& v, Device d) {
+  int n = 0;
+  for (auto& s : v) if (device_of(s) == d) ++n;
+  return n;
+}
+Source slot_get(const std::vector<Source>& v, Device d, int slot) {
+  int n = 0;
+  for (auto& s : v) if (device_of(s) == d && n++ == slot) return s;
+  return Source{};
+}
+bool slot_set(std::vector<Source>& v, Device d, int slot, const Source& src) {
+  if (src.kind == Source::None || device_of(src) != d || slot < 0 || slot >= kMaxSlotsPerDevice) return false;
+  int have = slot_count(v, d);
+  if (slot > have) slot = have;   // fill the first free slot
+  // a duplicate in the other slot of the same device would be a silent no-op binding: drop it
+  for (int o = 0; o < have; ++o) if (o != slot && slot_get(v, d, o) == src) { slot_clear(v, d, o); if (o < slot) --slot; have = slot_count(v, d); break; }
+  if (slot >= have) { v.push_back(src); return true; }
+  int n = 0;
+  for (auto& s : v) if (device_of(s) == d && n++ == slot) { s = src; break; }
+  return true;
+}
+void slot_clear(std::vector<Source>& v, Device d, int slot) {
+  int n = 0;
+  for (size_t i = 0; i < v.size(); ++i)
+    if (device_of(v[i]) == d && n++ == slot) { v.erase(v.begin() + (long)i); return; }
+}
+std::vector<int> actions_using(const Mapping& m, const Source& src) {
+  std::vector<int> out;
+  for (int a = 0; a < kActionCount; ++a)
+    for (auto& s : action_sources(m, a)) if (s == src) { out.push_back(a); break; }
+  return out;
+}
+void reset_device(Mapping& m, Device d) {
+  Mapping def = Mapping::defaults();
+  for (int a = 0; a < kActionCount; ++a) {
+    auto& v = action_sources(m, a);
+    v.erase(std::remove_if(v.begin(), v.end(), [&](const Source& s) { return device_of(s) == d; }), v.end());
+    for (auto& s : action_sources(def, a)) if (device_of(s) == d) v.push_back(s);
+  }
+  if (d == kDevController) {
+    m.zl_threshold = def.zl_threshold; m.zr_threshold = def.zr_threshold; m.stick_button_threshold = def.stick_button_threshold;
+    m.swap_sticks = false; m.face_layout = 0;
+    for (StickMap* s : {&m.left, &m.right}) { StickMap* ds = s == &m.left ? &def.left : &def.right; s->analog = ds->analog; s->deadzone = ds->deadzone; s->outer_deadzone = ds->outer_deadzone; s->invert_y = false; }
+  } else if (d == kDevMouse) {
+    m.mouse_touch = def.mouse_touch; m.mouse_look = false; m.mouse_sensitivity = def.mouse_sensitivity;
+    m.mouse_invert_x = m.mouse_invert_y = false; m.mouse_smoothing = 0; m.lock_cursor = def.lock_cursor;
+  }
+}
+void set_face_layout(Mapping& m, int layout) {
+  layout = layout == 1 ? 1 : 0;
+  if (layout == m.face_layout) return;
+  m.face_layout = layout;
+  auto flip = [](int id) { return id == kPadSouth ? kPadEast : id == kPadEast ? kPadSouth : id == kPadWest ? kPadNorth : id == kPadNorth ? kPadWest : id; };
+  for (int a = 0; a < kActionCount; ++a)
+    for (auto& s : action_sources(m, a)) if (s.kind == Source::Pad) s.id = flip(s.id);
+}
+
+bool source_down(const Source& s, const RawInput& in, float trigger_thr) {
   switch (s.kind) {
     case Source::Pad:
-      if (s.id == kPadLTrigger) return in.pad.test((size_t)s.id) || in.lt >= trigger_thr;
-      if (s.id == kPadRTrigger) return in.pad.test((size_t)s.id) || in.rt >= trigger_thr;
-      return in.pad.test((size_t)s.id);
+      switch (s.id) {
+        case kPadLTrigger: return in.pad.test((size_t)s.id) || in.lt >= trigger_thr;
+        case kPadRTrigger: return in.pad.test((size_t)s.id) || in.rt >= trigger_thr;
+        case kPadLStickLeft: return in.lx <= -0.5f;
+        case kPadLStickRight: return in.lx >= 0.5f;
+        case kPadLStickUp: return in.ly >= 0.5f;
+        case kPadLStickDown: return in.ly <= -0.5f;
+        case kPadRStickLeft: return in.rx <= -0.5f;
+        case kPadRStickRight: return in.rx >= 0.5f;
+        case kPadRStickUp: return in.ry >= 0.5f;
+        case kPadRStickDown: return in.ry <= -0.5f;
+        default: return in.pad.test((size_t)s.id);
+      }
     case Source::KeyboardKey: return in.keys.test((size_t)s.id);
     case Source::Mouse: return (in.mouse_buttons >> s.id) & 1;
     default: return false;
@@ -230,18 +405,24 @@ static bool any_down(const std::vector<Source>& v, const RawInput& in, float thr
   return false;
 }
 
-static void stick_value(const StickMap& sm, const Mapping& m, const RawInput& in, float mouse_x, float mouse_y, float* ox, float* oy) {
+static void stick_value(const StickMap& sm, bool is_left, const Mapping& m, const RawInput& in, float mouse_x, float mouse_y, float* ox, float* oy) {
   float x = 0, y = 0;
-  if (sm.analog != "none") {
-    float ax = sm.analog == "left" ? in.lx : in.rx, ay = sm.analog == "left" ? in.ly : in.ry;
+  std::string analog = sm.analog;
+  if (m.swap_sticks && analog != "none") analog = analog == "left" ? "right" : "left";
+  (void)is_left;
+  if (analog != "none") {
+    float ax = analog == "left" ? in.lx : in.rx, ay = analog == "left" ? in.ly : in.ry;
+    if (sm.invert_y) ay = -ay;
     float mag = std::sqrt(ax * ax + ay * ay);
     if (mag > sm.deadzone) {
-      float scale = std::min(1.0f, (mag - sm.deadzone) / (1.0f - sm.deadzone)) / mag;  // radial deadzone, rescaled
+      float span = std::max(0.01f, sm.outer_deadzone - sm.deadzone);
+      float scale = std::min(1.0f, (mag - sm.deadzone) / span) / mag;  // radial: inner dead zone, saturation at the outer one
       x = ax * scale; y = ay * scale;
     }
   }
-  x += (any_down(sm.right, in, m.trigger_threshold) ? 1.f : 0.f) - (any_down(sm.left, in, m.trigger_threshold) ? 1.f : 0.f);
-  y += (any_down(sm.up, in, m.trigger_threshold) ? 1.f : 0.f) - (any_down(sm.down, in, m.trigger_threshold) ? 1.f : 0.f);
+  float thr = m.zl_threshold;
+  x += (any_down(sm.right, in, thr) ? 1.f : 0.f) - (any_down(sm.left, in, thr) ? 1.f : 0.f);
+  y += (any_down(sm.up, in, thr) ? 1.f : 0.f) - (any_down(sm.down, in, thr) ? 1.f : 0.f);
   x += mouse_x; y += mouse_y;
   float mag = std::sqrt(x * x + y * y);
   if (mag > 1.0f) { x /= mag; y /= mag; }  // keep the diagonal on the unit circle
@@ -253,16 +434,22 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
   RawInput eff = in;
   if (!in.focused) { eff.keys.reset(); eff.mouse_buttons = 0; }
   out.connected = in.pad_connected || in.focused;  // the keyboard is always a controller while the window has focus
-  for (int b = 0; b <= kDown; ++b)
-    if (any_down(m.buttons[(size_t)b], eff, m.trigger_threshold)) out.buttons |= 1ull << b;
-  float lx, ly, rx, ry;
-  stick_value(m.left, m, eff, 0, 0, &lx, &ly);
-  float mlx = 0, mly = 0;
-  if (m.mouse_look_sensitivity > 0 && eff.focused) {
-    mlx = std::clamp(eff.mouse_dx * m.mouse_look_sensitivity, -1.0f, 1.0f);
-    mly = std::clamp(-eff.mouse_dy * m.mouse_look_sensitivity, -1.0f, 1.0f);
+  for (int b = 0; b <= kDown; ++b) {
+    float thr = b == kZR ? m.zr_threshold : m.zl_threshold;
+    for (auto& s : m.buttons[(size_t)b]) {
+      // the trigger threshold of the physical trigger, not of the Switch button it is bound to
+      float t = s.kind == Source::Pad && s.id == kPadRTrigger ? m.zr_threshold : s.kind == Source::Pad && s.id == kPadLTrigger ? m.zl_threshold : thr;
+      if (source_down(s, eff, t)) { out.buttons |= 1ull << b; break; }
+    }
   }
-  stick_value(m.right, m, eff, mlx, mly, &rx, &ry);
+  float lx, ly, rx, ry;
+  stick_value(m.left, true, m, eff, 0, 0, &lx, &ly);
+  float mlx = 0, mly = 0;
+  if (m.mouse_look && eff.focused) {
+    mlx = std::clamp(eff.mouse_vx * m.mouse_sensitivity / (float)kMouseLookFullPxPerSec, -1.0f, 1.0f) * (m.mouse_invert_x ? -1.f : 1.f);
+    mly = std::clamp(-eff.mouse_vy * m.mouse_sensitivity / (float)kMouseLookFullPxPerSec, -1.0f, 1.0f) * (m.mouse_invert_y ? -1.f : 1.f);
+  }
+  stick_value(m.right, false, m, eff, mlx, mly, &rx, &ry);
   auto q = [](float v) { return (int32_t)std::lround(std::clamp(v, -1.0f, 1.0f) * kStickMax); };
   out.lx = q(lx); out.ly = q(ly); out.rx = q(rx); out.ry = q(ry);
   float t = m.stick_button_threshold;
@@ -279,7 +466,7 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
 
 TouchSample map_touch(const Mapping& m, const RawInput& in) {
   TouchSample t;
-  if (m.mouse_touch && in.focused && in.mouse_in_window && (in.mouse_buttons & 1)) {
+  if (m.mouse_touch && !m.mouse_look && in.focused && in.mouse_in_window && (in.mouse_buttons & 1)) {
     t.count = 1;
     t.pt[0].x = (int32_t)std::clamp(in.mouse_x * 1280.0f, 0.0f, 1279.0f);
     t.pt[0].y = (int32_t)std::clamp(in.mouse_y * 720.0f, 0.0f, 719.0f);
@@ -303,33 +490,117 @@ void Hub::set_backend(std::unique_ptr<Backend> b) {
 void Hub::set_mapping(const Mapping& m) { std::lock_guard<std::mutex> g(mu_); map_ = m; }
 Mapping Hub::mapping() const { std::lock_guard<std::mutex> g(mu_); return map_; }
 
-bool write_default_mapping(const std::string& path) {
+bool write_mapping_file(const Mapping& m, const std::string& path, std::string* err) {
+  namespace fs = std::filesystem;
   std::error_code ec;
-  std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+  fs::path target(path);
+  if (target.has_parent_path()) fs::create_directories(target.parent_path(), ec);
   std::string text;
-  json_dump(Mapping::defaults().to_json(), text);
-  std::ofstream f(path, std::ios::binary | std::ios::trunc);
-  if (!f) return false;
-  f << text << "\n";
-  return (bool)f;
+  json_dump(m.to_json(), text);
+  fs::path tmp = target;
+  tmp += ".tmp";
+  {
+    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    if (!f) { if (err) *err = "cannot write " + tmp.string(); return false; }
+    f << text << "\n";
+    f.flush();
+    if (!f) { if (err) *err = "write failed: " + tmp.string(); return false; }
+  }
+  fs::rename(tmp, target, ec);   // replaces an existing file in one step
+  if (ec) { fs::remove(tmp, ec); if (err) *err = "cannot replace " + path; return false; }
+  return true;
 }
 
-bool Hub::load_mapping(const std::string& path, std::string* err) {
+bool write_default_mapping(const std::string& path) { return write_mapping_file(Mapping::defaults(), path, nullptr); }
+
+static bool read_mapping_file(const std::string& path, Mapping* m, std::string* err) {
   std::ifstream f(path, std::ios::binary);
-  if (!f) {
-    write_default_mapping(path);  // first run: leave an editable template
-    set_mapping(Mapping::defaults());
-    return true;
-  }
+  if (!f) { *err = path + ": cannot open"; return false; }
   std::stringstream ss;
   ss << f.rdbuf();
   Json j;
   std::string e;
-  if (!json_parse(ss.str(), j, e)) { if (err) *err = path + ": " + e; return false; }
-  Mapping m;
-  if (!m.from_json(j, &e)) { if (err) *err = path + ": " + e; return false; }
-  set_mapping(m);
+  if (!json_parse(ss.str(), j, e)) { *err = path + ": " + e; return false; }
+  if (!m->from_json(j, &e)) { *err = path + ": " + e; return false; }
   return true;
+}
+
+bool Hub::load_mapping(const std::string& path, std::string* err) {
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    write_default_mapping(path);  // first run: leave an editable template
+    set_mapping(Mapping::defaults());
+    std::lock_guard<std::mutex> g(mu_);
+    path_ = path;
+    return true;
+  }
+  Mapping m;
+  std::string e;
+  if (!read_mapping_file(path, &m, &e)) { if (err) *err = e; return false; }
+  set_mapping(m);
+  std::lock_guard<std::mutex> g(mu_);
+  path_ = path;
+  return true;
+}
+
+void Hub::set_message_locked(const std::string& m) { message_ = m; ++message_serial_; }
+std::string Hub::message() const { std::lock_guard<std::mutex> g(mu_); return message_; }
+uint64_t Hub::message_serial() const { std::lock_guard<std::mutex> g(mu_); return message_serial_; }
+std::string Hub::config_path() const { std::lock_guard<std::mutex> g(mu_); return path_; }
+
+bool Hub::load_config(const std::string& path, const std::string& legacy) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  Mapping m;
+  std::string e;
+  bool ok = true;
+  std::string note;
+  if (fs::exists(path, ec)) {
+    if (!read_mapping_file(path, &m, &e)) {
+      ok = false;
+      m = Mapping::defaults();
+      fs::path bad = path;
+      bad += ".invalid";
+      fs::copy_file(path, bad, fs::copy_options::overwrite_existing, ec);
+      note = "Controls file is invalid, using default controls. " + e + " (kept as " + bad.string() + "; saving a change overwrites input.json)";
+    }
+  } else if (!legacy.empty() && fs::exists(legacy, ec)) {
+    if (read_mapping_file(legacy, &m, &e)) {
+      std::string werr;
+      write_mapping_file(m, path, &werr);
+      note = "Migrated the old controls file " + legacy + " to " + path;
+    } else {
+      ok = false;
+      m = Mapping::defaults();
+      note = "The old controls file is invalid, using default controls. " + e;
+    }
+  } else {
+    m = Mapping::defaults();
+    std::string werr;
+    write_mapping_file(m, path, &werr);
+  }
+  std::lock_guard<std::mutex> g(mu_);
+  map_ = m;
+  path_ = path;
+  if (!note.empty()) { set_message_locked(note); log("input: %s", note.c_str()); }
+  return ok;
+}
+
+bool Hub::save(std::string* err) {
+  Mapping m;
+  std::string path;
+  {
+    std::lock_guard<std::mutex> g(mu_);
+    m = map_;
+    path = path_;
+  }
+  if (path.empty()) { if (err) *err = "no controls file path"; return false; }
+  std::string e;
+  bool ok = write_mapping_file(m, path, &e);
+  std::lock_guard<std::mutex> g(mu_);
+  if (!ok) set_message_locked("Could not save the controls: " + e);
+  if (err && !ok) *err = e;
+  return ok;
 }
 
 // ---- scripted input (SNAP_INPUT_SCRIPT=<file>): timed presses OR-ed onto whatever the host devices report.
@@ -444,19 +715,139 @@ void script_event(const char* name) {
   }
 }
 
+// ---- window-thread wheel feed
+static std::atomic<int> g_wheel_delta{0};
+void post_wheel(int delta) { g_wheel_delta.fetch_add(delta); }
+
+static uint32_t src_key(const Source& s) { return ((uint32_t)s.kind << 8) | (uint32_t)s.id; }
+static bool capture_allowed(const Source& s, unsigned mask) { return (mask >> (int)device_of(s)) & 1; }
+static void each_candidate(const std::function<void(const Source&)>& f) {
+  for (int i = 0; i < kPadCount; ++i) f(Source{Source::Pad, i});
+  for (int k = 1; k < kKeyCount; ++k)
+    if (key_name(k)[0] && k != key_from_name("F1")) f(Source{Source::KeyboardKey, k});
+  for (int i = 0; i < kMouseCount; ++i) f(Source{Source::Mouse, i});
+}
+
+void Hub::set_menu_open(bool open) {
+  std::lock_guard<std::mutex> g(mu_);
+  if (open == menu_open_.load()) return;
+  menu_open_ = open;
+  tog_state_[0] = tog_state_[1] = false;
+  chord_fired_ = true;   // the chord that opened the menu must be released before it can fire again
+  chord_since_ns_ = 0;
+  if (!open) { capturing_ = false; cap_have_ = false; }
+}
+bool Hub::consume_menu_toggle() { return toggle_req_.exchange(false); }
+PadSample Hub::preview() const { std::lock_guard<std::mutex> g(mu_); return preview_; }
+
+void Hub::capture_begin(unsigned device_mask) {
+  std::lock_guard<std::mutex> g(mu_);
+  cap_mask_ = device_mask;
+  cap_deadline_ns_ = now_ns() + 10000000000ull;
+  cap_ignore_.clear();
+  cap_have_ = false;
+  cap_timeout_ = false;
+  each_candidate([&](const Source& s) { if (source_down(s, raw_, 0.6f)) cap_ignore_.push_back(src_key(s)); });
+  capturing_ = true;
+}
+void Hub::capture_cancel() { std::lock_guard<std::mutex> g(mu_); capturing_ = false; cap_have_ = false; }
+bool Hub::capture_result(Source* out) {
+  std::lock_guard<std::mutex> g(mu_);
+  if (!cap_have_) return false;
+  *out = cap_src_;
+  cap_have_ = false;
+  return true;
+}
+bool Hub::capture_timed_out() { std::lock_guard<std::mutex> g(mu_); bool t = cap_timeout_; cap_timeout_ = false; return t; }
+
+void Hub::inject_source(const Source& s, bool down) {
+  std::lock_guard<std::mutex> g(mu_);
+  switch (s.kind) {
+    case Source::KeyboardKey: inject_.keys.set((size_t)s.id, down); break;
+    case Source::Pad: inject_.pad.set((size_t)s.id, down); break;
+    case Source::Mouse: if (down) inject_.mouse_buttons |= (uint8_t)(1u << s.id); else inject_.mouse_buttons &= (uint8_t) ~(1u << s.id); break;
+    default: break;
+  }
+}
+
 void Hub::poll(int min_interval_ms) {
   std::lock_guard<std::mutex> g(mu_);
   if (!backend_) backend_ = make_default_backend();
   uint64_t t = now_ns();
   if (last_poll_ns_ && t - last_poll_ns_ < (uint64_t)min_interval_ms * 1000000ull) return;
   last_poll_ns_ = t;
+  const bool open = menu_open_.load();
+  const bool lock = map_.lock_cursor && !open;
+  const bool recenter = lock && map_.mouse_look;
+  backend_->set_cursor_mode(lock, recenter);
   RawInput r;
   backend_->poll(r);
+  cursor_hidden_ = recenter && r.focused;
+  // injected sources (tests) and wheel pulses
+  r.keys |= inject_.keys;
+  r.pad |= inject_.pad;
+  r.mouse_buttons |= inject_.mouse_buttons;
+  if (inject_.pad.any()) r.pad_connected = true;
+  if (int d = g_wheel_delta.exchange(0)) {
+    if (d > 0) wheel_up_until_ns_ = t + 100000000ull; else wheel_down_until_ns_ = t + 100000000ull;
+  }
+  if (r.focused) {
+    if (t < wheel_up_until_ns_) r.mouse_buttons |= 1u << kMouseWheelUp;
+    if (t < wheel_down_until_ns_) r.mouse_buttons |= 1u << kMouseWheelDown;
+  }
+  // mouse-look velocity: pixels moved over a window of 40 ms (smoothing off) up to 340 ms (smoothing 1)
+  if (r.focused && (r.mouse_dx != 0 || r.mouse_dy != 0)) msamples_.push_back({t, r.mouse_dx, r.mouse_dy});
+  {
+    const uint64_t win = (uint64_t)((0.04 + 0.30 * std::clamp(map_.mouse_smoothing, 0.0f, 1.0f)) * 1e9);
+    while (!msamples_.empty() && t - msamples_.front().t > 400000000ull) msamples_.erase(msamples_.begin());
+    double sx = 0, sy = 0;
+    for (auto& m : msamples_) if (t - m.t <= win) { sx += m.dx; sy += m.dy; }
+    r.mouse_vx = (float)(sx / ((double)win * 1e-9));
+    r.mouse_vy = (float)(sy / ((double)win * 1e-9));
+  }
   raw_ = r;
-  pad_ = map_pad(map_, r);
+  // chord: hold Back + Start for 0.5 s toggles the menu (read from the physical pad, never remapped)
+  const bool chord = r.focused && r.pad.test(kPadBack) && r.pad.test(kPadStart);
+  if (!chord) { chord_since_ns_ = 0; chord_fired_ = false; }
+  else if (!chord_since_ns_) chord_since_ns_ = t;
+  else if (!chord_fired_ && t - chord_since_ns_ >= 500000000ull) { chord_fired_ = true; toggle_req_ = true; }
+  // rebinding capture
+  if (capturing_.load()) {
+    for (size_t i = 0; i < cap_ignore_.size();) {   // forget held sources once released
+      Source s{(Source::Kind)(cap_ignore_[i] >> 8), (int)(cap_ignore_[i] & 0xff)};
+      if (!source_down(s, r, 0.6f)) cap_ignore_.erase(cap_ignore_.begin() + (long)i); else ++i;
+    }
+    if (!cap_have_) {
+      each_candidate([&](const Source& s) {
+        if (cap_have_ || !capture_allowed(s, cap_mask_) || !source_down(s, r, 0.6f)) return;
+        if (std::find(cap_ignore_.begin(), cap_ignore_.end(), src_key(s)) != cap_ignore_.end()) return;
+        cap_have_ = true; cap_src_ = s;
+      });
+      if (cap_have_) capturing_ = false;
+      else if (t > cap_deadline_ns_) { capturing_ = false; cap_timeout_ = true; }
+    }
+  }
+  PadSample p = map_pad(map_, r);
+  // toggle mode: a ZL / ZR press flips the trigger instead of holding it
+  const bool tg[2] = {map_.toggle_zl, map_.toggle_zr};
+  const int bits[2] = {kZL, kZR};
+  for (int i = 0; i < 2; ++i) {
+    if (!tg[i]) { tog_state_[i] = false; tog_prev_[i] = false; continue; }
+    bool down = (p.buttons >> bits[i]) & 1;
+    if (down && !tog_prev_[i]) tog_state_[i] = !tog_state_[i];
+    tog_prev_[i] = down;
+    if (tog_state_[i]) p.buttons |= 1ull << bits[i]; else p.buttons &= ~(1ull << bits[i]);
+  }
+  preview_ = p;
+  pad_ = p;
+  touch_ = map_touch(map_, r);
+  if (open) {   // the menu owns the input: the game sees a connected, idle pad and no touch
+    pad_ = PadSample{};
+    pad_.connected = true;
+    touch_ = TouchSample{};
+  }
   if (!g_script.loaded) { script_load(); g_script.t0 = t; g_script.cur_t0 = t; }
   if (!g_script.e.empty()) script_apply(t, pad_);
-  touch_ = map_touch(map_, r);
   ++seq_;
 }
 PadSample Hub::pad() const { std::lock_guard<std::mutex> g(mu_); return pad_; }
@@ -465,7 +856,7 @@ int64_t Hub::sampling_number() const { std::lock_guard<std::mutex> g(mu_); retur
 RawInput Hub::raw() const { std::lock_guard<std::mutex> g(mu_); return raw_; }
 void Hub::rumble(float low, float high) {
   std::lock_guard<std::mutex> g(mu_);
-  if (backend_) backend_->rumble(low, high);
+  if (backend_ && !menu_open_.load()) backend_->rumble(low, high);
 }
 
 Hub& hub() {
