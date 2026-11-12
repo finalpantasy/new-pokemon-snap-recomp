@@ -135,7 +135,23 @@ bool Evaluate(const Eval& e) {
   d.cameraFovAngleVertical = e.fovY;
   d.viewSpaceToMetersFactor = 1.0f;
   d.flags = 0;
+  // FSR's Vulkan backend reads depth as a sampled image in SHADER_READ_ONLY_OPTIMAL; the caller hands it over in
+  // DEPTH_STENCIL_READ_ONLY_OPTIMAL (validation VUID-vkCmdDispatch-imageLayout-00344), so switch around the dispatch.
+  auto depthLayout = [&](VkImageLayout from, VkImageLayout to) {
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    b.oldLayout = from; b.newLayout = to;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = e.depth.image;
+    const bool st = e.depth.format == VK_FORMAT_D24_UNORM_S8_UINT || e.depth.format == VK_FORMAT_D32_SFLOAT_S8_UINT || e.depth.format == VK_FORMAT_D16_UNORM_S8_UINT;
+    b.subresourceRange = {VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | (st ? VK_IMAGE_ASPECT_STENCIL_BIT : 0)), 0, 1, 0, 1};
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(e.cb, &di);
+  };
+  depthLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   ffxReturnCode_t r = F.dispatch(&F.ctx, &d.header);
+  depthLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
   if (r != FFX_API_RETURN_OK) { Logf("fsr: dispatch failed (%u): FSR off for this run", r); F.failed = true; return false; }
   F.evals++;
   return true;

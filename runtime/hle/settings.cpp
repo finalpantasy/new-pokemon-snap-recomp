@@ -71,7 +71,8 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_upscale_quality", "SNAP_UPSCALE_QUALITY"}, {"gfx_hdr", "SNAP_HDR"},        {"gfx_hdr_peak", "SNAP_HDR_PEAK"},
     {"gfx_hdr_paper", "SNAP_HDR_PAPER"},       {"gfx_draw_distance", "SNAP_DRAW_DISTANCE"},   // gfx_fov removed (owner 2026-11-12): a saved value is ignored
     {"gfx_full_rate_anim", "SNAP_FULL_RATE_ANIM"}, {"gfx_ui_font", "SNAP_UI_FONT_SCALE"}, {"fast_boot", "SNAP_FAST_BOOT"},
-    {"photo_export", "SNAP_PHOTO_EXPORT"},     {"photo_dir", "SNAP_PHOTO_DIR"},
+    {"gfx_ssao_samples", "SNAP_SSAO_SAMPLES"}, {"gfx_ssao_hbao", "SNAP_SSAO_HBAO"},
+    {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"},
 };
 
 float to_float(const std::string& s, float def) { return s.empty() ? def : (float)std::atof(s.c_str()); }

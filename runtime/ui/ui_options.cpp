@@ -72,6 +72,53 @@ std::string get_mute() { return snap_window_get_mute_in_background() ? "1" : "0"
 void set_mute(const std::string& v) { snap_window_set_mute_in_background(v != "0"); }
 std::string get_cap() { return std::to_string(snap_window_frame_cap()); }
 void set_cap(const std::string& v) { snap_window_set_frame_cap(std::atoi(v.c_str())); }
+// ---- quality presets. The preset is not stored: it is worked out from the nine rows below, so changing any row by hand shows "Custom" and
+// setting the rows to a preset's values shows that preset. "" in the table = the row's default (the key is erased, the game's own behavior).
+// Normal is all defaults. Left out on purpose: draw distance and full-rate animation (photo scores unverified), the lighting preset and
+// upscaler rows (other workers), and the HDR/color rows (not quality).
+struct PresetKey { const char* key; const char* def; };
+const PresetKey kPresetKeys[] = {
+    {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", "0.00"}, {"gfx_aniso", "16"}, {"gfx_lod_bias", "auto"},
+    {"gfx_shadow_res", "default"}, {"ssao_quality", "default"}, {"gfx_ssao_samples", "default"}, {"gfx_ssao_hbao", "default"},
+};
+constexpr int kPresetKeyN = 9;
+struct PresetDef { const char* id; const char* label; const char* v[kPresetKeyN]; };
+const PresetDef kPresets[] = {
+    // No preset renders below native size: a render scale under 1 (0.5 and 0.75, 4 of 4 runs) lost the GPU device soon after the photo score screen
+    // (florio_eval), while scale 1 did not. The upscaler rows are also left out of the presets for that reason (their scene scale is below 1 in a window under 1080p).
+    {"verylow", "Very Low", {"", "none", "", "0", "1", "512", "", "4", ""}},
+    {"low", "Low", {"", "off", "", "4", "", "", "", "8", ""}},
+    {"normal", "Normal", {"", "", "", "", "", "", "", "", ""}},
+    {"high", "High", {"", "ssaa2,smaa", "0.30", "", "", "2048", "high", "", ""}},
+    {"ultra", "Ultra", {"2.00", "smaa", "0.30", "", "", "4096", "ultra", "", ""}},
+    {"maximum", "Maximum", {"4.00", "smaa", "0.50", "", "", "8192", "ultra", "512", "32,128"}},
+};
+bool preset_eq(int k, const std::string& a, const std::string& b) {
+  if (a == b) return true;
+  if (k == 0 || k == 2) return std::fabs((float)std::atof(a.c_str()) - (float)std::atof(b.c_str())) < 1e-4f;
+  return false;
+}
+std::string get_preset() {
+  for (const PresetDef& p : kPresets) {
+    bool all = true;
+    for (int k = 0; k < kPresetKeyN && all; k++) {
+      const std::string want = p.v[k][0] ? p.v[k] : kPresetKeys[k].def;
+      all = preset_eq(k, st::get(kPresetKeys[k].key, kPresetKeys[k].def), want);
+    }
+    if (all) return p.id;
+  }
+  return "custom";
+}
+void set_preset(const std::string& v) {
+  for (const PresetDef& p : kPresets) {
+    if (v != p.id) continue;
+    for (int k = 0; k < kPresetKeyN; k++) {
+      if (p.v[k][0]) st::set(kPresetKeys[k].key, p.v[k]);
+      else st::erase(kPresetKeys[k].key);
+    }
+    return;
+  }
+}
 std::string get_audio_out() {
   const int m = snap_audio_get_output_mode();
   return m == SNAP_AUDIO_OUT_SPEAKERS ? "speakers" : m == SNAP_AUDIO_OUT_SPATIAL ? "spatial" : "stereo";
@@ -110,20 +157,30 @@ Choices monitors() {
 std::vector<Opt>& graphics_opts() {
   static std::vector<Opt> v = {
       {"", "Picture quality", kSection, kLive, "", ""},
+      {"gfx_preset", "Quality preset", kChoice, kRestart,
+       "Sets the picture-quality rows below together: render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution and ambient occlusion. "
+       "Very Low: for really weak hardware (draws at the game's own 1920 x 1080, no anti-aliasing, no filtering, softer textures, 512 shadows, few occlusion samples). "
+       "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Normal: this port's defaults. "
+       "High: 2x supersampling, SMAA, 2048 shadows, High occlusion. Ultra: 2x scale, 4096 shadows, Ultra occlusion. "
+       "Maximum: 4x scale (7680 x 4320), 8192 shadows and the most occlusion samples. It will slow even a very fast graphics card and needs a lot of video memory. "
+       "In the course the costly rows are render scale, anti-aliasing, filtering and texture sharpness; shadow size only sharpens Pokemon shadows and the occlusion rows only act on the photo-select screen. "
+       "Changing any row by hand shows Custom. Draw distance and full-rate animation are not part of any preset.",
+       "normal",
+       {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Normal"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_preset, set_preset},
       {"gfx_render_scale", "Render scale", kSlider, kRestart,
        "How sharp the 3D picture is drawn, as a multiple of the game's own 1920 x 1080. 2.00x draws 3840 x 2160 and then shows it on your screen. Higher is crisper and slower. "
        "Photo scoring still uses the original-size data.",
-       "1.00", {}, 0.5f, 4.0f, "%.2fx", "SNAP_RENDER_SCALE"},
+       "1.00", {}, 1.0f, 4.0f, "%.2fx", "SNAP_RENDER_SCALE"},   // below 1.0 lost the GPU device after photo scoring in tests, so the slider starts at 1
       {"gfx_aa", "Anti-aliasing", kChoice, kRestart,
        "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling draws at twice the window height first: very sharp, and costs a lot of GPU time.",
        "default",
-       {{"default", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"off", "Off"}}, 0, 0, "", "SNAP_AA"},
+       {{"default", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"off", "Off"}, {"none", "None (not even the game's FXAA)"}}, 0, 0, "", "SNAP_AA"},
       {"gfx_sharpen", "Sharpening", kSlider, kRestart,
        "A gentle sharpening pass after anti-aliasing. 0 is off. Too much makes edges look hard.", "0.00", {}, 0.0f, 1.0f, "%.2f", "SNAP_SHARPEN"},
-      {"gfx_upscaler", "Upscaler", kChoice, kSoon,
-       "DLSS, DLAA, FSR and XeSS rebuild a sharp picture from a smaller one so you can render fewer pixels. The code is being built and is not linked into this build yet, so the control is off.",
+      {"gfx_upscaler", "Upscaler", kChoice, kRestart,
+       "DLSS, DLAA, FSR and XeSS rebuild a sharp picture from a smaller one so you can render fewer pixels. DLSS and DLAA need an NVIDIA RTX card. It replaces the render scale and the 2x supersampling default; the game's FXAA is turned off unless you pick an anti-aliasing mode. Photos stay at native size.",
        "off", {{"off", "Off"}, {"dlaa", "DLAA (native, anti-aliased)"}, {"dlss", "DLSS"}, {"fsr", "FSR"}, {"xess", "XeSS"}}, 0, 0, "", "SNAP_UPSCALER"},
-      {"gfx_upscale_quality", "Upscaler quality", kChoice, kSoon,
+      {"gfx_upscale_quality", "Upscaler quality", kChoice, kRestart,
        "How much smaller the picture is before the upscaler enlarges it. Native draws at full size and only cleans up edges; Quality is 1.5x smaller per side, Balanced about 1.7x, Performance 2x.", "native",
        {{"native", "Native (no downscale)"}, {"quality", "Quality"}, {"balanced", "Balanced"}, {"performance", "Performance"}}, 0, 0, "", "SNAP_UPSCALE_QUALITY"},
       {"", "Textures and shadows", kSection, kLive, "", ""},
@@ -132,13 +189,19 @@ std::vector<Opt>& graphics_opts() {
        "16", {{"0", "Off (1x)"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}, 0, 0, "", "SNAP_ANISO"},
       {"gfx_lod_bias", "Texture sharpness", kChoice, kRestart,
        "Picks which texture detail level is used. Automatic sharpens textures when the render scale is above 1 and leaves the game alone at 1. Sharper values can shimmer.",
-       "auto", {{"auto", "Automatic"}, {"-1", "Sharper (-1.0)"}, {"-0.5", "A little sharper (-0.5)"}, {"0", "As the game ships (0)"}, {"0.5", "Softer (+0.5)"}}, 0, 0, "", "SNAP_LOD_BIAS"},
+       "auto", {{"auto", "Automatic"}, {"-1", "Sharper (-1.0)"}, {"-0.5", "A little sharper (-0.5)"}, {"0", "As the game ships (0)"}, {"0.5", "Softer (+0.5)"}, {"1", "Much softer (+1.0)"}}, 0, 0, "", "SNAP_LOD_BIAS"},
       {"gfx_shadow_res", "Shadow resolution", kChoice, kRestart,
        "Size of the moving shadow map. The game uses 1024. Higher gives crisper shadow edges and uses more video memory.", "default",
-       {{"default", "1024 (the game's own)"}, {"2048", "2048"}, {"4096", "4096"}}, 0, 0, "", "SNAP_SHADOW_RES"},
+       {{"512", "512 (fast, blocky shadows)"}, {"default", "1024 (the game's own)"}, {"2048", "2048"}, {"4096", "4096"}, {"8192", "8192 (very heavy)"}}, 0, 0, "", "SNAP_SHADOW_RES"},
       {"ssao_quality", "Ambient occlusion", kChoice, kRestart,
-       "Soft contact shadows in corners and under objects. High and Ultra take more samples: smoother, and cost frame time.", "default",
+       "Soft contact shadows in corners and under objects. High and Ultra take more samples. The courses draw no ambient occlusion while you play (their contact shadows are baked in); the effect shows only on the photo-select screen, so this does not change the course view or its frame rate.", "default",
        {{"default", "Default"}, {"high", "High (96 samples)"}, {"ultra", "Ultra (256 samples)"}}, 0, 0, "", "SNAP_SSAO_QUALITY"},
+      {"gfx_ssao_samples", "Occlusion samples", kChoice, kRestart,
+       "How many samples the simple ambient-occlusion pass takes per pixel. Overrides the Ambient occlusion choice above. Like the row above, it only matters on the photo-select screen, not in the course. 512 is the most the game's pass holds.", "default",
+       {{"default", "Default (the game's own)"}, {"8", "8"}, {"16", "16"}, {"64", "64"}, {"128", "128"}, {"256", "256"}, {"512", "512"}}, 0, 0, "", "SNAP_SSAO_SAMPLES"},
+      {"gfx_ssao_hbao", "Horizon occlusion", kChoice, kRestart,
+       "Directions and steps per direction for the horizon-based occlusion pass (used where the game selects it). More is smoother and costs more.", "default",
+       {{"default", "Default (the game's own)"}, {"12,48", "12 x 48"}, {"16,64", "16 x 64"}, {"24,96", "24 x 96"}, {"32,128", "32 x 128 (very heavy)"}}, 0, 0, "", "SNAP_SSAO_HBAO"},
       {"gfx_lighting", "Lighting preset", kChoice, kSoon,
        "One switch for shadow, ambient-occlusion and light-probe detail together. Not in this build yet; the separate shadow and occlusion options above work now.", "default",
        {{"default", "Original"}, {"high", "Enhanced"}, {"ultra", "Maximum"}}, 0, 0, "", "SNAP_LIGHTING"},
@@ -161,13 +224,10 @@ std::vector<Opt>& graphics_opts() {
        "1", {}, 1.0f, 4.0f, "%.1fx", "SNAP_DRAW_DISTANCE"},
       {"gfx_full_rate_anim", "Full-rate distant animation", kToggle, kRestart,
        "Far-away Pokemon animate every 2nd or 4th frame in the original. On animates them every frame: smoother, a little more CPU. May change photo scores, being tested.", "0", {}, 0, 0, "", "SNAP_FULL_RATE_ANIM"},
-      {"", "Frame rate and text", kSection, kLive, "", ""},
+      {"", "Frame rate", kSection, kLive, "", ""},
       {"frame_cap", "Frame rate limit", kChoice, kLive,
        "Stops the game from drawing faster than this. Off keeps the game's own 60 FPS pacing. Remembered in window.json.", "0",
        {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"90", "90"}, {"120", "120"}, {"144", "144"}}, 0, 0, "", "SNAP_WINDOW_FRAME_CAP", get_cap, set_cap},
-      {"gfx_ui_font", "Menu text sharpness", kChoice, kRestart,
-       "The game's own menus and labels are drawn from a low-resolution letter sheet. Higher draws the letters sharper on large screens, at the same size and position.", "default",
-       {{"default", "As the game ships"}, {"2", "Sharper (2x)"}, {"3", "Sharper (3x)"}, {"4", "Sharpest (4x)"}}, 0, 0, "", "SNAP_UI_FONT_SCALE"},
   };
   return v;
 }
@@ -183,6 +243,10 @@ std::vector<Opt>& display_opts() {
       {"win_size", "Windowed size", kChoice, kRestart,
        "The size of the picture area when the game is windowed. Without a choice the game remembers the size you dragged it to. Output resolution of the finished picture follows the window.",
        "", {{"", "Remembered"}, {"1280x720", "1280 x 720"}, {"1600x900", "1600 x 900"}, {"1920x1080", "1920 x 1080"}, {"2560x1440", "2560 x 1440"}, {"3840x2160", "3840 x 2160"}}, 0, 0, "", "SNAP_WINDOW_W"},
+      {"", "Text", kSection, kLive, "", ""},
+      {"gfx_ui_font", "Menu text sharpness", kChoice, kRestart,
+       "The game's own menus and labels are drawn from a low-resolution letter sheet. Higher draws the letters sharper on large screens, at the same size and position. Automatic uses 2x when the game window is 1440 lines tall or more.", "default",
+       {{"default", "Automatic (2x at 1440p and above)"}, {"1", "Off (as the game ships)"}, {"2", "Sharper (2x)"}, {"3", "Sharper (3x)"}, {"4", "Sharpest (4x)"}}, 0, 0, "", "SNAP_UI_FONT_SCALE"},
       {"", "Focus", kSection, kLive, "", ""},
       {"win_pause", "Pause when unfocused", kToggle, kLive,
        "Freezes the game while you are in another window, so nothing happens while you are away. Remembered in window.json.", "1", {}, 0, 0, "", "SNAP_WINDOW_PAUSE", get_pause, set_pause},

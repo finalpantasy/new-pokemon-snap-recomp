@@ -32,6 +32,8 @@
 namespace stdfs = std::filesystem;
 using namespace hle;
 namespace nvn { int g_presentCount = 0; }   // input_core.cpp reads the nvn frame clock; the renderer is not linked into this test
+#include "../../runtime/os/os.h"
+extern "C" void os_get_stats(OsStats* o) { *o = OsStats{}; }   // runtime/os/perf.cpp (linked for fs_core's counters) reads the os layer, which is not linked here
 
 
 // ---- tiny test framework

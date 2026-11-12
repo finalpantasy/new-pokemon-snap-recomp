@@ -207,6 +207,32 @@ wall time from the first input poll, so a loaded PC shifts the game but not the 
 `florio_photos` (A taps plus ZR) reaches the lab intro and the camera tutorial by ~190 s; later steps are unverified (see
 `analysis\recomp\integration_issues.md`). `host\routes\unlock_all.txt` is the same A-tap probe on the `unlock_all` fixture.
 
+## Graphics quality presets (F1 > Graphics > Quality preset)
+
+The row picks Very Low, Low, Normal, High, Ultra or Maximum and sets nine rows at once; it shows Custom when the rows match no preset (the preset itself is not stored). All rows need a restart. Blank = the row's default.
+
+| Row (env) | Very Low | Low | Normal | High | Ultra | Maximum |
+|---|---|---|---|---|---|---|
+| Render scale (`SNAP_RENDER_SCALE`) | 1 | 1 | default | default | 2.00 | 4.00 |
+| Anti-aliasing (`SNAP_AA`) | none | off (game FXAA) | default (ssaa2+smaa, CAS 0.3) | ssaa2,smaa | smaa | smaa |
+| Sharpening (`SNAP_SHARPEN`) | 0 | 0 | default | 0.30 | 0.30 | 0.50 |
+| Aniso (`SNAP_ANISO`) | off | 4 | 16 | 16 | 16 | 16 |
+| Texture sharpness (`SNAP_LOD_BIAS`) | +1 | auto | auto | auto | auto | auto |
+| Shadow map (`SNAP_SHADOW_RES`) | 512 | 1024 | 1024 | 2048 | 4096 | 8192 |
+| AO quality (`SNAP_SSAO_QUALITY`) | default | default | default | high | ultra | ultra |
+| AO samples (`SNAP_SSAO_SAMPLES`, new row) | 4 | 8 | default | default | default | 512 |
+| HBAO dirs x steps (`SNAP_SSAO_HBAO`, new row) | default | default | default | default | default | 32 x 128 |
+
+Left out on purpose: draw distance, full-rate animation (photo scores unverified), FOV (paused), lighting preset (lighting worker), HDR, color look, frame cap. Upscaler and upscaler quality rows are now live (restart) but in no preset. The upscaler replaces the render scale and the ssaa2 default (the game's FXAA is off unless `SNAP_AA` is set); its scene scale is below 1 in a window under 1080p, which is the path that lost the device.
+
+Findings (2026-11-12, florio_eval / florio_photos, hidden 1280x720 window, RTX 4090, 2 to 4 runs at once with other workers, so absolute times are noisy):
+- Sub-native render scale is unsafe: scale 0.5 (3 runs) and 0.75 (1 run) reached photo scoring, then the GPU device was lost (`vkQueueSubmit2 failed: -4`, tens of thousands of errors) 20 to 30 s after the score screen. Scale 1 (Very Low, Low, Normal) never did. Cause not found. The slider now starts at 1.0.
+- Scale 6 and 8 crash the guest before the title (run `0-20261112_144057`); 4 works.
+- `SNAP_SHADOW_RES=512` is new (the depth maps scale 0.5). `SNAP_PASS_OFF` does nothing yet (`rt_gm_pass` never matches names), so bloom/DOF/SSAO cannot be switched off.
+- Presents are paced to 60 Hz, so ms/frame below is mostly the limiter plus CPU load, not GPU cost: Normal 18.9 (`3-20261112_131027`), Very Low 17.7 (`0-20261112_141432`, florio_eval, photo scored, 2,375 points shown), Low 17.6 (`1-20261112_141432`), High 18.1 (`0-20261112_142450`), Ultra 18.4 (`1-20261112_142450`), Maximum 19.5 (`0-20261112_143210`, 7680x4320 scene), Maximum with a 3840x2160 window 19.7 (`0-20261112_144203`). Maximum does not lag a 4090 under this pacing; an exclusive `SNAP_PERF` bench is needed for real GPU cost.
+- AO samples and shadow size do not change the course picture (lighting worker: no SSAO in the course, shadows mostly baked).
+- Not done: the one-time preset suggestion from the GPU name; scoring on High, Ultra, Maximum (only Very Low and Low ran `florio_eval`; Normal at 1x/ssaa default scored in earlier runs); the F1 test `tests\hle\run_options_test.ps1` passes the new preset checks (25 checks, FOV expectations removed).
+
 ## Layers and registration order (`bind_host_layers` in `boot.cpp`)
 
 1. `hle::bind_all`: real HLE overrides are strong; the generated not-implemented stubs are weak (bound only when no module defines the symbol).

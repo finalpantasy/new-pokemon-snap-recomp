@@ -580,7 +580,7 @@ static bool IsDepthFmt(int f) { return f == FMT_STENCIL8 || (f >= FMT_DEPTH16 &&
 float ScalePolicy::For(const TextureBuilder& b, uint32_t tag) const {
   // The 1024x1024 depth shadow maps (dynamic shadow and the three static ones) follow SNAP_SHADOW_RES only, never the render scale.
   if (IsDepthFmt(b.format) && (b.target == TT_2D || b.target == TT_2D_ARRAY) && b.width == 1024 && b.height == 1024 && b.samples <= 1)
-    return shadowRes > 1024 ? (float)shadowRes / 1024.0f : 1.0f;
+    return shadowRes > 0 ? (float)shadowRes / 1024.0f : 1.0f;   // 512 (Very Low preset) halves the side
   if (scale == 1.0f || scale <= 0.0f) return 1.0f;
   // Window textures: the game composes UI and the final image into these, so they must scale too for a real 4K frame. The Evaluation
   // depth target is not a window texture and keeps its exemption below.
@@ -607,7 +607,7 @@ void ApplyHostEnvPolicy() {
   { float sc = 0, oc = 0; if (UpscaleApplyPolicy(&sc, &oc)) {   // [upscale] SNAP_UPSCALER: scene at sc, window textures at oc; game FXAA off unless SNAP_AA set
       g_scale.scale = sc; g_scale.displayScale = oc; if (!getenv("SNAP_AA")) g_aaMode = AA_OFF; } }
   if (const char* l = getenv("SNAP_LIGHTING")) { if (!strcmp(l, "high")) g_scale.shadowRes = 2048; }   // lighting preset (host/mods/gamemods.cpp); SNAP_SHADOW_RES below wins
-  if (const char* e = getenv("SNAP_SHADOW_RES")) { int v = atoi(e); g_scale.shadowRes = (v > 1024 && v <= 8192) ? v : 0; }
+  if (const char* e = getenv("SNAP_SHADOW_RES")) { int v = atoi(e); g_scale.shadowRes = ((v > 1024 && v <= 8192) || v == 512) ? v : 0; }
   if (const char* e = getenv("SNAP_ANISO")) { float v = (float)atof(e); g_anisoOverride = v > 1.f ? std::min(v, 16.f) : 0.f; }
   if (const char* e = getenv("SNAP_LOD_BIAS")) {
     if (!_stricmp(e, "auto")) g_lodBiasAuto = true; else { g_lodBiasExtra = (float)atof(e); g_lodBiasAuto = false; }

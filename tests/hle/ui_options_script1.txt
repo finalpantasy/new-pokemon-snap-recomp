@@ -5,10 +5,22 @@
 27.5 expect_pending 0
 28 expect_when gfx_render_scale restart
 28.1 expect_when frame_cap live
-28.2 expect_when gfx_upscaler soon
+28.2 expect_when gfx_upscaler restart
 28.4 expect_when win_mode live
 28.5 expect_when audio_output restart
 29 tab Graphics
+29.1 expect_opt gfx_preset normal
+29.2 opt gfx_preset maximum
+29.3 expect_opt gfx_shadow_res 8192
+29.4 expect_opt gfx_ssao_samples 512
+29.5 expect_opt gfx_preset maximum
+29.6 opt gfx_preset verylow
+29.7 expect_opt gfx_shadow_res 512
+29.8 expect_opt gfx_aa none
+29.9 expect_opt gfx_preset verylow
+29.95 opt gfx_preset normal
+29.96 expect_opt gfx_shadow_res default
+29.97 expect_opt gfx_preset normal
 30 opt gfx_render_scale 1.50
 30.2 opt gfx_aa smaa
 30.4 opt gfx_aniso 8
@@ -23,6 +35,7 @@
 32 mods toggle alpha
 32.2 mods move beta -1
 32.4 expect_mods beta:1,alpha:0
+32.5 expect_opt gfx_preset custom
 32.6 expect_pending 12
 33 expect_opt gfx_render_scale 1.50
 34 tab Graphics

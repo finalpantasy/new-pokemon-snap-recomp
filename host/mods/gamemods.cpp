@@ -12,8 +12,9 @@
 //   SNAP_SSAO_STRENGTH=f                   SimpleAO strength (game default 1.0).
 //   SNAP_LIGHTING=high                     preset: SNAP_SSAO_QUALITY=high plus SNAP_SHADOW_RES=2048 (the latter read by runtime/nvn
 //                                          ApplyHostEnvPolicy); every explicit switch above still wins.
-//   SNAP_UI_FONT_SCALE=2..4                UI glyphs are rasterized at k times the size into a k times larger atlas (#29, sharper fonts); the
+//   SNAP_UI_FONT_SCALE=auto|1|2..4         UI glyphs are rasterized at k times the size into a k times larger atlas (#29, sharper fonts); the
 //                                          layout fields of every glyph entry keep the 1x values, so text size and position do not change.
+//                                          Unset or auto: k = 2 when the game window's client height is 1440 or more, else 1 (off). 1 = off.
 //   SNAP_GM_TRACE=1                        logs the values the game had before the override (first 8 hits of each hook).
 //   SNAP_PASS_DUMP=1                       logs each distinct render pass object once (vtable, flags, strings) for pass identification.
 //   SNAP_PASS_OFF=name,name,...            disables post passes by name (see pass_name_matches below).
@@ -41,6 +42,7 @@ int g_simple_n;                 // 0 = leave the game's value
 int g_hbao_dirs, g_hbao_samples;  // 0 = leave
 bool g_trace, g_pass_dump;
 int g_font_k;                   // 0 = off
+bool g_font_decided;
 float g_ao_radius, g_ao_strength;  // 0 = leave the game's value
 std::vector<std::string> g_pass_off;
 
@@ -59,8 +61,6 @@ void init() {
     }
     if (const char* r = getenv("SNAP_SSAO_RADIUS")) { float v = (float)atof(r); if (v > 0.0f && v <= 4.0f) g_ao_radius = v; }
     if (const char* r = getenv("SNAP_SSAO_STRENGTH")) { float v = (float)atof(r); if (v > 0.0f && v <= 8.0f) g_ao_strength = v; }
-    if (const char* f = getenv("SNAP_UI_FONT_SCALE")) { int k = atoi(f); if (k >= 2 && k <= 4) g_font_k = k; }
-    if (g_font_k) fprintf(stderr, "gamemods: UI font scale %d\n", g_font_k);
     g_trace = getenv("SNAP_GM_TRACE") && getenv("SNAP_GM_TRACE")[0] != '0';
     g_pass_dump = getenv("SNAP_PASS_DUMP") && getenv("SNAP_PASS_DUMP")[0] != '0';
     if (const char* o = getenv("SNAP_PASS_OFF")) {
@@ -197,14 +197,46 @@ void font_composite(Cpu* c, bool first) {
     memcpy(b.data() + 16, r2, 0x28 + (size_t)w2 * h2);
     memcpy(b.data() + 16 + 0xc, hdr1 + 0xc, 6);   // bearing x, bearing y, advance: the 1x values
     c->x[0] = (uint64_t)(b.data() + 16);
-    static int n;
-    if (g_trace && n < 6) { n++; trace("gamemods: font glyph %#x 1x %ux%u -> %ux%u (scale %#x)", cp, w1, h1, w2, h2, s); }
+    static int n, n2, total[2];
+    total[first ? 0 : 1]++;
+    if (g_trace && first && n < 6) { n++; trace("gamemods: font glyph %#x 1x %ux%u -> %ux%u (scale %#x)", cp, w1, h1, w2, h2, s); }
+    if (g_trace && !first && n2 < 6) { n2++; trace("gamemods: font glyph2 %#x 1x %ux%u -> %ux%u (scale %#x)", cp, w1, h1, w2, h2, s); }
+    if (g_trace && (total[0] + total[1]) % 500 == 0) trace("gamemods: font glyph calls %d first-site, %d second-site", total[0], total[1]);
+}
+
+// Client height of this process's largest visible top-level window (the real output: borderless fullscreen gives the monitor height); 0 if none.
+BOOL CALLBACK font_enum_win(HWND h, LPARAM lp) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    if (pid != GetCurrentProcessId() || !IsWindowVisible(h)) return TRUE;
+    RECT r;
+    if (GetClientRect(h, &r) && r.bottom > *(int*)lp) *(int*)lp = r.bottom;
+    return TRUE;
+}
+
+// Decides g_font_k once, at the first atlas creation (the window exists by then). SNAP_UI_FONT_SCALE: 1 or off = off, 2..4 = that scale,
+// unset / auto / default = 2 when the output is 1440 lines or taller (the F1 menu stores "default" as unset).
+void decide_font_scale() {
+    g_font_decided = true;
+    const char* f = getenv("SNAP_UI_FONT_SCALE");
+    if (f && *f && strcmp(f, "auto") && strcmp(f, "default")) {
+        int k = !strcmp(f, "off") ? 1 : atoi(f);
+        if (k >= 2 && k <= 4) g_font_k = k;
+        fprintf(stderr, "gamemods: UI font scale %d (SNAP_UI_FONT_SCALE=%s)\n", g_font_k ? g_font_k : 1, f);
+        return;
+    }
+    int h = 0;
+    EnumWindows(font_enum_win, (LPARAM)&h);
+    if (h <= 0) { if (const char* e = getenv("SNAP_WINDOW_H")) h = atoi(e); }
+    if (h >= 1440) g_font_k = 2;
+    fprintf(stderr, "gamemods: UI font scale %d (auto, output height %d)\n", g_font_k ? g_font_k : 1, h);
 }
 
 // ----- the five hook sites (recomp/snap_gen.py MAIN_INLINE_HOOKS)
 // Before main+0x6410bc (the call that creates the atlas texture, texture info at sp+0xe0, width/height as two u32 at +0x18): enlarge it.
 extern "C" void rt_gm_font_atlas_info(Cpu* c) {
     init();
+    if (!g_font_decided) decide_font_scale();
     if (!g_font_k) return;
     uint32_t* wh = (uint32_t*)(c->sp + 0xf8);
     if (wh[0] == 512 && wh[1] == 2048) { wh[0] *= g_font_k; wh[1] *= g_font_k; }
