@@ -6,18 +6,34 @@ A native Windows static recompilation of New Pokémon Snap (Switch): the game's 
 
 ## Status
 
-Early, but playable. The game boots through the intro and tutorials into the first course, and Pokémon and characters render. Keyboard, mouse and controllers work, and F1 opens a menu for remapping them.
+Early, but playable. The game boots through the intro and tutorials into the first course, and Pokémon and characters render. Photo select works: photos sort by subject, thumbnails show, and the professor scores them. Keyboard, mouse and controllers work, and F1 opens a menu for remapping them and for the options below.
 
 Known problems:
 
-- Photo capture is broken. Thumbnails come out black, and the professor says you have no photos to show.
-- The frame rate sits a little under 60 FPS, with shader-compile stutter.
+- Stable 60 FPS is not reached yet, and shader compiles can stutter.
+- Draw distance and full-rate distant animation are experimental. They may change photo scores, so they are still being tested.
+- Sub-native render scales (below 1.0) lost the GPU device after the photo score screen in testing, so no preset uses them.
+
+## Features
+
+All of these are in the F1 menu (Graphics, Display, Photos and Mods tabs); each row says whether it applies now or after a restart.
+
+- **Quality presets:** Very Low, Low, Normal, High, Ultra, Maximum and Custom. They set render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution and ambient occlusion together. Normal matches the defaults.
+- **Anti-aliasing:** 2x supersampling plus SMAA with CAS sharpening by default. The original FXAA path and other combinations are options.
+- **Upscalers:** NVIDIA DLSS and DLAA, AMD FSR 3.1 and Intel XeSS, each with quality modes. The vendor SDK files are not in this repo; you download them yourself and place them under `tools/` (git-ignored). Photos and scoring never use jittered or upscaled output.
+- **HDR output:** HDR10 and scRGB swapchains, with a fallback to standard output.
+- **Sharper UI fonts:** automatic 2x font rendering at 1440p and above, with manual 1x to 4x choices.
+- **Draw distance and distant animation:** options for longer draw distance and full-rate animation of distant Pokémon (experimental, see above).
+- **Photo export:** every album photo is also saved as a lossless PNG with a JSON sidecar.
+- **Input:** rumble, and gyro aim on controllers that report a gyro (it drives the right stick, since the game never reads motion).
+- **Window and boot:** borderless fullscreen, monitor choice, a remembered window rectangle, pause and mute when unfocused, and an optional fast-boot mode that skips the frame limiter during loading.
+- **Mods:** a loader for loose-file packs that replace single game archive entries, including HD texture packs. Packs live in `%APPDATA%\SnapRecomp\mods`, or the folder named by `SNAP_MODS_DIR`, and are enabled and ordered from the F1 Mods tab. See `docs/mods.md`. The repo holds only the loader, never pack contents made from game data.
 
 ![Professor Mirror and Rita at the lab, rendered by the PC port](docs/screenshots/lab.webp)
 
-![Photographing Vivillon in the first course. The black box at bottom left is the broken photo thumbnail.](docs/screenshots/course.webp)
+![Photographing Vivillon in the first course. The black box at bottom left is the old broken photo thumbnail, fixed since.](docs/screenshots/course.webp)
 
-Both are captures of the native build running on Windows, scaled to 1280x720.
+Both are older captures of the native build running on Windows, scaled to 1280x720.
 
 ## Architecture
 
@@ -25,7 +41,7 @@ Both are captures of the native build running on Windows, scaled to 1280x720.
 - `runtime/`: the guest CPU model and SIMD helpers, a Horizon OS layer (`os/`, threads and sync), HLE services (`hle/`), audio (`audio/`, WASAPI), and the NVN-to-Vulkan graphics layer (`nvn/`).
 - `host/`: loader, boot driver and the one-command build of `snap_boot.exe`.
 - `scripts/`: extraction, unpacking and analysis tools (NSO to ELF, PFS0, DRP archives, shader and format parsers, Ghidra scripts, an offline Maxwell-to-SPIR-V harness).
-- `tests/`: instruction-level differential tests, HLE, audio, NVN and OS tests.
+- `tests/`: instruction-level differential tests, HLE, audio, NVN and OS tests. Test runs use up to 4 parallel slots (see `host/README.md`).
 - `docs/` and `AGENTS.md`: design notes and the project's decisions and state.
 
 Game shaders are translated offline (Ryujinx shader translator to SPIR-V) and loaded at run time from the user's own extracted files. Nothing derived from the game is stored in the repo.
