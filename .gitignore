@@ -19,6 +19,7 @@ build/
 *.png
 *.jpg
 *.webp
+!docs/screenshots/*.webp
 *.dds
 *.ktx
 *.tga
@@ -51,3 +52,5 @@ venv*/
 obj/
 bin/
 .vs/
+*.ico
+*.res

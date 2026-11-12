@@ -13,7 +13,11 @@ Known problems:
 - Photo capture is broken. Thumbnails come out black, and the professor says you have no photos to show.
 - The frame rate sits a little under 60 FPS, with shader-compile stutter.
 
-<!-- screenshots: pending owner decision -->
+![Professor Mirror and Rita at the lab, rendered by the PC port](docs/screenshots/lab.webp)
+
+![Photographing Vivillon in the first course. The black box at bottom left is the broken photo thumbnail.](docs/screenshots/course.webp)
+
+Both are captures of the native build running on Windows, scaled to 1280x720.
 
 ## Architecture
 
