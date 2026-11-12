@@ -49,7 +49,9 @@ void write_npad_state(void* dst, uint32_t id, uint32_t style) {
     static uint64_t last = ~0ull; static int calls = 0; if (++calls % 600 == 0) log("hid: GetNpadState calls=%d buttons=%#llx", calls, (unsigned long long)input::hub().pad().buttons);
     uint64_t cur = match ? input::hub().pad().buttons : 0xffffffffull;
     uint64_t key = (uint64_t)id << 56 ^ (uint64_t)style << 40 ^ cur;
-    if (key != last) { last = key; log("hid: GetNpadState id %u style %#x match=%d buttons=%#llx", id, style, (int)match, (unsigned long long)cur); }
+    static int32_t last_rx = 0, last_ry = 0;
+    const int32_t rx = match ? input::hub().pad().rx : 0, ry = match ? input::hub().pad().ry : 0;
+    if (key != last || rx != last_rx || ry != last_ry) { last = key; last_rx = rx; last_ry = ry; log("hid: GetNpadState id %u style %#x match=%d buttons=%#llx rx=%d ry=%d", id, style, (int)match, (unsigned long long)cur, rx, ry); }
   }
   if (!match) return;
   input::PadSample p = input::hub().pad();
@@ -117,14 +119,24 @@ void hid_get_six_axis_handles(Cpu* c) {  // int GetSixAxisSensorHandles(SixAxisS
   if (id == active_id() && (style & active_style())) have = 1;
   else if ((style & kStyleJoyDual) && id == active_id()) have = 2;
   have = std::min(have, n);
+  if (trace_flags & kTraceHid) log("hid: GetSixAxisSensorHandles id %u style %#x -> %d", id, style, have);
   for (int i = 0; i < have; ++i) out[i] = ((id & 0xffff) << 8) | (uint32_t)(i + 1);  // nonzero, never 0x7fffffff
   ret(c, (uint64_t)have);
 }
-void hid_start_six_axis(Cpu*) { g_hid.six_axis_started = true; }
+void hid_start_six_axis(Cpu*) { g_hid.six_axis_started = true; if (trace_flags & kTraceHid) log("hid: StartSixAxisSensor"); }
 void hid_stop_six_axis(Cpu*) { g_hid.six_axis_started = false; }
-void hid_is_six_axis_at_rest(Cpu* c) { ret(c, 1); }  // bool: the game skips gyro aiming while true
+// With a real or fake gyro (input::RawInput::gyro_present and gyro aim on) the state carries its angular rate; the game never calls these
+// today (verified with SNAP_TRACE hid), so this path is untested against the game itself.
+bool gyro_live(float* yaw_dps, float* pitch_dps, float* roll_dps) {
+  input::RawInput r = input::hub().raw();
+  if (!r.gyro_present || !input::gyro_aim_enabled()) return false;
+  *yaw_dps = r.gyro_y; *pitch_dps = r.gyro_x; *roll_dps = r.gyro_z;
+  return true;
+}
+void hid_is_six_axis_at_rest(Cpu* c) { float a, b, d; ret(c, gyro_live(&a, &b, &d) && (a * a + b * b + d * d) > 4.0f ? 0 : 1); }  // bool: the game skips gyro aiming while true
 void hid_get_six_axis_states(Cpu* c) {  // int GetSixAxisSensorStates(SixAxisSensorState* out, int n, const SixAxisSensorHandle&)
   int n = (int)arg32(c, 1);
+  if (trace_flags & kTraceHid) { static int calls = 0; if (calls++ < 20) log("hid: GetSixAxisSensorStates n=%d", n); }
   if (n < 1) { ret(c, 0); return; }
   uint8_t* st = ptr<uint8_t>(arg(c, 0));
   std::memset(st, 0, kSixAxisStateSize);
@@ -132,6 +144,10 @@ void hid_get_six_axis_states(Cpu* c) {  // int GetSixAxisSensorStates(SixAxisSen
   store<int64_t>(st + 0, 16666666);            // deltaTime ns
   store<int64_t>(st + 8, seq);                 // samplingNumber
   store<float>(st + 0x18, -1.0f);              // acceleration z (face up, at rest)
+  float yaw, pitch, roll;
+  if (gyro_live(&yaw, &pitch, &roll)) {   // nn::hid angular velocity: 1.0 = one turn per second; x = pitch, y = yaw, z = roll
+    store<float>(st + 0x1c, pitch / 360.0f); store<float>(st + 0x20, yaw / 360.0f); store<float>(st + 0x24, roll / 360.0f);
+  }
   store<float>(st + 0x34, 1.0f);               // direction matrix = identity
   store<float>(st + 0x44, 1.0f);
   store<float>(st + 0x54, 1.0f);
@@ -146,11 +162,14 @@ void hid_get_vibration_handles(Cpu* c) {  // int GetVibrationDeviceHandles(Vibra
   uint32_t style = arg32(c, 3);
   int have = (id == active_id() && (style & active_style())) ? 2 : 0;  // left and right actuators
   have = std::min(have, n);
+  if (input::rumble_log_enabled()) log("rumble: GetVibrationDeviceHandles id %u style %#x n=%d -> %d from main+%#llx", id, style, n, have, (unsigned long long)(c->x[30] - 0x7100000000ull));
   for (int i = 0; i < have; ++i) out[i] = ((id & 0xffff) << 8) | (uint32_t)(i + 1);
   ret(c, (uint64_t)have);
 }
 void hid_send_vibration_value(Cpu* c) {  // (const VibrationDeviceHandle&, const VibrationValue&): {f32 ampLow, freqLow, ampHigh, freqHigh}
   const float* v = ptr<const float>(arg(c, 1));
+  if (trace_flags & kTraceHid) log("hid: SendVibrationValue");
+  if (input::rumble_log_enabled()) log("rumble: SendVibrationValue handle=%#x ampLow=%.3f freqLow=%.1f ampHigh=%.3f freqHigh=%.1f from main+%#llx", load<uint32_t>(ptr<void>(arg(c, 0))), v[0], v[1], v[2], v[3], (unsigned long long)(c->x[30] - 0x7100000000ull));
   float low = std::clamp(v[0], 0.0f, 1.0f), high = std::clamp(v[2], 0.0f, 1.0f);
   input::hub().rumble(low, high);
   input::script_event("vibration");   // first call: the lab cutscene hands over the camera (scripted-input anchor, host/skip_intro.txt)

@@ -1,0 +1,14 @@
+# fixture: post_tutorial
+# QA: lab hub house (Lab) entry: Down once, A, then browse with Down/A/B. Run with -ShotAt 60 -ShotEvery 2.
+repeat @f300 @f1560 120 8 A
+@f2200 8 Down
+@f2500 12 A
+@f2900 8 A
+@f3300 8 Right
+@f3600 8 Down
+@f3900 8 A
+@f4300 8 B
+@f4600 8 Down
+@f4900 8 A
+@f5300 8 B
+@f5600 8 B

@@ -62,6 +62,7 @@ def main():
     srcs += [(p, 20) for p in sorted((ROOT / 'host' / 'mods').glob('*.cpp'))]   # draw-distance mods 26 and 27 (host/mods/lodanim.cpp)
     for d in ('hle', 'audio', 'nvn', 'mods'):
         srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / d).glob('*.cpp'))]
+    srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'nvn' / 'upscale').glob('*.cpp'))]   # temporal upscalers (SNAP_UPSCALER)
     # in-game controls overlay (runtime/ui): our files plus the vendored Dear ImGui core and its Vulkan / Win32 backends
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'ui').glob('*.cpp'))]
     imgui = ROOT / 'runtime' / 'ui' / 'third_party' / 'imgui'
@@ -77,12 +78,18 @@ def main():
     sdl_ok = (sdl / 'include' / 'SDL3' / 'SDL.h').exists() and (sdl / 'lib' / 'x64' / 'SDL3.lib').exists()
     if sdl_ok:
         cflags += ['-DHLE_WITH_SDL3', '-I', str(sdl / 'include')]
+    # FSR 3.1: the FidelityFX API headers (MIT) from the local SDK copy; without them the FSR backend reports itself unavailable
+    ffx = ROOT / 'tools' / 'amd' / 'ffx_sdk_v1.1.4' / 'ffx-api' / 'include'
+    if (ffx / 'ffx_api' / 'ffx_api.h').exists():
+        cflags += ['-DSNAP_HAVE_FFX_API', '-I', str(ffx)]
     env = vc_env()
 
     def compile_one(item):
         src, std = item
         o = obj / (src.parent.name + '_' + src.stem + '.obj')
         deps = [src] + list((ROOT / 'host').glob('*.h')) + list((ROOT / 'runtime').glob('*.h')) + list((ROOT / 'runtime' / src.parent.name).glob('*.h'))
+        if src.parent.name == 'upscale':
+            deps += list(src.parent.glob('*.h')) + list(src.parent.parent.glob('*.h'))
         if not args.rebuild and o.exists() and o.stat().st_mtime > max(d.stat().st_mtime for d in deps):
             return o, 0, ''
         r = subprocess.run([str(LLVM / 'clang++.exe'), f'-std=c++{std}'] + cflags + ['-c', str(src), '-o', str(o)], env=env,
@@ -116,6 +123,12 @@ def main():
                        env=env, creationflags=BELOW_NORMAL)
     if r.returncode:
         return 1
+    # upscaler libraries (local, git-ignored copies under tools\; loaded at run time, never committed or linked)
+    for dll in (ROOT / 'tools' / 'nvidia' / 'dlss_v310.9.16' / 'bin' / 'nvngx_dlss.dll',
+                ROOT / 'tools' / 'amd' / 'ffx_sdk_v1.1.4' / 'PrebuiltSignedDLL' / 'amd_fidelityfx_vk.dll',
+                ROOT / 'tools' / 'intel' / 'xess_3.0.2' / 'bin' / 'libxess.dll'):
+        if dll.exists() and (not (out / dll.name).exists() or (out / dll.name).stat().st_size != dll.stat().st_size):
+            shutil.copyfile(dll, out / dll.name)
     print(f'built {exe} ({exe.stat().st_size / 1e6:.1f} MB) in {time.time() - t0:.1f}s')
     return 0
 

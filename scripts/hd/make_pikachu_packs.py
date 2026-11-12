@@ -44,6 +44,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', default=os.path.join(os.environ.get('APPDATA', '.'), 'SnapRecomp', 'mods'))
     ap.add_argument('--variant', default='x4_realesrgan')
+    ap.add_argument('--max-edge', type=int, default=1024, help='sizes above the original (1024) crashed the hub load in 1 of 1 test at 2048, see qa bugs B1')
     a = ap.parse_args()
     root = Path(a.root)
     tmp = Path(tempfile.mkdtemp(prefix='pikapack_'))
@@ -63,7 +64,12 @@ def main():
         if not up.exists():
             print('skip (no upscale yet):', f.name)
             continue
-        r = ne.encode(up, f, dst / f.name)
+        im = Image.open(up).convert('RGBA')
+        if max(im.size) > a.max_edge:
+            im = im.resize((a.max_edge, a.max_edge), Image.LANCZOS)
+        small = tmp / (f.stem + '.png')
+        im.save(small)
+        r = ne.encode(small, f, dst / f.name)
         print('hd_pikachu:', f.name, r)
 
 

@@ -24,13 +24,28 @@
 #include <string>
 #include <fstream>
 
+#include "nvn_aa.h"
 #include "nvn_internal.h"
 #include "nvn_pipeline.h"
 #include "os/perf.h"   // SNAP_PERF instrumentation
 #include "nvn_clear_spv.h"
 #include "nvn_state.h"
+#include "upscale/upscale_nvn.h"   // [upscale]
 
 namespace nvn {
+
+extern bool g_provokingLast;                  // nvn_vk.cpp: VK_EXT_provoking_vertex enabled (NVN flat varyings come from the LAST vertex)
+extern VkShaderStageFlags g_sgPinStages;      // nvn_vk.cpp: stages that accept requiredSubgroupSize = 32
+bool ModuleUsesSubgroup(VkShaderModule m);    // nvn_shader.cpp
+
+// Pins a stage to 32 lanes when its SPIR-V uses subgroup ops (the translator assumes Maxwell's 32-lane warp; RDNA may run wave64).
+static void PinSubgroup32(VkPipelineShaderStageCreateInfo* si, VkPipelineShaderStageRequiredSubgroupSizeCreateInfo* rq, VkShaderModule baseMod) {
+  if (!(g_sgPinStages & si->stage) || !ModuleUsesSubgroup(baseMod)) return;
+  *rq = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
+  rq->requiredSubgroupSize = 32;
+  rq->pNext = const_cast<void*>(si->pNext);
+  si->pNext = rq;
+}
 
 struct Dummies {
   VkBuffer zero = VK_NULL_HANDLE, support = VK_NULL_HANDLE;
@@ -288,6 +303,7 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
   const bool dual = pd.nColor > 0 && ((pd.blendEn >> 0) & 1) && usesSrc1(pd.blend[0]) && h->features.dualSrcBlend &&
                     h->props.limits.maxFragmentDualSrcAttachments >= 1 && valid(1) && st[1]->outLocs.size() >= 2;
   std::vector<VkPipelineShaderStageCreateInfo> stages;
+  VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sgPin[6];   // storage for PinSubgroup32 (stages hold a pointer to it)
   float alphaRefVal = pd.alphaRef;
   VkSpecializationMapEntry alphaMap{0, 0, 4};
   VkSpecializationInfo alphaSpec{};
@@ -297,6 +313,7 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
     static const VkShaderStageFlagBits bits[6] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_GEOMETRY_BIT,
                                                   VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, VK_SHADER_STAGE_COMPUTE_BIT};
     si.stage = bits[s]; si.module = st[s]->mod; si.pName = "main";
+    PinSubgroup32(&si, &sgPin[s], st[s]->mod);
     if (s == 1) {
       StageProg& fp = *st[1];
       const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u);
@@ -364,6 +381,8 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
   const int offBit = pd.poly.mode == POLY_POINT ? 1 : pd.poly.mode == POLY_LINE ? 2 : 4;
   rs.depthBiasEnable = (pd.poly.offsetEn & offBit) ? VK_TRUE : VK_FALSE;
   rs.lineWidth = 1.0f;
+  VkPipelineRasterizationProvokingVertexStateCreateInfoEXT provoking{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT};
+  if (g_provokingLast) { provoking.provokingVertexMode = VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT; rs.pNext = &provoking; }   // NVN/Maxwell flat shading
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
   ms.rasterizationSamples = (VkSampleCountFlagBits)std::max(pd.samples, 1);
   ms.alphaToCoverageEnable = pd.ms.a2c ? VK_TRUE : VK_FALSE;
@@ -480,8 +499,10 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
   auto it = d.tp->slots.find(texId);
   if (it == d.tp->slots.end() || !it->second.tex) return r;
   r.t = it->second.tex;
+  TextureImpl* const up = image ? nullptr : UpscaleSubstitute(cx, r.t);   // [upscale] the final pass reads the upscaled scene
+  if (up) r.t = up;
   if (!r.t->EnsureImage()) return r;
-  const TexView* tv = it->second.hasView ? &it->second.view : nullptr;
+  const TexView* tv = (it->second.hasView && !up) ? &it->second.view : nullptr;
   r.range = r.t->RangeOf(tv);
   if (!image) {
     for (int i = 0; i < 9; i++) {
@@ -546,6 +567,7 @@ void BeginRendering(ReplayCtx& cx, const RtInfo& rt) {
   ri.colorAttachmentCount = (uint32_t)rt.nColor; ri.pColorAttachments = col;
   vkCmdBeginRendering(cx.cb, &ri);
   cx.rendering = true;
+  for (int i = 0; i < 8; i++) if (cx.bcDst[i]) cx.bcDirty = true;
   if (cx.h->wantSamples && cx.h->occPool) {   // samples-passed counter: one occlusion query per rendering scope
     const uint32_t qi = cx.h->occNext++ % 8192;
     vkResetQueryPool(cx.h->device, cx.h->occPool, qi, 1);
@@ -572,6 +594,82 @@ BufBind ResolveBuf(Host* h, uint64_t addr, uint64_t size, uint64_t cap) {
 }
 
 struct TexWrite { int set, binding, idx; ResolvedTex r; bool image; int stype; };
+
+// ---- photo evaluation under render scale ----------------------------------------------------------------------------------
+// EvaluationCopyDepthPS copies the photo's scene depth into the 1920x1080 Evaluation target (exempt from render scale) with
+// texture(DepthTexture, uv). With SNAP_RENDER_SCALE=2 that depth texture is 3840x2160, so a 1920 pixel center lands between four
+// samples and nearest sampling returns one taken 1/4 pixel away. The subjects re-drawn at 1920 then fail their GEQUAL test against
+// their own surface on about half their pixels, so visibility dropped (Florio, 2026-11-12: median visible fraction 0.27 vs 0.65-0.94
+// at scale 1, no fully visible subject) and photos scored lower or became unselectable. When the source is scaled and the target is
+// not, this replacement takes the farthest (minimum, reversed Z) of the 2x2 footprint instead (textureGather), so a subject's own
+// surface always passes and an occluder still blocks. Scale 1 keeps the game's shader. NVN_NO_EVAL_DEPTH_FIX=1 disables it.
+// GLSL (glslangValidator -V, Vulkan 1.1): layout(set=2,binding=32) uniform sampler2D DepthTexture; layout(location=1) in vec4 uv;
+//   void main() { vec4 g = textureGather(DepthTexture, uv.xy, 0); gl_FragDepth = min(min(g.x, g.y), min(g.z, g.w)); }
+static const uint32_t kCopyDepthMinSpv[] = {
+  0x07230203,0x00010300,0x0008000b,0x0000002a,0x00000000,0x00020011,0x00000001,0x0006000b,
+  0x00000001,0x4c534c47,0x6474732e,0x3035342e,0x00000000,0x0003000e,0x00000000,0x00000001,
+  0x0007000f,0x00000004,0x00000004,0x6e69616d,0x00000000,0x00000010,0x00000018,0x00030010,
+  0x00000004,0x00000007,0x00030010,0x00000004,0x0000000c,0x00030003,0x00000002,0x000001c2,
+  0x00040005,0x00000004,0x6e69616d,0x00000000,0x00030005,0x00000009,0x00000067,0x00060005,
+  0x0000000d,0x74706544,0x78655468,0x65727574,0x00000000,0x00060005,0x00000010,0x545f7376,
+  0x4f435845,0x3044524f,0x00000000,0x00060005,0x00000018,0x465f6c67,0x44676172,0x68747065,
+  0x00000000,0x00040047,0x0000000d,0x00000021,0x00000020,0x00040047,0x0000000d,0x00000022,
+  0x00000002,0x00040047,0x00000010,0x0000001e,0x00000001,0x00040047,0x00000018,0x0000000b,
+  0x00000016,0x00020013,0x00000002,0x00030021,0x00000003,0x00000002,0x00030016,0x00000006,
+  0x00000020,0x00040017,0x00000007,0x00000006,0x00000004,0x00040020,0x00000008,0x00000007,
+  0x00000007,0x00090019,0x0000000a,0x00000006,0x00000001,0x00000000,0x00000000,0x00000000,
+  0x00000001,0x00000000,0x0003001b,0x0000000b,0x0000000a,0x00040020,0x0000000c,0x00000000,
+  0x0000000b,0x0004003b,0x0000000c,0x0000000d,0x00000000,0x00040020,0x0000000f,0x00000001,
+  0x00000007,0x0004003b,0x0000000f,0x00000010,0x00000001,0x00040017,0x00000011,0x00000006,
+  0x00000002,0x00040015,0x00000014,0x00000020,0x00000001,0x0004002b,0x00000014,0x00000015,
+  0x00000000,0x00040020,0x00000017,0x00000003,0x00000006,0x0004003b,0x00000017,0x00000018,
+  0x00000003,0x00040015,0x00000019,0x00000020,0x00000000,0x0004002b,0x00000019,0x0000001a,
+  0x00000000,0x00040020,0x0000001b,0x00000007,0x00000006,0x0004002b,0x00000019,0x0000001e,
+  0x00000001,0x0004002b,0x00000019,0x00000022,0x00000002,0x0004002b,0x00000019,0x00000025,
+  0x00000003,0x00050036,0x00000002,0x00000004,0x00000000,0x00000003,0x000200f8,0x00000005,
+  0x0004003b,0x00000008,0x00000009,0x00000007,0x0004003d,0x0000000b,0x0000000e,0x0000000d,
+  0x0004003d,0x00000007,0x00000012,0x00000010,0x0007004f,0x00000011,0x00000013,0x00000012,
+  0x00000012,0x00000000,0x00000001,0x00060060,0x00000007,0x00000016,0x0000000e,0x00000013,
+  0x00000015,0x0003003e,0x00000009,0x00000016,0x00050041,0x0000001b,0x0000001c,0x00000009,
+  0x0000001a,0x0004003d,0x00000006,0x0000001d,0x0000001c,0x00050041,0x0000001b,0x0000001f,
+  0x00000009,0x0000001e,0x0004003d,0x00000006,0x00000020,0x0000001f,0x0007000c,0x00000006,
+  0x00000021,0x00000001,0x00000025,0x0000001d,0x00000020,0x00050041,0x0000001b,0x00000023,
+  0x00000009,0x00000022,0x0004003d,0x00000006,0x00000024,0x00000023,0x00050041,0x0000001b,
+  0x00000026,0x00000009,0x00000025,0x0004003d,0x00000006,0x00000027,0x00000026,0x0007000c,
+  0x00000006,0x00000028,0x00000001,0x00000025,0x00000024,0x00000027,0x0007000c,0x00000006,
+  0x00000029,0x00000001,0x00000025,0x00000021,0x00000028,0x0003003e,0x00000018,0x00000029,
+  0x000100fd,0x00010038
+};
+
+// The CopyDepth program with the fragment stage swapped for kCopyDepthMinSpv (same layout and bindings), or nullptr when not needed.
+static ProgramImpl* EvalCopyDepthVariant(ReplayCtx& cx, ProgramImpl* p, const std::vector<TexWrite>& texWrites) {
+  static const bool off = getenv("NVN_NO_EVAL_DEPTH_FIX") != nullptr;
+  if (off || !p->st[1].valid || strncmp(p->st[1].key, "fae2ba6353af", 12) || !cx.rt[8]) return nullptr;
+  bool scaled = false;
+  for (auto& w : texWrites) if (w.r.t && w.r.t->scale != cx.rt[8]->scale) scaled = true;
+  if (!scaled) return nullptr;
+  static std::mutex mu;
+  static std::map<ProgramImpl*, ProgramImpl*> vars;
+  std::lock_guard<std::mutex> lk(mu);
+  auto it = vars.find(p);
+  if (it != vars.end()) return it->second;
+  ProgramImpl* v = nullptr;
+  std::vector<uint32_t> words(kCopyDepthMinSpv, kCopyDepthMinSpv + sizeof kCopyDepthMinSpv / 4);
+  VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+  ci.codeSize = words.size() * 4; ci.pCode = words.data();
+  VkShaderModule mod = VK_NULL_HANDLE;
+  if (vkCreateShaderModule(cx.h->device, &ci, nullptr, &mod) == VK_SUCCESS) {
+    v = new ProgramImpl(*p);   // kept for the process lifetime (pipelines and the pipeline service refer to it)
+    v->composite = true;
+    StageProg& f = v->st[1];
+    snprintf(f.key, sizeof f.key, "evcpdepthmin");
+    snprintf(f.fkey, sizeof f.fkey, "evcpdepthmin");
+    f.mod = mod; f.spv = std::move(words); f.fragMods.clear(); f.outLocs.clear();
+    Log("photo evaluation: CopyDepth samples a scaled depth texture, using the 2x2 minimum variant");
+  } else LogError("photo evaluation: CopyDepth min variant module failed");
+  vars[p] = v;
+  return v;
+}
 // Collects the sampled textures / storage images a program reads, uploads static data and fixes layouts. Must run
 // before a rendering scope is open (graphics) or at any time (compute).
 bool PrepareTextures(ReplayCtx& cx, DrawState& d, ProgramImpl* p, std::vector<TexWrite>& texWrites, bool graphics) {
@@ -850,16 +948,58 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     for (int i = 0; i < 16; i++) if (d.ssbo[0][i].buf) DebugDrawLog(" v%d(%llu)", i, (unsigned long long)d.ssbo[0][i].range);
     DebugDrawLog("\n");
   }
+  static const bool evalLog = getenv("NVN_EVAL_LOG") != nullptr;   // debug: depth/stencil state and FS cbuffer of the photo evaluation draws
+  const bool evalDs = cx.rt[8] && cx.rt[8]->b.format == 0x36 && cx.rt[8]->b.width == 1920;   // the Evaluation DepthStencil (DEPTH32F_STENCIL8)
+  if (evalLog && (evalDs || (p->st[1].valid && (!strncmp(p->st[1].key, "6e4fc3880af9", 12) || !strncmp(p->st[1].key, "10774e331b21", 12) || !strncmp(p->st[1].key, "fae2ba6353af", 12))))) {
+    static int n = 0;
+    if (n++ < 1500) {
+      const char* fk = p->st[1].valid ? p->st[1].key : "none";
+      const char* nm = !strncmp(fk, "6e4fc3880af9", 12) ? "Aggregate" : !strncmp(fk, "10774e331b21", 12) ? "Sphere" : !strncmp(fk, "fae2ba6353af", 12) ? "CopyDepth" : fk;
+      fprintf(stderr, "[eval] p%d %s vs=%.12s rt0=%p n=%d ds=%llx (dt=%u dw=%u st=%u df=%u sf=%u fail=%u zfail=%u zpass=%u) ref=%d cmp=%x wr=%x rt8=%p f%x cull=%d vp=(%.0f %.0f %.0f %.0f) cb:",
+              g_presentCount, nm, p->st[0].key, (void*)cx.rt[0], c.i[2], (unsigned long long)d.ds.bits, DsGet(d.ds, DS_DT, 1), DsGet(d.ds, DS_DW, 1), DsGet(d.ds, DS_ST, 1), DsGet(d.ds, DS_DF, 4),
+              DsGet(d.ds, DS_SF_F, 4), DsGet(d.ds, DS_FAIL_F, 4), DsGet(d.ds, DS_ZFAIL_F, 4), DsGet(d.ds, DS_ZPASS_F, 4), (int)d.stRef[0], (unsigned)d.stCompare[0], (unsigned)d.stWrite[0],
+              (void*)cx.rt[8], cx.rt[8] ? cx.rt[8]->b.format : 0, (int)d.poly.cull, cx.vpGuest[0][0], cx.vpGuest[0][1], cx.vpGuest[0][2], cx.vpGuest[0][3]);
+      for (int st = 0; st < 2; st++) {
+        const BufBind& u = d.ubo[st][0];
+        if (u.pool && u.pool->storage) { const float* f = (const float*)((const uint8_t*)u.pool->storage + u.off); fprintf(stderr, " s%d[", st); for (int k = 0; k < 16; k++) fprintf(stderr, "%g ", f[k]); fprintf(stderr, "]"); }
+      }
+      for (auto& w : texWrites) if (w.r.t) fprintf(stderr, " tex%d=%ux%u f%x scale%.2f", w.binding, w.r.t->b.width, w.r.t->b.height, w.r.t->b.format, w.r.t->scale);   // CopyDepth's source size under render scale
+      if (cx.rt[8]) fprintf(stderr, " rt8scale%.2f", cx.rt[8]->scale);
+      fprintf(stderr, "\n");
+    }
+  }
   static const bool thumbLog = getenv("NVN_THUMB_LOG") != nullptr;
-  const bool thumbDraw = thumbLog && cx.rt[0] && cx.rt[0]->b.width == 360 && cx.rt[0]->b.height == 240;
+  const bool thumbDraw = thumbLog && cx.rt[0] && ((cx.rt[0]->b.width == 360 && cx.rt[0]->b.height == 240) || (cx.bcDst[0] && cx.bcDst[0]->b.width == 360));
   if (thumbDraw) {
     fprintf(stderr, "[thumb] p%d draw prog=%d prim=%d n=%d idx=%d rt0=%p f%x cull=%d vpSet=%d scSet=%d rendering=%d ntex=%zu:", g_presentCount, (int)p->id, c.i[0], c.i[2], (int)indexed, (void*)cx.rt[0], cx.rt[0]->b.format, (int)d.poly.cull, (int)cx.vpSet, (int)cx.scSet, (int)cx.rendering, texWrites.size());
+    fprintf(stderr, " vp0=(%.0f %.0f %.0f %.0f) view=%d flags=%x fmt=%x", cx.vpGuest[0][0], cx.vpGuest[0][1], cx.vpGuest[0][2], cx.vpGuest[0][3], (int)cx.rtHasView[0], cx.rtView[0].flags, cx.rtView[0].format);
     for (auto& w : texWrites) fprintf(stderr, " [b%d t=%p view=%p fb=%d]", w.binding, (void*)w.r.t, (void*)w.r.view, (int)w.r.feedback);
     fprintf(stderr, "\n");
   }
+  { static const int shLog = getenv("NVN_SHADOW_LOG") ? atoi(getenv("NVN_SHADOW_LOG")) : 0;   // debug: NVN_SHADOW_LOG=<present>: constants of the shadow-map casters and receivers at that present
+    if (shLog && g_presentCount >= shLog && g_presentCount < shLog + 3000) {
+      static int n = 0;
+      auto isDep = [](int f) { return f == FMT_STENCIL8 || (f >= FMT_DEPTH16 && f <= FMT_DEPTH32F_STENCIL8); };
+      const bool cast = cx.rt[8] && isDep(cx.rt[8]->b.format) && cx.rt[8]->b.width >= 512 && cx.rt[8]->b.width <= 4096 && cx.rt[8]->b.width == cx.rt[8]->b.height;
+      bool recv = false; for (auto& w : texWrites) if (w.r.t && isDep(w.r.t->b.format) && w.r.t->b.width >= 512 && w.r.t->b.width <= 4096 && w.r.t->b.width == w.r.t->b.height) recv = true;
+      static int lastP = -1, perC = 0, perR = 0, nc = 0, nr = 0; if (lastP != g_presentCount) { lastP = g_presentCount; perC = perR = 0; }
+      if ((cast || recv) && (cast ? perC++ : perR++) < 3 && (cast ? nc++ : nr++) < 24) {
+        fprintf(stderr, "[shadow] p%d %s rt8=%ux%u n=%d", g_presentCount, cast ? "CAST" : "RECV", cx.rt[8] ? cx.rt[8]->b.width : 0u, cx.rt[8] ? cx.rt[8]->b.height : 0u, c.i[2]);
+        fprintf(stderr, " rt8tex=%p", (void*)cx.rt[8]); for (auto& w : texWrites) if (w.r.t && isDep(w.r.t->b.format)) fprintf(stderr, " depthTex(b%d)=%p %ux%u", w.binding, (void*)w.r.t, w.r.t->b.width, w.r.t->b.height);
+        for (int st = 0; st < 2; st++) for (int b = 0; b < 16; b++) { const BufBind& u = d.ubo[st][b]; if (u.pool && u.pool->storage && (b != 3 || !cast)) { const float* f = (const float*)((const uint8_t*)u.pool->storage + u.off);
+          fprintf(stderr, "\n   s%d b%d @%p range=%llu:", st, b, (const void*)f, (unsigned long long)u.range); for (int k = 0; k < 160 && (uint64_t)k * 4 < u.range; k++) fprintf(stderr, " %g", f[k]); } }
+        fprintf(stderr, "\n");
+      }
+    } }
+  { const uint8_t* vu[2] = {}; uint64_t vr[2] = {};   // [upscale] the camera bank c3 of the scene's draws
+    for (int i = 0; i < 2; i++) { const BufBind& u = d.ubo[0][i]; if (u.pool && u.pool->storage) { vu[i] = (const uint8_t*)u.pool->storage + u.off; vr[i] = u.range; } }
+    UpscaleOnDraw(cx, vu, vr, 2); }
   if (!cx.rendering) BeginRendering(cx, rt);
 
+  ProgramImpl* const evalVar = EvalCopyDepthVariant(cx, p, texWrites);
+  if (evalVar) d.prog = evalVar;   // pipeline only; descriptors below still use p (same layout)
   VkPipeline pipe = GetPipeline(cx, d, topo, rt);
+  if (evalVar) d.prog = p;
   if (!pipe) { if (thumbDraw) fprintf(stderr, "[thumb] NO PIPELINE\n"); return; }
   vkCmdBindPipeline(cx.cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 
@@ -902,6 +1042,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
   } else {
     vkCmdDraw(cx.cb, (uint32_t)c.i[2], (uint32_t)std::max(c.i[4], 1), (uint32_t)c.i[1], (uint32_t)c.i[3]);
   }
+  AaAfterDraw(cx, p->st[1].key);   // SNAP_AA=smaa / SNAP_SHARPEN: in-place pass after the game's tonemap draw (nvn_aa.cpp)
   if (thumbDraw) {
     fprintf(stderr, "[thumb] recorded\n");
     if (g_fdBurst <= 0) g_fdBurst = 60;   // request a burst of NVN_FRAME_DUMP frames
@@ -947,6 +1088,8 @@ void DoDispatch(ReplayCtx& cx, const Cmd& c) {
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, p->st[5].mod, "main", nullptr};
     ci.layout = p->layout;
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sgPinCs;
+    PinSubgroup32(&ci.stage, &sgPinCs, p->st[5].mod);
     if (vkCreateComputePipelines(h->device, h->pipelineCache, 1, &ci, nullptr, &pipe) != VK_SUCCESS) { LogError("vkCreateComputePipelines failed"); return; }
     std::lock_guard<std::mutex> lk(h->pipeMutex);
     h->pipelines[key] = pipe;
@@ -1004,7 +1147,7 @@ VkPipeline CreateGraphicsPipeline(Host* h, const PipeDesc& pd, StageProg* const 
 
 // ---- exported to nvn_vk.cpp -------------------------------------------------------------------------------------------------
 void EndRendering(ReplayCtx& c) {
-  if (!c.rendering) return;
+  if (!c.rendering) { FlushCompressedTargets(c); return; }
   if (c.occOpen) { vkCmdEndQuery(c.cb, c.h->occPool, (c.h->occNext - 1) % 8192); c.occOpen = false; }
   vkCmdEndRendering(c.cb);
   c.rendering = false;
@@ -1016,6 +1159,75 @@ void EndRendering(ReplayCtx& c) {
   VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
   vkCmdPipelineBarrier2(c.cb, &di);
+  FlushCompressedTargets(c);
+}
+
+// Block-compressed render targets (photo thumbnails, 2026-11-12). The game makes each 360x240 photo thumbnail in two passes: a
+// downscale into an RGBA8 target, then a fragment-shader BC1 encoder whose render target is the BC1 texture itself (one output
+// texel = one 4x4 block, 8 bytes). Vulkan cannot render into a compressed image, so the draw went nowhere and every thumbnail
+// (shutter pop-up, photo select grid and preview) stayed black. The draw now renders into an uncompressed stand-in of
+// ceil(w/4) x ceil(h/4) texels with the block's size (the view's format when it has one of that size, else RG32F / RGBA32F, whose
+// float output keeps the raw bits), and each finished scope copies it block for block into the BC texture (vkCmdCopyImage
+// allows compressed <-> uncompressed copies of equal block size). NVN_NO_BC_RT=1 restores the old behavior.
+void RedirectCompressedTargets(ReplayCtx& c) {
+  static const bool off = getenv("NVN_NO_BC_RT") != nullptr;
+  for (int k = 0; k < 8; k++) {
+    c.bcDst[k] = nullptr;
+    TextureImpl* t = c.rt[k];
+    if (off || !t || !t->EnsureImage() || !t->fi || t->fi->bw <= 1 || t->b.samples > 1) continue;
+    const TexView* v = c.rtHasView[k] ? &c.rtView[k] : nullptr;
+    const SubRange rr = RtRange(t, v);
+    const uint32_t lw = t->LevelW(rr.lb), lh = t->LevelH(rr.lb);
+    const uint32_t sw = (lw + t->fi->bw - 1) / t->fi->bw, sh = (lh + t->fi->bh - 1) / t->fi->bh;
+    int fmt = t->fi->bytes == 8 ? FMT_RG32F : t->fi->bytes == 16 ? FMT_RGBA32F : 0;
+    if (v && (v->flags & 4)) if (const FormatInfo* vf = LookupFormat(v->format)) if (vf->bw == 1 && vf->bytes == t->fi->bytes) fmt = v->format;
+    if (!fmt) continue;
+    TextureImpl* s = t->bcShadow;
+    if (s && (s->b.width != (int)sw || s->b.height != (int)sh || s->b.format != fmt)) { DestroyTexture(s); s = t->bcShadow = nullptr; }   // [ASSUMPTION] no replay still uses it: the shadow lives as long as its texture
+    if (!s) {
+      s = new TextureImpl();
+      s->host = t->host;
+      s->b = TextureBuilder{};
+      s->b.device = t->b.device; s->b.target = TT_2D; s->b.width = (int)sw; s->b.height = (int)sh; s->b.depth = 1; s->b.levels = 1;
+      s->b.format = fmt; s->b.samples = 1;
+      if (!s->EnsureImage()) { delete s; continue; }
+      t->bcShadow = s;
+      static int logged = 0;
+      if (logged++ < 8) Log("compressed render target %p (%dx%d format 0x%x, view flags 0x%x format 0x%x): drawing into a %ux%u format 0x%x stand-in",
+                            (void*)t, t->b.width, t->b.height, t->b.format, v ? v->flags : 0, v ? v->format : 0, sw, sh, fmt);
+    }
+    s->uploaded = true;
+    c.bcDst[k] = t;
+    c.rt[k] = s;
+    c.rtHasView[k] = false; c.rtView[k] = TexView{};
+    // the stand-in keeps the level / layer the game selected on the BC texture in bcSub
+    s->bcSubLevel = rr.lb; s->bcSubLayer = rr.yb;
+  }
+}
+
+void FlushCompressedTargets(ReplayCtx& c) {
+  if (!c.bcDirty) return;
+  c.bcDirty = false;
+  for (int k = 0; k < 8; k++) {
+    TextureImpl* t = c.bcDst[k]; TextureImpl* s = c.rt[k];
+    if (!t || !s || t->bcShadow != s) continue;
+    Transition(c.cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    SubRange dr; dr.lb = s->bcSubLevel; dr.ln = 1; dr.yb = s->bcSubLayer; dr.yn = 1;
+    TransitionRange(c.cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, dr);
+    VkImageCopy ic{};
+    ic.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    ic.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, s->bcSubLevel, s->bcSubLayer, 1};
+    ic.extent = {(uint32_t)s->b.width, (uint32_t)s->b.height, 1};
+    vkCmdCopyImage(c.cb, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+    t->uploaded = true;
+    VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    mb.srcStageMask = mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+    vkCmdPipelineBarrier2(c.cb, &di);
+  }
 }
 
 // ClearColor with a partial channel mask: a fullscreen triangle with a color write mask (vkCmdClearColorImage cannot mask).
@@ -1132,6 +1344,42 @@ void ReplayEnd(ReplayCtx& c) {
   c.ds = nullptr;   // the state itself lives in the queue (QueueImpl::persistDs)
 }
 
+// SNAP_SHADOW_DISTANCE=<k> (1 = original; SNAP_LIGHTING=high uses 2): widens the dynamic shadow map's coverage k times. The game fits one 1024^2
+// orthographic map per frame (light view-projection in a 64-byte VS buffer at slot 9 of the ShadowCast draws; the receivers read the same matrix,
+// remapped to texture space, at floats 16..31 of a 132-byte buffer at slot 9). Called from BindUbo BEFORE the buffer is mirrored to the GPU: the
+// x and y columns are scaled by 1/k about the map centre. Idempotent: a buffer the game did not rewrite (it still holds our output) is skipped.
+static void ShadowDistanceOnBind(Host* h, ReplayCtx& cx, int stage, int slot, uint64_t addr, uint64_t size) {
+  static const float k = [] {
+    float v = 1.0f;
+    if (const char* l = getenv("SNAP_LIGHTING")) if (!strcmp(l, "high")) v = 2.0f;
+    if (const char* e = getenv("SNAP_SHADOW_DISTANCE")) { float f = (float)atof(e); if (f >= 1.0f && f <= 16.0f) v = f; }
+    return v;
+  }();
+  if (k <= 1.0f || slot != 9 || !addr) return;
+  const bool cast = stage == 0 && size == 64 && cx.rt[8] && !cx.rt[0] && cx.rt[8]->b.width == 1024 && cx.rt[8]->b.height == 1024;
+  const bool recv = size == 132 && cx.rt[8] && cx.rt[8]->b.width != 1024;
+  if (!cast && !recv) return;
+  PoolImpl* pool = nullptr; uint64_t off = 0;
+  if (!h->ResolveAddress(addr, &pool, &off) || !pool->storage || off + size > pool->size) return;
+  float* f = (float*)((uint8_t*)pool->storage + off);
+  float* m = cast ? f : f + 16;
+  if (cast) { if (m[3] != 0 || m[7] != 0 || m[11] != 0 || m[15] != 1) return; }
+  else if (!(f[15] == 1 && m[3] == 0 && m[7] == 0 && m[11] == 0 && m[15] == 1)) return;
+  static std::unordered_map<float*, std::array<float, 16>> done;
+  auto it = done.find(f);
+  if (it != done.end() && !memcmp(it->second.data(), m, 64)) return;   // our own output from an earlier bind
+  const float inv = 1.0f / k;
+  for (int r = 0; r < 4; r++) for (int c = 0; c < 2; c++) {
+    float& v = m[r * 4 + c];
+    v = (cast || r < 3) ? v * inv : (v - 0.5f) * inv + 0.5f;
+  }
+  std::array<float, 16> o; memcpy(o.data(), m, 64);
+  if (done.size() > 4096) done.clear();
+  done[f] = o;
+  static int n = 0;
+  if (n++ < 6) Log("shadow distance x%.2f applied (%s) at %p", k, cast ? "cast" : "receive", (void*)f);
+}
+
 void ReplayDrawOp(ReplayCtx& cx, const Cmd& c) {
   DrawState& d = *cx.ds;
   Host* h = cx.h;
@@ -1171,6 +1419,7 @@ void ReplayDrawOp(ReplayCtx& cx, const Cmd& c) {
       }
       break;
     case Op::BindUbo:
+      ShadowDistanceOnBind(h, cx, c.i[0], c.i[1], c.a[0], c.a[1]);
       if (c.i[0] >= 0 && c.i[0] < 6 && c.i[1] >= 0 && c.i[1] < 16) d.ubo[c.i[0]][c.i[1]] = ResolveBuf(h, c.a[0], c.a[1], kMaxUboRange);
       break;
     case Op::BindSsbo:

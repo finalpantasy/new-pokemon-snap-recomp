@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// F1 menu extras backed by the per-profile settings file (hle/settings.h): Look and ambient-occlusion presets (Graphics tab, need a restart),
-// gyro aim and rumble (Controller tab, live) and the photo Gallery tab (opens the local gallery server in the browser).
+// F1 menu extras backed by the per-profile settings file (hle/settings.h): gyro aim and rumble (Controller tab, live) and the photo gallery
+// (inside the Photos page; opens the local gallery server in the browser). Graphics options moved to ui_options.cpp.
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -29,30 +29,6 @@ namespace snap::ui {
 namespace {
 
 namespace st = hle::settings;
-
-const char* const kLooks[] = {"neutral", "vivid", "warm", "cool"};
-const char* const kLookLabels[] = {"Neutral (the game as shipped)", "Vivid", "Warm", "Cool"};
-const char* const kSsao[] = {"default", "high", "ultra"};
-const char* const kSsaoLabels[] = {"Default", "High (96 samples)", "Ultra (256 samples)"};
-
-struct Start {
-  bool taken = false;
-  std::string look, ssao;
-  float look_i = 1.0f;
-} S0;
-
-void take_start() {
-  if (S0.taken) return;
-  S0.taken = true;
-  S0.look = st::get("look", "neutral");
-  S0.ssao = st::get("ssao_quality", "default");
-  S0.look_i = st::get_float("look_intensity", 1.0f);
-}
-
-int index_of(const char* const* list, int n, const std::string& v) {
-  for (int i = 0; i < n; ++i) if (v == list[i]) return i;
-  return 0;
-}
 
 std::atomic<int> g_gallery_state{0};   // 0 idle, 1 starting, 2 opened, 3 failed
 std::atomic<unsigned> g_gallery_port{0};   // port the server we started reported (8777, or whatever the OS picked)
@@ -150,54 +126,7 @@ void open_gallery_async() {
   }).detach();
 }
 
-void restart_note(bool changed) {
-  const Theme& t = theme();
-  ImGui::TextColored(t.text_dim, "Needs a restart.");
-  if (changed) {
-    ImGui::SameLine();
-    ImGui::TextColored(t.conflict, "Changed: applies after a restart.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Restart now")) restart_game();
-  }
-}
-
-bool env_overrides(const char* name) { const char* e = std::getenv(name); return e && *e; }
-
 }  // namespace
-
-void extras_graphics() {
-  take_start();
-  const Theme& t = theme();
-  ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::Spacing();
-  ImGui::TextColored(t.title, "Look");
-  ImGui::TextWrapped("A colour grade applied to the finished picture. Saved with the profile.");
-  std::string cur = st::get("look", "neutral");
-  int li = index_of(kLooks, 4, cur);
-  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
-  if (ImGui::BeginCombo("Preset", kLookLabels[li])) {
-    for (int i = 0; i < 4; ++i) if (ImGui::Selectable(kLookLabels[i], i == li)) st::set("look", kLooks[i]);
-    ImGui::EndCombo();
-  }
-  float inten = st::get_float("look_intensity", 1.0f);
-  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
-  if (ImGui::SliderFloat("Strength", &inten, 0.0f, 1.5f, "%.2f")) st::set_float("look_intensity", inten);
-  if (env_overrides("SNAP_LOOK") && st::get("look", "neutral") != S0.look) ImGui::TextColored(t.conflict, "SNAP_LOOK is set in the environment and wins over this.");
-  restart_note(st::get("look", "neutral") != S0.look || (st::get("look", "neutral") != "neutral" && std::fabs(inten - S0.look_i) > 0.004f));
-
-  ImGui::Spacing();
-  ImGui::TextColored(t.title, "Ambient occlusion quality");
-  ImGui::TextWrapped("How many samples the soft-shadow pass takes. Higher looks smoother and costs frame time.");
-  int qi = index_of(kSsao, 3, st::get("ssao_quality", "default"));
-  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
-  if (ImGui::BeginCombo("Quality", kSsaoLabels[qi])) {
-    for (int i = 0; i < 3; ++i) if (ImGui::Selectable(kSsaoLabels[i], i == qi)) st::set("ssao_quality", kSsao[i]);
-    ImGui::EndCombo();
-  }
-  restart_note(st::get("ssao_quality", "default") != S0.ssao);
-  ImGui::TextColored(t.text_dim, "No frame-rate cap or frame-pacing option exists in this build yet.");
-}
 
 void extras_controller() {
   const Theme& t = theme();
@@ -234,7 +163,7 @@ void extras_controller() {
   ImGui::TextColored(t.text_dim, "Rumble reaches DualSense, Xbox and Switch Pro pads. Applies at once.");
 }
 
-void tab_gallery() {
+void gallery_section() {
   const Theme& t = theme();
   ImGui::TextColored(t.title, "Photo gallery");
   ImGui::TextWrapped("Opens your saved photos for the running profile (\"%s\") in your web browser, from a small server on this PC (127.0.0.1). Nothing leaves the machine.",

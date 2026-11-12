@@ -1,0 +1,11 @@
+# fixture: post_tutorial
+# QA: lab hub gear (settings) entry only. Down, Down (spaced 120), A, then idle 400 presents, B.
+# Hub is ready at ~p2300 when run with SNAP_FAST_BOOT_FRAMES large (dumps: -ShotAt 18 -ShotEvery 1).
+repeat @f300 @f1560 120 8 A
+@f2400 8 Down
+@f2550 8 Down
+@f2700 8 A
+@f3200 8 Down
+@f3350 8 Down
+@f3500 8 B
+@f3900 8 B

@@ -1,0 +1,35 @@
+#version 450
+// SPDX-License-Identifier: MIT
+// Camera motion vectors for the temporal upscalers (runtime/nvn/upscale/upscale.cpp, MvPass). Adapted from the Astral Chain
+// PC recomp's runtime/shaders/dlaa_mv.comp (MIT, commit e858fc6, see THIRD_PARTY_NOTICES.md).
+// Each pixel's depth is carried from this frame's clip space to last frame's through one reprojection matrix (last frame's
+// view-projection times the inverse of this frame's, made on the CPU in double precision). The vector is last frame's window
+// position minus this frame's, in render pixels, without the jitter (the DLSS / XeSS / FSR convention).
+// The NVN layer draws UPPER_LEFT origin passes with negative-height viewports, so window y grows downwards from ndc y = +1.
+// Depth: the game uses DEPTH_MODE near-is-zero (0..1 stored); mode.x = 1 selects the -1..1 mapping.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D depth_tex;
+layout(binding = 1, rg16f) uniform writeonly image2D mv_out;
+layout(push_constant) uniform P {
+    vec4 r0, r1, r2, r3;   // rows of the reprojection matrix (row-major)
+    vec2 size;             // render size in pixels
+    vec2 jitter;           // this frame's jitter in pixels (x right, y down), as the scene was drawn
+    vec4 mode;             // x: 1 for -w..w clip depth
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.size.x) || p.y >= int(pc.size.y)) return;
+    float d = texelFetch(depth_tex, p, 0).r;
+    vec2 win = vec2(p) + 0.5 - pc.jitter;
+    float z = pc.mode.x > 0.5 ? d * 2.0 - 1.0 : d;
+    vec4 ndc = vec4(win.x / pc.size.x * 2.0 - 1.0, 1.0 - win.y / pc.size.y * 2.0, z, 1.0);
+    vec4 clip = vec4(dot(pc.r0, ndc), dot(pc.r1, ndc), dot(pc.r2, ndc), dot(pc.r3, ndc));
+    vec2 mv = vec2(0.0);
+    if (clip.w > 1e-6) {
+        vec2 pn = clip.xy / clip.w;
+        vec2 pwin = vec2((pn.x * 0.5 + 0.5) * pc.size.x, (0.5 - pn.y * 0.5) * pc.size.y);
+        mv = pwin - win;
+    }
+    imageStore(mv_out, p, vec4(mv, 0.0, 0.0));
+}

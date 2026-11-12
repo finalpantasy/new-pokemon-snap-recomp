@@ -1,0 +1,35 @@
+# Stage 2 (the relaunched game): the saved choices must be back, must have reached the game as the documented env vars, and the menu must show them.
+# The game's own log lines (host policy, aa, gamemods) are checked by run_options_test.ps1.
+20 expect_opt gfx_render_scale 1.50
+20.1 expect_opt gfx_aa smaa
+20.2 expect_opt gfx_aniso 8
+20.3 expect_opt gfx_sharpen 0.30
+20.4 expect_opt gfx_ui_font 2
+20.5 expect_opt look warm
+20.6 expect_opt ssao_quality high
+20.7 expect_opt photo_export 0
+20.8 expect_opt audio_output speakers
+20.9 expect_opt frame_cap 60
+21 expect_env SNAP_RENDER_SCALE 1.50
+21.1 expect_env SNAP_AA smaa
+21.2 expect_env SNAP_ANISO 8
+21.3 expect_env SNAP_SHARPEN 0.30
+21.4 expect_env SNAP_UI_FONT_SCALE 2
+21.45 expect_env SNAP_FOV 1.20
+21.46 expect_env SNAP_FOV_SITES 0x296400,0x38cdbc
+21.47 expect_env SNAP_FULL_RATE_ANIM 1
+21.5 expect_env SNAP_LOOK warm:1.00
+21.6 expect_env SNAP_SSAO_QUALITY high
+21.7 expect_env SNAP_PHOTO_EXPORT 0
+21.8 expect_env SNAP_UPSCALER -
+22 expect_mods beta:1,alpha:0
+24 key F1 1
+26 expect_open 1
+26.5 expect_pending 0
+27 tab Graphics
+31 tab Display
+35 tab Photos
+39 tab Mods
+43 tab Audio
+47 key F1 0
+48 quit

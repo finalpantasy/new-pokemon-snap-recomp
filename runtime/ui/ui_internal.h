@@ -43,15 +43,30 @@ void tab_audio();
 bool shader_screen_active(double now);   // first-launch prompt or the progress screen is wanted this frame
 void draw_shader_screen(ImVec2 size);
 void shader_screen_closed();
-void tab_graphics();
+void shader_cache_section();   // the shader cache controls, shown inside the Graphics page
 // shared helpers (ui_saves.cpp)
 bool hold_confirm(const char* label, float secs, const ImVec4& color);   // true once when held long enough (mouse, Enter or gamepad)
 void restart_game();                                                      // relaunch with the same arguments and the active profile
 
-// ---- extras (ui_extras.cpp): profile settings (look, SSAO, gyro, rumble) and the photo gallery
-void extras_graphics();     // appended to the Graphics tab
+// ---- extras (ui_extras.cpp): gyro and rumble settings and the photo gallery
 void extras_controller();   // appended to the Controller tab
-void tab_gallery();
+void gallery_section();     // inside the Photos page
+
+// ---- option pages (ui_options.cpp): table-driven, values in hle/settings.h
+void tab_graphics();
+void tab_display();
+void tab_photos();
+void tab_mods();
+void audio_output_section();   // appended to the Audio tab
+void options_menu_opened();    // remembers the start-up values (what "needs a restart" is measured against)
+int options_pending_restart(std::string* names);
+void options_restart_bar();    // the "N changes need a restart / Apply and restart" strip
+// scripted test (ui_test.cpp)
+bool options_test_set(const std::string& key, const std::string& value);
+std::string options_test_get(const std::string& key);
+void options_test_scroll(float fraction);   // scroll the visible option list (0 top, 1 bottom)
+bool options_test_option_when(const std::string& key, std::string* when);
+bool options_test_mods(const std::string& op, const std::string& id, int arg, std::string* state);
 
 // ---- overlay core (ui_overlay.cpp)
 bool overlay_open();

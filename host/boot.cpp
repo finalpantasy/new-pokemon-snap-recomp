@@ -370,6 +370,7 @@ static void hook_present(void *, int slot, int w, int h) {
     if (n <= 3 || n % 30 == 0) trace("nvn: present #%llu slot %d %dx%d (submits %llu)", (unsigned long long)n, slot, w, h, (unsigned long long)g_submits.load());
 }
 static void hook_submit(void *, int, int) { ++g_submits; }
+extern "C" uint64_t snap_present_count() { return g_presents.load(std::memory_order_relaxed); }   // host/mods/lodanim.cpp (SNAP_DRAW_DISTANCE_AB)
 // The game window. nn::vi::GetNativeWindow must hand the NVN layer a real HWND (nvnWindowBuilderSetNativeWindow -> Vulkan Win32
 // surface); the HLE vi layer only returns a token. A dedicated UI thread owns the window and pumps its messages; closing the
 // window ends the process.

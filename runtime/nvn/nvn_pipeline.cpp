@@ -59,12 +59,15 @@ struct Ent {
   std::atomic<int> state{ES_PENDING};
   Ent* next = nullptr;   // hash chain
   std::atomic<bool> hot{false};   // a hot-queue job exists (set when the replay thread first asks for an entry that BeginRun queued cold)
+  std::atomic<bool> stale{false};  // built from a fragment template that lacked early fragment tests: rebuilt inline on the next acquire
 };
 
 struct Tmpl {
   std::once_flag once;
   StageProg sp;
   bool ok = false;
+  std::mutex em;     // guards eft and the module swap in PatchTmplEft
+  bool eft = false;  // the module carries layout(early_fragment_tests)
 };
 
 struct Job { PipeDesc pd; bool hot; };
@@ -84,6 +87,7 @@ struct Svc {
   std::mutex tm;
   std::unordered_map<std::string, Tmpl*> tmpls;
   std::unordered_map<std::string, std::string> fullKeys;   // key prefix -> full translation cache key
+  std::unordered_set<std::string> eftKeys;                 // key prefixes whose program asks for early fragment tests (guarded by tm)
   std::mutex lm;
   std::unordered_map<std::string, ProgramImpl*> layouts;
   // job queues and workers
@@ -126,6 +130,7 @@ std::string Dir() {
     DWORD n = GetEnvironmentVariableA("APPDATA", buf, MAX_PATH);
     d = (n ? std::string(buf) : std::string(".")) + "\\SnapRecomp\\shadercache";
   }
+  if (const char* r = getenv("SNAP_XLATE_REV"); r && *r && strcmp(r, "0")) d += std::string("_r") + r;   // translator revision: its own pipeline keys and VkPipelineCache
   for (size_t i = 3; i < d.size(); i++)
     if (d[i] == '\\' || d[i] == '/') CreateDirectoryA(d.substr(0, i).c_str(), nullptr);
   CreateDirectoryA(d.c_str(), nullptr);
@@ -147,6 +152,38 @@ bool HdrMatches(const FileHdr& a, const FileHdr& b) { return memcmp(&a, &b, size
 double NowMs() { return (double)snap_perf::now_ns() / 1e6; }
 
 // ---- templates and layouts ------------------------------------------------------------------------------------------------------
+// Early fragment tests on background templates. BuildStage adds layout(early_fragment_tests) when the program's control section asks for
+// it (EvaluationAggregatePS) and leaves a <key>.efz marker so cache loads can do the same. Test runs mirror the shader cache from
+// build\snap\nvn_cache, which has no markers, so the startup precompile could load the Aggregate template before the game rebuilt the
+// marker: its pipeline then ran the stencil test after the shader's atomics and every visibility counter read 518400 (all of 1920x1080 / 4),
+// so no photo passed. Now BuildStage also tells the service directly (eftKeys); a template loaded too early is patched and the pipelines
+// built from it are rebuilt inline. NVN_NO_EFT_FIX=1 restores the old marker-only behavior.
+bool EftFixOn() { static const bool on = getenv("NVN_NO_EFT_FIX") == nullptr; return on; }
+
+void PatchTmplEft(Tmpl* t, const char* key12) {
+  {
+    std::lock_guard<std::mutex> lk(t->em);
+    if (t->eft || !t->ok || t->sp.stage != 1 || t->sp.spv.empty()) return;
+    std::vector<uint32_t> words = t->sp.spv;
+    if (!SpvAddEarlyFragmentTests(words)) return;
+    VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    ci.codeSize = words.size() * 4; ci.pCode = words.data();
+    VkShaderModule mod = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(S->h->device, &ci, nullptr, &mod) != VK_SUCCESS) return;
+    t->sp.mod = mod;   // the old module is left alive on purpose: a worker may be compiling with it right now (one module per patched stage)
+    t->sp.spv = std::move(words);
+    t->eft = true;
+  }
+  int n = 0;
+  {
+    std::lock_guard<std::mutex> lk(S->pm);
+    for (auto& kv : S->map)
+      for (Ent* e = kv.second; e; e = e->next)
+        if (!strncmp(e->pd.stage[1], key12, 12)) { e->stale = true; n++; }
+  }
+  Log("pipeline service: fragment template %.12s patched with early fragment tests, %d pipelines rebuilt on next use", key12, n);
+}
+
 Tmpl* GetTmpl(const char* key12) {
   Tmpl* t;
   std::string full;
@@ -169,7 +206,13 @@ Tmpl* GetTmpl(const char* key12) {
   }
   std::call_once(t->once, [&] {
     if (full.empty()) return;
-    t->ok = LoadStageFromCache(S->h, full, &t->sp);
+    bool want, applied = false;
+    { std::lock_guard<std::mutex> lk(S->tm); want = EftFixOn() && S->eftKeys.count(key12) != 0; }
+    t->ok = LoadStageFromCache(S->h, full, &t->sp, want, &applied);
+    { std::lock_guard<std::mutex> lk(t->em); t->eft = applied; }
+    bool late;   // the game registered the program as early-fragment-tests while this load ran
+    { std::lock_guard<std::mutex> lk(S->tm); late = t->ok && EftFixOn() && S->eftKeys.count(key12) != 0; }
+    if (late) PatchTmplEft(t, key12);
   });
   return t->ok ? t : nullptr;
 }
@@ -389,10 +432,19 @@ int BeginRun() {
 }  // namespace
 
 // ---- public service API -----------------------------------------------------------------------------------------------------------
-void PipelineRegisterStageKey(const char* key12, const char* fullKey) {
+void PipelineRegisterStageKey(const char* key12, const char* fullKey, bool eft) {
   if (!S) return;
-  std::lock_guard<std::mutex> lk(S->tm);
-  S->fullKeys.emplace(key12, fullKey);
+  Tmpl* t = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(S->tm);
+    S->fullKeys.emplace(key12, fullKey);
+    if (eft && EftFixOn()) {
+      S->eftKeys.insert(key12);
+      auto it = S->tmpls.find(key12);
+      if (it != S->tmpls.end()) t = it->second;
+    }
+  }
+  if (t && t->ok) PatchTmplEft(t, key12);   // loaded before the game built the program (a load still running re-checks eftKeys itself)
 }
 
 void PipelineServiceInit(Host* h) {
@@ -484,6 +536,12 @@ VkPipeline PipelineAcquire(Host* h, const PipeDesc& pd, ProgramImpl* p, bool* pe
         S->qcv.notify_one();
       }
       for (int i = 0; i < 10000 && (st = e->state.load(std::memory_order_acquire)) == ES_PENDING; i++) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (st == ES_READY && e->stale.load(std::memory_order_acquire) && p) {   // see PatchTmplEft: rebuild with the game's own (patched) stages
+      StageProg* sts[6] = {};
+      for (int s = 0; s < 5; s++) sts[s] = p->st[s].valid ? &p->st[s] : nullptr;
+      if (VkPipeline pipe = CreateGraphicsPipeline(h, pd, sts, p->layout)) { e->stale = false; e->pipe = pipe; S->dirty = true; }   // old pipeline leaked: may be in flight
+      return e->pipe;
     }
     if (st == ES_READY) return e->pipe;
     if (st == ES_PENDING) {

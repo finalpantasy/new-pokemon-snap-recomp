@@ -4,8 +4,8 @@
 # -Route <name>: feeds host\routes\<name>.txt as SNAP_INPUT_SCRIPT, defaults the save fixture to the route's first-line
 #   '# fixture: <name>' (else <name>), and saves checkpoint screenshots (first at -ShotAt s, then every -ShotEvery s, at most -ShotMax; NVN_FRAME_DUMP).
 #   -ShotAt without -Route also dumps frames, to analysis\boot\run_<id>_NN.png.
-# PARALLEL RUNS (owner exception to the one-heavy-process rule): takes one of 3 run slots (build\slots\run0..2.lock, host\locks.ps1) instead of
-# build\heavy.lock (that stays the BUILD lock). -Bench / -Exclusive (or SNAP_PERF set) take all 3 slots and wait for them. While build\heavy.priority
+# PARALLEL RUNS (owner exception to the one-heavy-process rule): takes one of 4 run slots (build\slots\run0..3.lock, host\locks.ps1) instead of
+# build\heavy.lock (that stays the BUILD lock). -Bench / -Exclusive (or SNAP_PERF set) take all 4 slots and wait for them. While build\heavy.priority
 # exists, slot 0 is reserved for the run whose $env:SNAP_LOCK_OWNER equals its content. -NoLock = the caller already holds a slot (scratch dir slotnl<pid>).
 # Each run works in build\runs\slot<N>\ (copy of build\snap exe + DLLs + nvn_cache, own save dir, own copy of the shared shader cache), so a
 # concurrent build can relink. Output carries a run id <slot>-<stamp>: analysis\boot\runs\<id>\boot_{trace,stderr,stdout}.log and
@@ -13,7 +13,7 @@
 # An explicit -Log keeps the old behavior (that path, stderr/stdout beside it). Runs the exe copy at BelowNormal priority with a hard timeout; kills it by PID if it hangs.
 #   powershell -File host\run_boot.ps1 [-Route florio_photos] [-Timeout 300] [-Log analysis\boot\boot_trace.log] <snap_boot args...>   (default args: run)
 [CmdletBinding(PositionalBinding=$false)]
-param([int]$Timeout = 300, [switch]$KeepSave, [string]$SaveFixture, [switch]$Visible, [string]$Route, [string]$Bench, [int]$ShotAt = 20, [int]$ShotEvery = 30, [int]$ShotMax = 8, [switch]$NoLock, [switch]$Exclusive, [string]$Log = 'analysis\boot\boot_trace.log', [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
+param([int]$Timeout = 300, [switch]$KeepSave, [string]$SaveFixture, [switch]$Visible, [string]$Route, [string]$Bench, [int]$ShotAt = 20, [int]$ShotEvery = 30, [int]$ShotMax = 8, [switch]$NoLock, [switch]$Exclusive, [string]$BuildDir, [string]$Log ='analysis\boot\boot_trace.log', [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $root
 . (Join-Path $PSScriptRoot 'locks.ps1')
@@ -39,7 +39,7 @@ if ($Route) {
 }
 $dumpOn = (-not $Bench) -and ($Route -or $PSBoundParameters.ContainsKey('ShotAt'))
 
-# ---- slot: one of 3 concurrent run slots (all 3 for -Bench / -Exclusive / perf)
+# ---- slot: one of 6 concurrent run slots (all 6 for -Bench / -Exclusive / perf)
 $excl = [bool]($Bench -or $Exclusive -or $env:SNAP_PERF)
 $what = "run_boot $(if ($Route) { "route=$Route" } else { 'run' })$(if ($Bench) { ' bench' })"
 $slots = @()
@@ -69,7 +69,9 @@ try {
         $env:NVN_FRAME_DUMP = $rawDir; $env:NVN_FRAME_DUMP_FROM = [string]$ShotAt; $env:NVN_FRAME_DUMP_EVERY = [string]$ShotEvery; $env:NVN_FRAME_DUMP_MAX = [string]$ShotMax
     }
     # isolated copy of the exe + DLLs + nvn shader cache (a build may relink build\snap meanwhile); retry if the source changes mid-copy
-    $src = Join-Path $root 'build\snap'; $ok = $false
+    # -BuildDir <dir> (or $env:SNAP_BUILD_DIR): run a worker's own build (host\build_snap.py --out <dir>) instead of build\snap
+    $bd = if ($BuildDir) { $BuildDir } elseif ($env:SNAP_BUILD_DIR) { $env:SNAP_BUILD_DIR } else { 'build\snap' }
+    $src = if ([IO.Path]::IsPathRooted($bd)) { $bd } else { Join-Path $root $bd }; $ok = $false
     for ($try = 0; $try -lt 15 -and -not $ok; $try++) {
         $ok = $true
         foreach ($f in (Get-ChildItem $src -File | Where-Object { $_.Name -in 'snap_boot.exe', 'snap_boot.pdb' -or $_.Extension -eq '.dll' })) {
@@ -79,7 +81,14 @@ try {
         if (-not $ok) { Start-Sleep -Seconds 2 }
     }
     if (-not $ok) { Write-Host 'could not copy a stable build\snap exe'; exit 7 }
+    $warm = Join-Path $root 'build\snap\nvn_cache'   # own build dir without a warm translated-shader cache: use the main one
+    if (-not (Test-Path "$src\nvn_cache") -and (Test-Path $warm)) { robocopy $warm "$runDir\nvn_cache" /MIR /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null }
     if (Test-Path "$src\nvn_cache") { robocopy "$src\nvn_cache" "$runDir\nvn_cache" /MIR /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null }
+    # SNAP_XLATE_REV=<n> (translator revision, runtime\nvn\nvn_shader.cpp): the run reads nvn_cache_r<n>, seeded from build\xlate\r<n>\out (scripts\xlate_run.ps1)
+    if ($env:SNAP_XLATE_REV -and $env:SNAP_XLATE_REV -ne '0') {
+        $xr = Join-Path $root "build\xlate\r$($env:SNAP_XLATE_REV)\out"
+        if (Test-Path $xr) { robocopy $xr "$runDir\nvn_cache_r$($env:SNAP_XLATE_REV)" /MIR /XF *.tsv /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null }
+    }
     # per-slot pipeline cache seeded from the shared one (no concurrent writes to %APPDATA%); SNAP_SHADERCACHE_DIR in the caller's env is the seed if set
     $seed = if ($env:SNAP_SHADERCACHE_DIR) { $env:SNAP_SHADERCACHE_DIR } elseif ($env:SNAP_CONFIG_DIR) { Join-Path $env:SNAP_CONFIG_DIR 'shadercache' } else { Join-Path $env:APPDATA 'SnapRecomp\shadercache' }
     $scd = Join-Path $runDir 'shadercache'
@@ -99,6 +108,9 @@ try {
         if ($KeepSave) { Write-Host "-SaveFixture with -KeepSave: not re-seeding $testSave" } else { Copy-Item -Recurse -Force (Join-Path $fx '*') $testSave }
     }
     if (-not $env:SNAP_SAVE_DIR) { $env:SNAP_SAVE_DIR = $testSave }
+    # test runs load no mods unless asked (2026-11-12: the owner's HD packs in %APPDATA%\SnapRecomp\mods made hidden-run loading ~15x slower);
+    # to test a pack set SNAP_MODS_DIR to its folder (or to "$env:APPDATA\SnapRecomp\mods" for the owner's set)
+    if (-not $env:SNAP_MODS_DIR) { $noMods = Join-Path $runDir 'mods_none'; New-Item -ItemType Directory -Force $noMods | Out-Null; $env:SNAP_MODS_DIR = $noMods }
     if (-not $Rest) { $Rest = @('run') }
     $argl = @($Rest) + @('--trace', $Log, '--timeout', [string]($Timeout - 5))
     $exe = Join-Path $runDir 'snap_boot.exe'
@@ -125,6 +137,11 @@ try {
         break
     }
     Write-Host "exit code $($p.ExitCode); run $runId; stderr in $err, trace in $Log"
+    # keep the run's save before the slot is released (2026-11-12: the next run in this slot wiped it before a worker could copy it)
+    if ((Test-Path $testSave) -and (Get-ChildItem $testSave -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        $keep = Join-Path $root "build\runs\saves\$runId"; New-Item -ItemType Directory -Force $keep | Out-Null
+        Copy-Item -Recurse -Force (Join-Path $testSave '*') $keep -ErrorAction SilentlyContinue; Write-Host "save kept in $keep"
+    }
 } finally {
     if ($p -and -not $p.HasExited) { taskkill /PID $p.Id /T /F | Out-Null }
     if (-not $NoLock) { Exit-RunSlots }

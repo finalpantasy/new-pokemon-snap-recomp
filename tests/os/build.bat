@@ -7,6 +7,6 @@ set ROOT=%~dp0..\..
 if not exist "%ROOT%\build\os" mkdir "%ROOT%\build\os"
 "%ROOT%\tools\llvm\bin\clang++.exe" -std=c++20 -O2 -g -Wall -Wextra -Wno-unused-parameter %~1 ^
   "%ROOT%\runtime\os\os_kernel.cpp" "%ROOT%\runtime\os\os_thread.cpp" "%ROOT%\runtime\os\os_sync.cpp" ^
-  "%ROOT%\runtime\os\os_memory.cpp" "%ROOT%\runtime\os\os_overrides.cpp" "%ROOT%\tests\os\os_test.cpp" ^
+  "%ROOT%\runtime\os\os_memory.cpp" "%ROOT%\runtime\os\os_overrides.cpp" "%ROOT%\runtime\os\perf.cpp" "%ROOT%\tests\os\os_test.cpp" ^
   -o "%ROOT%\build\os\os_test.exe" || exit /b 1
 echo built %ROOT%\build\os\os_test.exe

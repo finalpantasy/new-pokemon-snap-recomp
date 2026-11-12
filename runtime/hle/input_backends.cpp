@@ -174,6 +174,7 @@ struct SdlPads {
       if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) continue;
       if (SDL_RumbleGamepad(pad, lo, hi, (lo || hi) ? 500 : 0)) any = true;   // 500 ms: the game repeats while it wants rumble
     }
+    if (rumble_log_enabled()) hle::log("rumble: SDL_RumbleGamepad lo=%u hi=%u pads=%d accepted=%d", (unsigned)lo, (unsigned)hi, (int)pads.size(), (int)any);
     return any;
   }
 };
@@ -289,6 +290,7 @@ class Win32Backend final : public Backend {
 #endif
     if (!set_ || !out_connected()) return;
     XVibration v{(WORD)(std::clamp(low, 0.0f, 1.0f) * 65535), (WORD)(std::clamp(high, 0.0f, 1.0f) * 65535)};
+    if (rumble_log_enabled()) hle::log("rumble: XInput pad %d left=%u right=%u", (int)pad_index_, (unsigned)v.left, (unsigned)v.right);
     set_(pad_index_, &v);
     rumbling_ = v.left || v.right;
   }

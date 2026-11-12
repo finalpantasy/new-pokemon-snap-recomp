@@ -13,7 +13,9 @@
 #include <string>
 #include <unordered_map>
 
+#include "nvn_aa.h"
 #include "nvn_internal.h"
+#include "upscale/upscale_nvn.h"   // [upscale]
 
 namespace nvn {
 namespace {
@@ -244,6 +246,7 @@ Boolean TextureInitialize(void* tex, const void* b) {
     uint64_t chain[8] = {}; const int nChain = GuestCallChain(chain, 8);
     if (!tag) for (int i = 0; i < nChain; i++) if (chain[i] == kGuestMain + kEvalDepthRet) tag = kTagEvalDepth;   // call-site tag
     t->scale = g_scale.For(*tb, tag);
+    { uint64_t rel[8]; for (int i = 0; i < nChain; i++) rel[i] = chain[i] - kGuestMain; UpscaleTagTexture(t, rel, nChain, tag); }   // [upscale]
     if (g_scale.scale != 1.0f || g_scale.shadowRes) { static const bool lg = getenv("SNAP_SCALE_LOG") != nullptr; if (lg && (tb->width >= 192 || t->scale != 1.0f)) {
       char cs[160] = ""; for (int i = 0, n = 0; i < nChain && n < (int)sizeof cs - 16; i++) n += snprintf(cs + n, sizeof cs - n, " %llx", (unsigned long long)(chain[i] - kGuestMain));
       fprintf(stderr, "[scale] tex %dx%d fmt=0x%x flags=0x%x tgt=%d lv=%d tag=%x -> scale %.2f; main+%s\n", tb->width, tb->height, tb->format, tb->flags, tb->target, tb->levels, tag, t->scale, cs); } }
@@ -567,6 +570,11 @@ ScalePolicy::ScalePolicy() {
   // pixels. TextureInitialize tags it from the guest call chain. (The old 1920-wide depth signature also caught the main scene
   // depth, so scaled color met unscaled depth and the device was lost at render scale 2.)
   exemptTags.push_back(0x45564450);   // kTagEvalDepth
+  // Photo capture targets keep their size too: at render scale 2 the photo preview and thumbnails showed only the top-left quarter of
+  // the photo (runs 4-20261112_113015, 2-20261112_120107), i.e. something reads a scaled capture target at guest coordinates. Exempted:
+  // the 360x240 thumbnail target (read texel by texel by the game's BC1 encoder) and the 1080x720 Capture3D photo target (the JPEG
+  // source). The 360x240 exemption alone did not fix the preview; with the 1080x720 one it is whole at scale 2 (run 5-20261112_122638). NVN_NO_THUMB_EXEMPT=1 disables both.
+  if (!getenv("NVN_NO_THUMB_EXEMPT")) { exempt.push_back({360, 240, -1, false}); exempt.push_back({1080, 720, -1, false}); }
 }
 static bool IsDepthFmt(int f) { return f == FMT_STENCIL8 || (f >= FMT_DEPTH16 && f <= FMT_DEPTH32F_STENCIL8); }
 float ScalePolicy::For(const TextureBuilder& b, uint32_t tag) const {
@@ -576,6 +584,7 @@ float ScalePolicy::For(const TextureBuilder& b, uint32_t tag) const {
   if (scale == 1.0f || scale <= 0.0f) return 1.0f;
   // Window textures: the game composes UI and the final image into these, so they must scale too for a real 4K frame. The Evaluation
   // depth target is not a window texture and keeps its exemption below.
+  if ((b.flags & TF_DISPLAY) && displayScale > 0.f) return (b.target == TT_2D && b.samples <= 1) ? displayScale : 1.0f;   // [upscale] output size
   if (b.flags & TF_DISPLAY) return (scaleDisplay && b.target == TT_2D && b.samples <= 1) ? scale : 1.0f;
   if (!(b.flags & TF_COMPRESSIBLE) || (b.flags & (TF_DISPLAY | TF_LINEAR | TF_LINEAR_RENDER_TARGET))) return 1.0f;   // not a plain render target
   if (b.target != TT_2D && b.target != TT_2D_ARRAY) return 1.0f;
@@ -594,6 +603,10 @@ bool g_lodBiasAuto = false;
 //   SNAP_ANISO=1|2|4|8|16   SNAP_LOD_BIAS=<float>|auto   SNAP_RENDER_SCALE=<float>   SNAP_SHADOW_RES=1024|2048|4096
 void ApplyHostEnvPolicy() {
   if (const char* e = getenv("SNAP_RENDER_SCALE")) { float v = (float)atof(e); if (v >= 0.25f && v <= 8.f) g_scale.scale = v; }
+  { const float ss = AaParseEnv(); if (ss > 0.f) g_scale.scale = ss; }   // SNAP_AA=ssaa2: 2x the window height (nvn_aa.cpp)
+  { float sc = 0, oc = 0; if (UpscaleApplyPolicy(&sc, &oc)) {   // [upscale] SNAP_UPSCALER: scene at sc, window textures at oc; game FXAA off unless SNAP_AA set
+      g_scale.scale = sc; g_scale.displayScale = oc; if (!getenv("SNAP_AA")) g_aaMode = AA_OFF; } }
+  if (const char* l = getenv("SNAP_LIGHTING")) { if (!strcmp(l, "high")) g_scale.shadowRes = 2048; }   // lighting preset (host/mods/gamemods.cpp); SNAP_SHADOW_RES below wins
   if (const char* e = getenv("SNAP_SHADOW_RES")) { int v = atoi(e); g_scale.shadowRes = (v > 1024 && v <= 8192) ? v : 0; }
   if (const char* e = getenv("SNAP_ANISO")) { float v = (float)atof(e); g_anisoOverride = v > 1.f ? std::min(v, 16.f) : 0.f; }
   if (const char* e = getenv("SNAP_LOD_BIAS")) {

@@ -75,6 +75,8 @@ struct PadFx {
   std::atomic<float> rumble_strength{1.0f};      // 0..1.5 scale on both motors
 };
 PadFx& pad_fx();
+bool rumble_log_enabled();
+bool gyro_aim_enabled();     // profile gyro_on or SNAP_GYRO   // SNAP_RUMBLE_LOG=1
 constexpr float kGyroFullDegPerSec = 90.0f;     // turn rate that gives full stick deflection at sensitivity 1
 constexpr float kGyroDeadDegPerSec = 1.5f;      // below this the sensor noise is ignored
 // Gyro rate to camera stick (-1..1, y up positive). Pure; used by map_pad and the tests.

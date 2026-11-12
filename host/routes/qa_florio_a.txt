@@ -1,0 +1,24 @@
+# fixture: post_tutorial
+# Florio photo run that picks photos at photo select and gets the professor's evaluation (photo evaluation path, 2026-11-12).
+# Same course part as florio_photos.txt. Slow A taps run to f18000 (dialogue; photo select began between p12471 and p17694 in four runs). From f18000 a 1200-present cycle (starting it earlier hit the course on slow runs, so Plus opened the pause menu): Right (next subject folder), A (open), A (select the shown photo),
+# B (back), twice; then Plus (Evaluate Photos), Up (Yes), A, then A taps through the evaluation dialogue and score screens.
+# Run: powershell -File host\run_boot.ps1 -Route qa_florio_a -Timeout 590 -ShotAt 280 -ShotEvery 4 -ShotMax 60
+repeat @f300 @f18000 120 8 A
+repeat @f6000 @f12000 24 4 A
+repeat @f6000 @f11000 600 200 ZL
+repeat @f6000 @f11000 400 60 rx=0.25
+repeat @f6200 @f11000 400 60 rx=-0.25
+repeat @f18000 @f60000 1200 10 Right
+repeat @f18100 @f60000 1200 10 A
+repeat @f18200 @f60000 1200 10 A
+repeat @f18300 @f60000 1200 10 B
+repeat @f18400 @f60000 1200 10 Right
+repeat @f18500 @f60000 1200 10 A
+repeat @f18600 @f60000 1200 10 A
+repeat @f18700 @f60000 1200 10 B
+repeat @f18800 @f60000 1200 10 Plus
+repeat @f18880 @f60000 1200 10 Up
+repeat @f18960 @f60000 1200 10 A
+repeat @f19020 @f60000 1200 8 A
+repeat @f19080 @f60000 1200 8 A
+repeat @f19140 @f60000 1200 8 A

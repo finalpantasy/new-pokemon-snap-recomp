@@ -38,6 +38,41 @@ enum Val {   // plain counters (no time)
 
 inline const bool on = std::getenv("SNAP_PERF") != nullptr;
 
+// Blocked time by cause (perf pass 3, SNAP_PERF only). Each thread adds to its own ledger (registered on first use; the
+// sampler writes <base>_waits.csv once a second, per thread) and to process-wide sums by role: frame_mark writes the deltas of
+// the presenting threads (gt_*: the JobWorkers that call nvnQueuePresent), of the main thread (mt_*) and of all threads (all_*).
+enum Wt {
+    WT_CORE = 0,  // acquire_core: ready, waiting for one of the 3 virtual cores (includes preemption hand-backs)
+    WT_LOCK,      // contended nn::os mutex / critical section (svcArbitrateLock path)
+    WT_CVAR,      // condition variable wait (events, semaphores, message queues, barriers, cv)
+    WT_KEY,       // light events, rw locks, timers, thread join
+    WT_MULTI,     // WaitAny / MultiWait
+    WT_SLEEP,     // nn::os::SleepThread / svcSleepThread
+    WT_FS,        // fs file read (host ReadFile)
+    WT_COUNT
+};
+enum Role : uint8_t { R_OTHER = 0, R_PRESENT = 1, R_MAIN = 2, R_COUNT };
+struct Ledger {
+    std::atomic<uint64_t> ns[WT_COUNT];
+    unsigned long tid = 0;
+    bool reg = false;
+    ~Ledger();
+};
+extern thread_local Ledger tl_ledger;
+extern thread_local uint8_t tl_role;
+extern std::atomic<uint64_t> g_role_ns[R_COUNT][WT_COUNT];
+extern std::atomic<uint64_t> g_fs_bytes;
+void ledger_register();
+inline void wait_add(Wt w, uint64_t ns) {
+    if (!tl_ledger.reg) ledger_register();
+    tl_ledger.ns[w].fetch_add(ns, std::memory_order_relaxed);
+    g_role_ns[tl_role][w].fetch_add(ns, std::memory_order_relaxed);
+}
+inline void set_role(Role r) { tl_role = r; }
+inline bool key_thread() { return tl_role != R_OTHER; }
+// Long-wait event threshold in ns (SNAP_PERF_WAIT_MS, default 8 ms) for presenting / main threads; other threads' core waits use 4x.
+extern uint64_t g_wait_event_ns;
+
 inline uint64_t now_ns() {
     return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }

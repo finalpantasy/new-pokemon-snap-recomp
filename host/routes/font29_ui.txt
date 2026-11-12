@@ -1,0 +1,3 @@
+# fixture: post_tutorial
+# Font mod #29 A/B: slow A taps from the title (present 3200) through the lab hub to the Lental Map; dump frames every 10 s and pick title, dialog, menu.
+repeat @f3200 @f12000 150 8 A

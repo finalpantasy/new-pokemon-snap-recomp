@@ -121,13 +121,45 @@ namespace ShaderHarness
 
         static int Nvn(string[] a)
         {
-            byte[] data = File.ReadAllBytes(a[0]);
-            int stage = int.Parse(a[3]), constOff = int.Parse(a[4]), codeOff = int.Parse(a[5]);
+            return NvnTranslate(File.ReadAllBytes(a[0]), a[1], a[2], int.Parse(a[3]), int.Parse(a[4]), int.Parse(a[5]));
+        }
+
+        // --nvn-batch list.tsv binsDir outDir salt: every program of the list (corpus from scripts/xlate_corpus.py) is translated in
+        // this process and written as <key>.spv/.json, key = SHA-256(data section || salt|stage|codeOff), the NVN layer's cache key
+        // (runtime/nvn/nvn_shader.cpp Sha256Hex). Failures are listed in outDirailures.tsv and do not stop the run.
+        // Optional 5th/6th arguments first and count translate a slice of the list (chunks under 10 minutes).
+        static int NvnBatch(string[] a)
+        {
+            string[] lines = File.ReadAllLines(a[0]);
+            string binsDir = a[1], outDir = a[2], salt = a[3];
+            int first = a.Length > 4 ? int.Parse(a[4]) : 0, count = a.Length > 5 ? int.Parse(a[5]) : lines.Length;
+            Directory.CreateDirectory(outDir);
+            using var fail = new StreamWriter(Path.Combine(outDir, "failures" + first + ".tsv"));
+            int ok = 0, bad = 0;
+            for (int i = first; i < Math.Min(lines.Length, first + count); i++)
+            {
+                string[] f = lines[i].Split('	');
+                byte[] data = File.ReadAllBytes(Path.Combine(binsDir, f[0] + ".bin"));
+                int stage = int.Parse(f[1]), constOff = int.Parse(f[2]), codeOff = int.Parse(f[3]);
+                byte[] extra = System.Text.Encoding.ASCII.GetBytes(salt + "|" + stage + "|" + codeOff);
+                var sha = System.Security.Cryptography.SHA256.Create();
+                sha.TransformBlock(data, 0, data.Length, null, 0);
+                sha.TransformFinalBlock(extra, 0, extra.Length);
+                string key = Convert.ToHexString(sha.Hash).ToLowerInvariant();
+                try { NvnTranslate(data, Path.Combine(outDir, key + ".spv"), Path.Combine(outDir, key + ".json"), stage, constOff, codeOff); ok++; }
+                catch (Exception e) { bad++; fail.WriteLine(f[0] + "\t" + key + "\t" + f[4] + "\t" + e.GetType().Name + ": " + e.Message.Replace('\n', ' ')); }
+            }
+            Console.WriteLine("ok " + ok + " failed " + bad);
+            return bad == 0 ? 0 : 1;
+        }
+
+        static int NvnTranslate(byte[] data, string outSpv, string outJson, int stage, int constOff, int codeOff)
+        {
             TranslationFlags flags = TranslationFlags.DebugMode;
             if (stage == 5) flags |= TranslationFlags.Compute;
             var ctx = Translator.CreateContext(0, new NvnAccessor(data, stage, constOff, codeOff), new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
             ShaderProgram p = ctx.Translate();
-            File.WriteAllBytes(a[1], FixClipCull(p.BinaryCode, (int)p.Info.ClipDistancesWritten));
+            File.WriteAllBytes(outSpv, FixClipCull(p.BinaryCode, (int)p.Info.ClipDistancesWritten));
             var sb = new System.Text.StringBuilder();
             sb.Append("{\"stage\":" + stage + ",\"usesInstanceId\":" + (p.Info.UsesInstanceId ? 1 : 0) + ",\"usesFragCoord\":" + (p.Info.UsesFragCoord ? 1 : 0)
                 + ",\"clipDistances\":" + p.Info.ClipDistancesWritten + ",\"fragmentOutputMap\":" + p.Info.FragmentOutputMap);
@@ -144,7 +176,7 @@ namespace ShaderHarness
             first = true;
             foreach (var t in p.Info.Images) { sb.Append((first ? "" : ",") + "{\"set\":" + t.Set + ",\"binding\":" + t.Binding + ",\"handleIndex\":" + t.HandleIndex + ",\"cbufSlot\":" + t.CbufSlot + ",\"type\":" + (int)t.Type + ",\"array\":" + t.ArrayLength + ",\"flags\":" + (int)t.Flags + "}"); first = false; }
             sb.Append("]}");
-            File.WriteAllText(a[2], sb.ToString());
+            File.WriteAllText(outJson, sb.ToString());
             return 0;
         }
 
@@ -164,7 +196,7 @@ namespace ShaderHarness
                     var ctx = Translator.CreateContext(0, new GpuAccessor(File.ReadAllBytes(f[0])), new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                     ShaderProgram p = ctx.Translate();
                     File.WriteAllBytes(Path.Combine(outDir, name + ".spv"), p.BinaryCode);
-                    res.WriteLine(name + "\tok\t" + p.BinaryCode.Length + "	" + p.Info.CBuffers.Count + "	" + p.Info.Textures.Count + "	" + p.Info.SBuffers.Count + "	" + sw.ElapsedMilliseconds);
+                    res.WriteLine(name + "\tok\t" + p.BinaryCode.Length + "\t" + p.Info.CBuffers.Count + "\t" + p.Info.Textures.Count + "\t" + p.Info.SBuffers.Count + "\t" + sw.ElapsedMilliseconds);
                 }
                 catch (Exception e)
                 {
@@ -181,6 +213,7 @@ namespace ShaderHarness
         {
             // args: in.bin out.spv [compute]   |   --batch list.tsv outdir  (list: path<TAB>stage; writes results.tsv)
             if (args.Length == 7 && args[0] == "--nvn") return Nvn(args[1..]);
+            if (args.Length >= 5 && args[0] == "--nvn-batch") return NvnBatch(args[1..]);
             if (args.Length == 3 && args[0] == "--batch") return Batch(args[1], args[2]);
             if (args.Length < 2) { Console.Error.WriteLine("usage: in.bin out.spv [compute]"); return 2; }
             TranslationFlags flags = TranslationFlags.DebugMode;

@@ -1,0 +1,11 @@
+# fixture: qa_post_florio
+# QA: lab hub features after one scored Florio run (save has 2 album photos, 2,685 research points). Fixture = gens/33 of run 3-20261112_120638.
+# Title A taps (to f1400), then wait for the hub (appears between p2200 and p2700 depending on load): Down (Lab) at f2900, A at f3100,
+# then slow A taps through the lab dialogue and menu; Right/B explore. Dense dumps: -ShotAt 25 -ShotEvery 2 -ShotMax 150.
+repeat @f300 @f1400 120 8 A
+@f2900 8 Down
+@f3100 8 A
+repeat @f3800 @f5800 200 8 A
+repeat @f5800 @f9000 250 8 Right
+repeat @f5900 @f9000 500 8 A
+repeat @f6200 @f9000 500 8 B

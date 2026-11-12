@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "fs_core.h"
+#include "os/perf.h"
 
 #include <algorithm>
 #include <atomic>
@@ -604,7 +605,15 @@ uint32_t Fs::read_file(FileId f, int64_t off, void* buf, size_t n, size_t* out) 
   if (!of) return kResultInvalidArgument;
   if (off < 0) return kResultOutOfRange;
   if (n == 0) { if (out) *out = 0; return kSuccess; }
-  int64_t got = of->hf.read_at(off, buf, n);
+  int64_t got;
+  if (snap_perf::on) {   // perf pass 3: file reads hold the caller's virtual core (no os_host_block); time them
+    const uint64_t t0 = snap_perf::now_ns();
+    got = of->hf.read_at(off, buf, n);
+    snap_perf::wait_add(snap_perf::WT_FS, snap_perf::now_ns() - t0);
+    if (got > 0) snap_perf::g_fs_bytes.fetch_add((uint64_t)got, std::memory_order_relaxed);
+  } else {
+    got = of->hf.read_at(off, buf, n);
+  }
   if (trace_flags & kTraceFs) log("fs: read file %llu off %lld n %zu -> %lld", (unsigned long long)f, (long long)off, n, (long long)got);
   if (got < 0) return kResultTargetLocked;
   if (out) { *out = (size_t)got; return kSuccess; }

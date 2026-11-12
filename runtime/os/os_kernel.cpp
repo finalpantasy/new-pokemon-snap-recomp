@@ -22,6 +22,7 @@
 #include <thread>
 
 #include "os_internal.h"
+#include "perf.h"
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
@@ -298,6 +299,7 @@ Thread *keyq_pop_best(uint64_t key) {
 }
 bool keyq_empty(uint64_t key) { return !g_keyq.count(key); }
 void wake(Thread *t, uint32_t result) {
+    t->waker = t_self;
     t->woken = true;
     t->wresult = result;
     t->wkind = W_NONE;
@@ -313,7 +315,38 @@ int keyq_wake_all(uint64_t key, uint32_t result) {
     for (Thread *t : v) wake(t, result);
     return (int)v.size();
 }
-bool wait_woken(Thread *t, Lock &lk, Deadline d) {
+// ---- perf pass 3: blocked time by cause (SNAP_PERF / SNAP_PERF_SHARED only; see perf.h)
+static const char *tname(const Thread *t) {
+    if (!t) return "host";
+    uint64_t p = t->tt ? gld<uint64_t>(t->tt + TT_NAME_POINTER) : 0;
+    return p ? (const char *)(uintptr_t)p : "?";
+}
+static bool is_frame_thread() { return snap_perf::key_thread(); }   // a presenting JobWorker or the main thread
+static const char *role_tag() { return snap_perf::tl_role == snap_perf::R_MAIN ? "mt" : "gt"; }
+static void note_wait(Thread *t, int kind, uint64_t ns) {
+    snap_perf::Wt w;
+    const char *kn;
+    switch (kind) {
+    case W_LOCK: w = snap_perf::WT_LOCK; kn = "lock"; break;
+    case W_CVAR: w = snap_perf::WT_CVAR; kn = "cvar"; break;
+    case W_MULTI: w = snap_perf::WT_MULTI; kn = "multi"; break;
+    case W_KEY: case W_JOIN: w = snap_perf::WT_KEY; kn = "key"; break;
+    default: return;
+    }
+    snap_perf::wait_add(w, ns);
+    if (ns >= snap_perf::g_wait_event_ns && is_frame_thread()) {
+        char det[200];
+        snprintf(det, sizeof det, "%s addr=%#llx key=%#llx woken_by=%.24s/p%d %s", kn, (unsigned long long)t->waddr,
+                 (unsigned long long)t->wkey, tname(t->waker), t->waker ? t->waker->eff_prio : -1, t->woken ? "" : "timeout");
+        char kind[16];
+        snprintf(kind, sizeof kind, "%s_wait", role_tag());
+        snap_perf::event(kind, (double)ns / 1e6, det);
+    }
+}
+static thread_local char t_core_snap[320];   // core holders when this thread started waiting for a core
+static void snap_core_holders(Thread *t);
+
+static bool wait_woken_raw(Thread *t, Lock &lk, Deadline d) {
     while (!t->woken) {
         if (is_infinite(d)) {
             t->cv.wait(lk);
@@ -322,6 +355,15 @@ bool wait_woken(Thread *t, Lock &lk, Deadline d) {
         }
     }
     return true;
+}
+bool wait_woken(Thread *t, Lock &lk, Deadline d) {
+    if (!snap_perf::on) return wait_woken_raw(t, lk, d);
+    const int kind = t->wkind;
+    t->waker = nullptr;
+    const uint64_t t0 = snap_perf::now_ns();
+    bool r = wait_woken_raw(t, lk, d);
+    note_wait(t, kind, snap_perf::now_ns() - t0);
+    return r;
 }
 uint32_t block_on_key(Thread *t, Lock &lk, uint64_t key, int kind, Deadline d) {
     t->woken = false;
@@ -388,8 +430,7 @@ static void leave_core_wait(Thread *t) {
     t->waiting_core = false;
 }
 
-void acquire_core(Thread *t, Lock &lk) {
-    if (t->is_host || ncores() < 0 || t->core >= 0 || t->block_depth > 0) return;
+static void acquire_core_raw(Thread *t, Lock &lk) {
     t->ready_seq = ++g_seq;
     t->waiting_core = true;
     g_core_wait.push_back(t);
@@ -421,6 +462,7 @@ void acquire_core(Thread *t, Lock &lk) {
         if (!counted) {
             g_stats.core_waits++;
             counted = true;
+            if (snap_perf::on) snap_core_holders(t);
         }
         // The thread Horizon would preempt for t: the lowest-priority holder of a core t may use.
         Thread *victim = nullptr;
@@ -463,6 +505,29 @@ void acquire_core(Thread *t, Lock &lk) {
             t->cv.wait_for(lk, std::chrono::microseconds(wait_us + 50));
         }
     }
+}
+
+static void snap_core_holders(Thread *t) {   // under G
+    const uint64_t now = now_us();
+    int n = snprintf(t_core_snap, sizeof t_core_snap, "self=%.20s/p%d waiters=%zu overflow=%d holders:", tname(t), t->eff_prio,
+                     g_core_wait.size(), g_overflow);
+    for (int c = 0; c < ncores() && n < (int)sizeof t_core_snap - 48; c++) {
+        Thread *o = g_cores[c];
+        if (o) n += snprintf(t_core_snap + n, sizeof t_core_snap - n, " %.20s/p%d/%llums", tname(o), o->eff_prio,
+                             (unsigned long long)((now - o->core_since) / 1000));
+    }
+}
+void acquire_core(Thread *t, Lock &lk) {
+    if (t->is_host || ncores() < 0 || t->core >= 0 || t->block_depth > 0) return;
+    if (!snap_perf::on) return acquire_core_raw(t, lk);
+    t_core_snap[0] = 0;
+    const uint64_t t0 = snap_perf::now_ns();
+    acquire_core_raw(t, lk);
+    const uint64_t ns = snap_perf::now_ns() - t0;
+    snap_perf::wait_add(snap_perf::WT_CORE, ns);
+    const bool ft = is_frame_thread();
+    if (t_core_snap[0] && ns >= snap_perf::g_wait_event_ns * (ft ? 1 : 4))
+        snap_perf::event(!ft ? "core_wait" : snap_perf::tl_role == snap_perf::R_MAIN ? "mt_core_wait" : "gt_core_wait", (double)ns / 1e6, t_core_snap);
 }
 
 void release_core(Thread *t) {
@@ -793,7 +858,19 @@ void sleep_ns(Thread *t, int64_t ns) {
         Lock lk(G);
         release_core(t);
     }
-    precise_sleep(ns);
+    if (snap_perf::on) {
+        const uint64_t t0 = snap_perf::now_ns();
+        precise_sleep(ns);
+        const uint64_t d = snap_perf::now_ns() - t0;
+        snap_perf::wait_add(snap_perf::WT_SLEEP, d);
+        if (d >= snap_perf::g_wait_event_ns && is_frame_thread()) {
+            char det[64];
+            snprintf(det, sizeof det, "sleep requested %.3f ms", (double)ns / 1e6);
+            snap_perf::event(snap_perf::tl_role == snap_perf::R_MAIN ? "mt_sleep" : "gt_sleep", (double)d / 1e6, det);
+        }
+    } else {
+        precise_sleep(ns);
+    }
     Lock lk(G);
     acquire_core(t, lk);
 }
@@ -884,6 +961,10 @@ extern "C" void os_init(const OsConfig *in) {
         if (in->tick_base) c.tick_base = in->tick_base;
         c.trace = in->trace;
     }
+    // perf switches (pass 3): override the virtual-core model without a rebuild
+    if (const char *e = getenv("SNAP_OS_CORES")) c.num_cores = atoi(e);              // -1 = unlimited (free host scheduling)
+    if (const char *e = getenv("SNAP_OS_OVERCOMMIT_US")) c.overcommit_us = (uint32_t)atoi(e);
+    if (const char *e = getenv("SNAP_OS_RR_US")) c.rr_slice_us = (uint32_t)atoi(e);
     if (c.num_cores > 64) c.num_cores = 64;
     g_cfg = c;
     std::lock_guard<std::mutex> lk(G);
@@ -898,6 +979,7 @@ extern "C" void os_init(const OsConfig *in) {
 
 extern "C" void os_adopt_main_thread(Cpu *c, uint64_t tt, int prio) {
     if (prio < 0) prio = g_cfg.main_priority;
+    snap_perf::set_role(snap_perf::R_MAIN);
     Thread *t = t_self;
     bool fresh = !t;
     if (fresh) {

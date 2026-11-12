@@ -62,6 +62,18 @@ void write_file() {
   if (ec) { fs::remove(P(g_path), ec); fs::rename(P(tmp), P(g_path), ec); }
 }
 
+// Settings that reach the game through an env var read at start (the F1 menu's "restart needed" options). The key is stored only when the user chose
+// something; "" and "default" mean "leave the variable alone" (the game's own behavior). An env var set by hand always wins (set_env_if_unset).
+const struct { const char* key; const char* env; } kEnvKeys[] = {
+    {"gfx_render_scale", "SNAP_RENDER_SCALE"}, {"gfx_aniso", "SNAP_ANISO"},           {"gfx_lod_bias", "SNAP_LOD_BIAS"},
+    {"gfx_shadow_res", "SNAP_SHADOW_RES"},     {"ssao_quality", "SNAP_SSAO_QUALITY"}, {"gfx_lighting", "SNAP_LIGHTING"},
+    {"gfx_aa", "SNAP_AA"},                     {"gfx_sharpen", "SNAP_SHARPEN"},       {"gfx_upscaler", "SNAP_UPSCALER"},
+    {"gfx_upscale_quality", "SNAP_UPSCALE_QUALITY"}, {"gfx_hdr", "SNAP_HDR"},        {"gfx_hdr_peak", "SNAP_HDR_PEAK"},
+    {"gfx_hdr_paper", "SNAP_HDR_PAPER"},       {"gfx_draw_distance", "SNAP_DRAW_DISTANCE"},   // gfx_fov removed (owner 2026-11-12): a saved value is ignored
+    {"gfx_full_rate_anim", "SNAP_FULL_RATE_ANIM"}, {"gfx_ui_font", "SNAP_UI_FONT_SCALE"}, {"fast_boot", "SNAP_FAST_BOOT"},
+    {"photo_export", "SNAP_PHOTO_EXPORT"},     {"photo_dir", "SNAP_PHOTO_DIR"},
+};
+
 float to_float(const std::string& s, float def) { return s.empty() ? def : (float)std::atof(s.c_str()); }
 
 void set_env_if_unset(const char* name, const std::string& value) {
@@ -145,8 +157,44 @@ void apply(bool env) {
     std::snprintf(b, sizeof b, "%s:%.2f", look.c_str(), get_float("look_intensity", 1.0f));
     set_env_if_unset("SNAP_LOOK", b);
   }
-  std::string q = get("ssao_quality", "default");
-  if (q == "high" || q == "ultra") set_env_if_unset("SNAP_SSAO_QUALITY", q);
+  for (auto& m : kEnvKeys) {
+    std::string v = get(m.key, "");
+    if (v.empty() || v == "default") continue;
+    set_env_if_unset(m.env, v);
+  }
+  std::string ws = get("win_size", "");   // "WxH": windowed client size (the remembered window.json size otherwise)
+  int w = 0, h = 0;
+  if (std::sscanf(ws.c_str(), "%dx%d", &w, &h) == 2 && w >= 320 && h >= 180) {
+    set_env_if_unset("SNAP_WINDOW_W", std::to_string(w));
+    set_env_if_unset("SNAP_WINDOW_H", std::to_string(h));
+  }
+}
+
+const char* env_name(const std::string& key) {
+  if (key == "look" || key == "look_intensity") return "SNAP_LOOK";
+  if (key == "win_size") return "SNAP_WINDOW_W";
+  for (auto& m : kEnvKeys) if (key == m.key) return m.env;
+  return nullptr;
+}
+
+bool env_wins(const std::string& key) {
+  const char* n = env_name(key);
+  if (!n) return false;
+  const char* cur = std::getenv(n);
+  if (!cur || !*cur) return false;
+  std::lock_guard<std::mutex> g(g_mu);
+  for (auto& e : g_exported) if (e == n) return false;   // we set it ourselves from this file
+  return true;
+}
+
+bool has(const std::string& key) {
+  std::lock_guard<std::mutex> g(g_mu);
+  return g_kv.count(key) != 0;
+}
+
+void erase(const std::string& key) {
+  { std::lock_guard<std::mutex> g(g_mu); g_kv.erase(key); write_file(); }
+  apply(false);
 }
 
 }  // namespace hle::settings

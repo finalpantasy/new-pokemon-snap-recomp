@@ -1,0 +1,36 @@
+# Stage 1 of the option pages test (run_options_test.ps1): change options as the F1 menu controls do, check the apply-now / restart marks and the
+# "needs a restart" count, edit the mods list, then "Apply and restart". The relaunched game runs ui_options_script2.txt. Times: seconds after the first present.
+25 key F1 1
+27 expect_open 1
+27.5 expect_pending 0
+28 expect_when gfx_render_scale restart
+28.1 expect_when frame_cap live
+28.2 expect_when gfx_upscaler soon
+28.4 expect_when win_mode live
+28.5 expect_when audio_output restart
+29 tab Graphics
+30 opt gfx_render_scale 1.50
+30.2 opt gfx_aa smaa
+30.4 opt gfx_aniso 8
+30.6 opt gfx_sharpen 0.30
+30.8 opt gfx_ui_font 2
+30.9 opt gfx_full_rate_anim 1
+31 opt look warm
+31.2 opt ssao_quality high
+31.4 opt frame_cap 60
+31.6 opt photo_export 0
+31.8 opt audio_output speakers
+32 mods toggle alpha
+32.2 mods move beta -1
+32.4 expect_mods beta:1,alpha:0
+32.6 expect_pending 12
+33 expect_opt gfx_render_scale 1.50
+34 tab Graphics
+38 scroll 0.5
+42 scroll 1.0
+46 tab Display
+50 tab Photos
+54 tab Mods
+58 tab Audio
+62 apply_restart
+64 quit

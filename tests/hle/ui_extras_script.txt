@@ -5,7 +5,7 @@
 32 shot analysis/ui/f1_graphics.bmp
 33 tab Controller
 36 shot analysis/ui/f1_controller.bmp
-37 tab Gallery
+37 tab Photos
 40 shot analysis/ui/f1_gallery.bmp
 42 key F1 0
 44 quit

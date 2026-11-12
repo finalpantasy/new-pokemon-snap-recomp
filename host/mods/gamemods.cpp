@@ -8,6 +8,12 @@
 //                                          8 directions x 32 samples (game default) / 12 x 48 / 16 x 64.
 //   SNAP_SSAO_SAMPLES=n                    SimpleAO / Alchemy / Hemisphere sample count (1..512), overrides the preset.
 //   SNAP_SSAO_HBAO=dirs,samples            HBAO directions and samples per direction, overrides the preset.
+//   SNAP_SSAO_RADIUS=f                     SimpleAO kernel radius (game default 0.2; world-space units of the AO hemisphere).
+//   SNAP_SSAO_STRENGTH=f                   SimpleAO strength (game default 1.0).
+//   SNAP_LIGHTING=high                     preset: SNAP_SSAO_QUALITY=high plus SNAP_SHADOW_RES=2048 (the latter read by runtime/nvn
+//                                          ApplyHostEnvPolicy); every explicit switch above still wins.
+//   SNAP_UI_FONT_SCALE=2..4                UI glyphs are rasterized at k times the size into a k times larger atlas (#29, sharper fonts); the
+//                                          layout fields of every glyph entry keep the 1x values, so text size and position do not change.
 //   SNAP_GM_TRACE=1                        logs the values the game had before the override (first 8 hits of each hook).
 //   SNAP_PASS_DUMP=1                       logs each distinct render pass object once (vtable, flags, strings) for pass identification.
 //   SNAP_PASS_OFF=name,name,...            disables post passes by name (see pass_name_matches below).
@@ -34,6 +40,8 @@ bool g_init_done;
 int g_simple_n;                 // 0 = leave the game's value
 int g_hbao_dirs, g_hbao_samples;  // 0 = leave
 bool g_trace, g_pass_dump;
+int g_font_k;                   // 0 = off
+float g_ao_radius, g_ao_strength;  // 0 = leave the game's value
 std::vector<std::string> g_pass_off;
 
 void init() {
@@ -49,6 +57,10 @@ void init() {
         int d = 0, s = 0;
         if (sscanf(h, "%d,%d", &d, &s) == 2 && d >= 1 && d <= 64 && s >= 1 && s <= 128) { g_hbao_dirs = d; g_hbao_samples = s; }
     }
+    if (const char* r = getenv("SNAP_SSAO_RADIUS")) { float v = (float)atof(r); if (v > 0.0f && v <= 4.0f) g_ao_radius = v; }
+    if (const char* r = getenv("SNAP_SSAO_STRENGTH")) { float v = (float)atof(r); if (v > 0.0f && v <= 8.0f) g_ao_strength = v; }
+    if (const char* f = getenv("SNAP_UI_FONT_SCALE")) { int k = atoi(f); if (k >= 2 && k <= 4) g_font_k = k; }
+    if (g_font_k) fprintf(stderr, "gamemods: UI font scale %d\n", g_font_k);
     g_trace = getenv("SNAP_GM_TRACE") && getenv("SNAP_GM_TRACE")[0] != '0';
     g_pass_dump = getenv("SNAP_PASS_DUMP") && getenv("SNAP_PASS_DUMP")[0] != '0';
     if (const char* o = getenv("SNAP_PASS_OFF")) {
@@ -58,7 +70,7 @@ void init() {
             else cur.push_back((char)tolower((unsigned char)ch));
         }
     }
-    if (g_simple_n || g_hbao_dirs || g_trace || g_pass_dump || !g_pass_off.empty())
+    if (g_simple_n || g_hbao_dirs || g_ao_radius > 0.0f || g_ao_strength > 0.0f || g_trace || g_pass_dump || !g_pass_off.empty())
         fprintf(stderr, "gamemods: SimpleAO samples %d, HBAO %dx%d, trace %d, pass dump %d, %zu pass(es) off\n", g_simple_n, g_hbao_dirs,
                 g_hbao_samples, (int)g_trace, (int)g_pass_dump, g_pass_off.size());
 }
@@ -140,4 +152,78 @@ extern "C" void rt_gm_pass(Cpu* c) {
     }
 toggled:
     return;
+}
+
+// ------------------------------------------------------------------------------------------------ sharper UI fonts (#29)
+// The glyph cache (main+0x435560) asks nn::fontll for a glyph bitmap (PLT 0xa37dc0 after SetScale 0xa37d90), packs it into an R8 atlas
+// (dims at cache+0x2188/+0x218c, created in 0x63fdc0) and fills the glyph entry: +0x1a/+0x1c bitmap size in the atlas and the UV source, +0x1e/+0x20
+// layout size, +0x22 advance, +0x24.. bearings (the quad builder 0x438960 uses +0x1a/+0x1c for UV and the rest for the screen quad).
+// With SNAP_UI_FONT_SCALE=k: the atlas texture is k times larger in both axes; right after each GetGlyph the hook renders the same glyph again at
+// k times the scale and hands the cache a composite (the k-times bitmap and size, but the 1x bearings and advance of the first call); a third hook
+// writes the 1x bitmap size back into the entry's layout size, so text layout is exactly the original and only the UV rect covers more texels.
+const uint64_t kMagic = 0x32544e4650414e53ull;   // "SNAPFNT2"
+thread_local uint32_t t_font_scale;               // 16.16 scale of the current glyph request (w24 at the SetScale call)
+thread_local std::vector<uint8_t> t_font_ring[8];
+thread_local int t_font_ring_i;
+
+void font_composite(Cpu* c, bool first) {
+    uint8_t* r1 = (uint8_t*)c->x[0];
+    if (!r1 || !readable(r1, 0x30)) return;
+    uint16_t w1 = *(uint16_t*)(r1 + 0x1c), h1 = *(uint16_t*)(r1 + 0x1e);
+    if (!w1 || !h1 || !readable(r1, 0x28 + (size_t)w1 * h1)) return;
+    uint8_t hdr1[0x28];
+    memcpy(hdr1, r1, 0x28);
+    uint64_t engine = *(uint64_t*)(c->x[29] - 0x68);
+    uint32_t cp = *(uint32_t*)(c->sp + 0x3c);
+    if (first) t_font_scale = (uint32_t)c->x[24];
+    uint32_t s = t_font_scale;
+    if (!engine || !s || (uint64_t)s * g_font_k > 0x7fffffffull) return;
+    uint64_t saved[8];
+    for (int i = 0; i < 8; i++) saved[i] = c->x[i];
+    uint32_t sk = s * (uint32_t)g_font_k;
+    call_guest_nested(c, kMainBase + 0xa37d90, {engine, sk, 0, 0, sk});
+    uint8_t* r2 = (uint8_t*)call_guest_nested(c, kMainBase + 0xa37dc0, {engine, cp, 8});
+    call_guest_nested(c, kMainBase + 0xa37d90, {engine, s, 0, 0, s});
+    for (int i = 1; i < 8; i++) c->x[i] = saved[i];
+    c->x[0] = (uint64_t)r1;
+    if (!r2 || !readable(r2, 0x30)) return;
+    uint16_t w2 = *(uint16_t*)(r2 + 0x1c), h2 = *(uint16_t*)(r2 + 0x1e);
+    if (w2 < w1 || h2 < h1 || !readable(r2, 0x28 + (size_t)w2 * h2)) return;
+    std::vector<uint8_t>& b = t_font_ring[t_font_ring_i++ & 7];
+    b.assign(16 + 0x28 + (size_t)w2 * h2, 0);
+    memcpy(b.data(), &kMagic, 8);
+    memcpy(b.data() + 8, &w1, 2);
+    memcpy(b.data() + 10, &h1, 2);
+    memcpy(b.data() + 16, r2, 0x28 + (size_t)w2 * h2);
+    memcpy(b.data() + 16 + 0xc, hdr1 + 0xc, 6);   // bearing x, bearing y, advance: the 1x values
+    c->x[0] = (uint64_t)(b.data() + 16);
+    static int n;
+    if (g_trace && n < 6) { n++; trace("gamemods: font glyph %#x 1x %ux%u -> %ux%u (scale %#x)", cp, w1, h1, w2, h2, s); }
+}
+
+// ----- the five hook sites (recomp/snap_gen.py MAIN_INLINE_HOOKS)
+// Before main+0x6410bc (the call that creates the atlas texture, texture info at sp+0xe0, width/height as two u32 at +0x18): enlarge it.
+extern "C" void rt_gm_font_atlas_info(Cpu* c) {
+    init();
+    if (!g_font_k) return;
+    uint32_t* wh = (uint32_t*)(c->sp + 0xf8);
+    if (wh[0] == 512 && wh[1] == 2048) { wh[0] *= g_font_k; wh[1] *= g_font_k; }
+}
+// Before main+0x641288 (just after `str x20, [x25, #0x2188]`): the cache's own atlas size, used for the pitch and the UV divide.
+extern "C" void rt_gm_font_atlas_dims(Cpu* c) {
+    if (!g_font_k) return;
+    uint32_t* wh = (uint32_t*)(c->x[25] + 0x2188);
+    if (wh[0] == 512 && wh[1] == 2048) { wh[0] *= g_font_k; wh[1] *= g_font_k; }
+}
+// Before main+0x4358c0 and main+0x435eb0 (just after the GetGlyph calls): x0 = the glyph result.
+extern "C" void rt_gm_font_glyph1(Cpu* c) { if (g_font_k) font_composite(c, true); }
+extern "C" void rt_gm_font_glyph2(Cpu* c) { if (g_font_k) font_composite(c, false); }
+// Before main+0x435cf0 (copies the bitmap size to the entry's +0x1a/+0x1c): x1 = the glyph result, x21 = the entry.
+extern "C" void rt_gm_font_fix(Cpu* c) {
+    if (!g_font_k) return;
+    uint8_t* r = (uint8_t*)c->x[1];
+    uint8_t* e = (uint8_t*)c->x[21];
+    if (!r || !e || !readable(r - 16, 16) || memcmp(r - 16, &kMagic, 8)) return;
+    memcpy(e + 0x1e, r - 8, 2);
+    memcpy(e + 0x20, r - 6, 2);
 }

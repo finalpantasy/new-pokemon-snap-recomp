@@ -80,6 +80,17 @@ int main() {
     for (int i = 0; i < 4800; ++i) { c2[i * 6] = 0.3f; c2[i * 6 + 2] = 0.3f; c2[i * 6 + 4] = 0.3f; }
     std::vector<float> ref = c2; v.process(c2.data(), 6, 4800);
     CHECK(c2 == ref, "real surround content untouched");
+    // real surround ambience (BL/BR) but silent FC/LFE: center and bass are filled, the game's surrounds are not touched
+    {
+      Upmixer x; std::vector<float> g(6 * 4800, 0.0f), ref2;
+      for (int k = 0; k < 20; ++k) {
+        for (int i = 0; i < 4800; ++i) { g[i*6] = 0.3f * std::sin(i * 0.05f); g[i*6+1] = g[i*6]; g[i*6+2] = g[i*6+3] = 0; g[i*6+4] = 0.2f; g[i*6+5] = 0.1f; }
+        ref2 = g; x.process(g.data(), 6, 4800);
+      }
+      double fc = 0, lfe = 0; bool surUntouched = true;
+      for (int i = 2400; i < 4800; ++i) { fc += g[i*6+2] * g[i*6+2]; lfe += g[i*6+3] * g[i*6+3]; surUntouched = surUntouched && g[i*6+4] == ref2[i*6+4] && g[i*6+5] == ref2[i*6+5]; }
+      CHECK(fc > 1.0 && lfe > 0.01 && surUntouched, "ambient surrounds: FC/LFE filled (%f %f), BL/BR untouched", fc, lfe);
+    }
     std::vector<float> d(8 * 4800, 0.0f); Upmixer w;
     for (int k = 0; k < 20; ++k) { for (int i = 0; i < 4800; ++i) { d[i * 8] = 0.3f; d[i * 8 + 1] = 0.3f; d[i * 8 + 2] = d[i*8+3] = d[i*8+6] = d[i*8+7] = 0; } w.process(d.data(), 8, 4800); }
     CHECK(d[4799 * 8 + 6] > 0.0f && d[4799 * 8 + 4] == 0.0f, "7.1: ambience in the side speakers, backs empty");

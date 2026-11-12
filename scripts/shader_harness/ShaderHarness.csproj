@@ -1,6 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- Offline harness: raw Maxwell SPH+SASS -> SPIR-V via Ryujinx.Graphics.Shader (MIT, Ryubing fork).
-       Based on Ryujinx.ShaderTools/Program.cs (MIT). Source only; no game data here. -->
+       Based on Ryujinx.ShaderTools/Program.cs (MIT). Source only; no game data here.
+       RyujinxDir: the translator source tree (default: the unpatched clone). The patched revision builds against
+       build\xlate\r2\ryujinx (scripts\xlate_build.ps1). Pass BaseOutputPath/BaseIntermediateOutputPath on the command
+       line to build somewhere other than tools\shader_harness. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
@@ -8,12 +11,13 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>disable</Nullable>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <BaseOutputPath>..\..\tools\shader_harness\bin\</BaseOutputPath>
-    <BaseIntermediateOutputPath>..\..\tools\shader_harness\obj\</BaseIntermediateOutputPath>
+    <BaseOutputPath Condition="'$(BaseOutputPath)'==''">..\..\tools\shader_harness\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath Condition="'$(BaseIntermediateOutputPath)'==''">..\..\tools\shader_harness\obj\</BaseIntermediateOutputPath>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RyujinxDir Condition="'$(RyujinxDir)'==''">..\..\tools\ref\ryubing-ryujinx</RyujinxDir>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
-    <ProjectReference Include="..\..\tools\ref\ryubing-ryujinx\src\Ryujinx.Graphics.Shader\Ryujinx.Graphics.Shader.csproj" />
+    <ProjectReference Include="$(RyujinxDir)\src\Ryujinx.Graphics.Shader\Ryujinx.Graphics.Shader.csproj" />
   </ItemGroup>
 </Project>

@@ -119,8 +119,12 @@ Pipeline: backend (Win32 XInput + keyboard + mouse, or SDL3) fills `RawInput` ->
 - Touch: the left mouse button is one finger on the 1280x720 panel (`TouchScreenState<6>`, 0x100 bytes, 0x28-byte touches).
   Gestures report none.
 - Six-axis: one handle per npad (a 4-byte word; 0x7fffffff means none, 0x4c1514-0x4c152c), at rest, identity matrix
-  (`GetSixAxisSensorStates` stride 0x60, angular velocity at +0x1c, 0x4c15ec). No PC gyro source yet.
-- Vibration: the two actuators forward to XInput / SDL rumble.
+  (`GetSixAxisSensorStates` stride 0x60, angular velocity at +0x1c, 0x4c15ec). The game never calls them (trace verified), so gyro
+  aim is a host feature: SDL3 gyro (or `SNAP_GYRO_FAKE`) is added to the right stick; the six-axis state also carries the rate
+  (1.0 = 360 deg/s) when gyro aim is on, UNTESTED against the game. Switches in `host\README.md`.
+- Vibration: `SendVibrationValue` (floats ampLow, freqLow, ampHigh, freqHigh; amplitudes become the low/high motors) goes to
+  `SDL_RumbleGamepad` on every rumble-capable pad, XInput as fallback, scaled by `SNAP_RUMBLE` (0 off .. 1.5) or the profile.
+  `SNAP_RUMBLE_LOG=1` logs each game request and host call (`rumble:` lines).
 - Focus: when the window is not in the foreground all input reads as released (env `SNAP_INPUT_BACKGROUND=1` disables).
 - Default mapping (by position, A = east button). Stored in `%APPDATA%\SnapRecomp\input.json` (format version 2; `SNAP_CONFIG_DIR` overrides the folder; the version 1 `config\input_map.json` is migrated). Edited live by the F1 controls menu (`runtime/ui`); schema in `Mapping::to_json`. Menu open: the npad reads idle.
 

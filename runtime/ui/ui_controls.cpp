@@ -225,7 +225,7 @@ void reset_button(Device d) {
 }
 
 // ---- tabs ------------------------------------------------------------------------------------------------------------
-const char* const kTabs[] = {"Bindings", "Mouse", "Controller", "Accessibility", "Audio", "Graphics", "Saves", "Test input"};
+const char* const kTabs[] = {"Bindings", "Mouse", "Controller", "Accessibility", "Audio", "Graphics", "Display", "Photos", "Mods", "Saves", "Test input"};
 constexpr int kTabCount = (int)(sizeof kTabs / sizeof kTabs[0]);
 
 bool begin_tab(const char* name) {
@@ -446,6 +446,7 @@ void tab_test() {
 
 // ---- public ----------------------------------------------------------------------------------------------------------
 void menu_opened() {
+  options_menu_opened();
   S.edit = hub().mapping();
   S.ui_scale_edit = S.edit.ui_scale;
   S.rb.active = false;
@@ -501,7 +502,7 @@ void draw_menu(ImVec2 size, bool* want_close) {
 
   // header
   ImGui::AlignTextToFramePadding();
-  ImGui::TextColored(t.title, "Controls and input");
+  ImGui::TextColored(t.title, "Settings");
   ImGui::SameLine();
   ImGui::TextDisabled("   game input is paused while this menu is open");
   const char* closeLabel = "Close  (F1)";
@@ -524,6 +525,8 @@ void draw_menu(ImVec2 size, bool* want_close) {
     ImGui::EndChild();
     ImGui::PopStyleColor();
   }
+
+  options_restart_bar();   // "N changes need a restart" with the Apply and restart button
 
   const float footer_h = ImGui::GetTextLineHeightWithSpacing() * 3.4f;
   if (ImGui::BeginTabBar("tabs", ImGuiTabBarFlags_None)) {
@@ -553,8 +556,18 @@ void draw_menu(ImVec2 size, bool* want_close) {
       ImGui::EndChild();
       ImGui::EndTabItem();
     }
-    if (begin_tab("Gallery")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_gallery();
+    if (begin_tab("Display")) {
+      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_display();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("Photos")) {
+      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_photos();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("Mods")) {
+      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_mods();
       ImGui::EndChild();
       ImGui::EndTabItem();
     }
@@ -580,7 +593,7 @@ void draw_menu(ImVec2 size, bool* want_close) {
   if (now < S.note_until) ImGui::TextColored(t.good, "%s", S.note.c_str());
   else if (S.dirty) ImGui::TextDisabled("Saving...");
   else if (now < S.saved_flash_until) ImGui::TextColored(t.good, "Saved");
-  else ImGui::TextDisabled("Changes apply at once and are saved automatically.");
+  else ImGui::TextDisabled("Saved automatically.");
   ImGui::SameLine();
   std::string path = hub().config_path();
   std::string right = "F1 or hold Back+Start (0.5 s) closes the menu     " + path;

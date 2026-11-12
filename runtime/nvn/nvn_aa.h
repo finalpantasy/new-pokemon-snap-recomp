@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: MIT
+// Anti-aliasing and sharpening for the game's tonemap pass (project code, ours). See nvn_aa.cpp.
+//   SNAP_AA=fxaa|off|smaa|ssaa2 (combine with + or ,  e.g. ssaa2+smaa)   SNAP_SHARPEN=0..1
+#pragma once
+#include <cstdint>
+#include <vector>
+
+namespace nvn {
+struct ReplayCtx;
+enum { AA_FXAA = 0, AA_OFF = 1, AA_SMAA = 2 };
+extern int g_aaMode;        // what replaces the game's FXAA
+extern float g_aaSharpen;   // contrast adaptive sharpening strength, 0 = off
+// Parses SNAP_AA / SNAP_SHARPEN once. Returns the render scale SNAP_AA=ssaa2 asks for (2x the window height / 1080), or 0.
+float AaParseEnv();
+// Fragment shader fixups, called on a translated fragment module (key = first 12 hex digits of its cache key): turns the game's FXAA off by
+// forcing its edge test to fail, so the tonemap shaders write the plain tonemapped color. No-op for other shaders and for SNAP_AA=fxaa.
+void AaPatchFragment(std::vector<uint32_t>& words, const char* key12);
+// Called after every draw; runs SMAA and/or CAS in place on render target 0 when the draw used one of the game's tonemap programs.
+void AaAfterDraw(ReplayCtx& cx, const char* fragKey12);
+}  // namespace nvn

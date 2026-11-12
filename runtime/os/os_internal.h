@@ -68,6 +68,7 @@ struct Thread {
     uint64_t wkey = 0, waddr = 0, wseq = 0;
     uint32_t wtag = 0, wresult = 0;
     bool woken = false;
+    Thread *waker = nullptr;                 // the guest thread that last woke this one (nullptr: a host thread); perf only
     Thread *lock_owner = nullptr;            // W_LOCK: the thread whose lock we wait for
     std::vector<Thread *> lock_waiters;      // threads in W_LOCK on locks we own (priority inheritance)
     // lifecycle

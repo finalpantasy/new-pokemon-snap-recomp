@@ -86,9 +86,9 @@ void dump_parity() {
     }
     fclose(f);
     for (int i = 0; i < g_nseq; i++) {
-        char line[400];
+        char line[900];
         int n = 0;
-        for (int k = 0; k < 160; k++) n += snprintf(line + n, sizeof line - n, "%d", g_seq_cnt[i][k] > 9 ? 9 : g_seq_cnt[i][k]);
+        for (int k = 0; k < 160 && n < 850; k++) n += snprintf(line + n, sizeof line - n, "%d,", (int)g_seq_cnt[i][k]);
         trace("lodanim: seq %#llx per frame from %llu: %s", (unsigned long long)(g_seq[i].addr - kMainBase), (unsigned long long)g_from, line);
     }
     for (int i = 0; i < g_ncallers; i++)
@@ -183,6 +183,8 @@ struct FovSite { uint64_t lr; uint64_t n; float last; };
 FovSite g_fov_sites_seen[96];
 int g_fov_nseen;
 std::vector<uint64_t> g_fov_allow;   // module offsets of return addresses that get the FOV scale
+uint64_t g_fov_ab;                   // SNAP_FOV_AB=<P> (test aid): the FOV change applies only while (present count / P) is odd
+extern "C" uint64_t snap_present_count();   // host/boot.cpp
 
 uint64_t g_fov_snap[96];
 
@@ -205,7 +207,7 @@ void h_tanf(Cpu *c) {
     memcpy(&x, &b, 4);
     uint64_t lr = c->x[30];
     float xr = x;
-    if (g_fov_scale != 1.0 || g_fov_target_deg > 0) {
+    if ((g_fov_scale != 1.0 || g_fov_target_deg > 0) && (!g_fov_ab || ((snap_present_count() / g_fov_ab) & 1))) {
         uint64_t off = lr - kMainBase;
         bool ok = false;
         for (uint64_t a : g_fov_allow) if (a == off) { ok = true; break; }
@@ -237,6 +239,104 @@ void h_tanf(Cpu *c) {
 }  // namespace
 
 namespace { void fov_mark(bool end) { fov_mark_impl(end); } }
+
+// ---------------------------------------------------------------------------------------------------- model LOD (#27) and distant animation rate (#26)
+// Found by static RE (2026-11-12). The character/model instance class (vtable main+0xc7c5e8, ctor 0x32dc90) picks its LOD in its update
+// (vtable slot 2, main+0x334db0) at 0x337c2c..0x337d38 (and a copy at 0x337a3c..0x337b4c for attached sub-models):
+//   d = |instance pos - camera pos| (camera globals main+0xcfb480, fov main+0xcfb4c8, aspect +0x4cc);  s = 2 d tan(fov/2)
+//   ratio = pi (radius * scale[+0x3ef0])^2 / (s^2 * aspect)      (the share of the screen the bounding sphere covers)
+//   table t[3] per LOD group ([mgr+0x270] + group*0xc, group = [model data+0x54], group 0 = always LOD0):
+//   ratio >= t0 -> LOD0, >= t1 -> LOD1, >= t2 -> LOD2, else 3 = not drawn (visible byte [+0x104] cleared) unless flag +0x12a keeps LOD2.
+// The result goes to instance+0x4174 (current LOD) and +0x417c (ratio). Because ratio ~ 1/d^2, multiplying it by m^2 moves every switch
+// distance and the cull distance out by m. SNAP_DRAW_DISTANCE=<m> does that in rt_gm_lod_ratio, hooked (MAIN_INLINE_HOOKS) right after the
+// fdiv that produces the ratio: main+0x337ca8 (main path) and main+0x337ab8 (sub-model path); s0 holds the ratio there.
+//
+// Distant animation: the pre-draw method (vtable slot 3, main+0x338170) rebuilds the instance's render job [+0x158] (main+0x971170, queued
+// by main+0x98d3b0 in slot 4 main+0x33aac0 and cleared after) only every 2*LOD frames while the LOD is unchanged: counter [+0x4170],
+// last LOD [+0x4178]; LOD0 every frame, LOD1 every 2nd, LOD2 every 4th (main+0x33a744..0x33a770, x20 = instance+0x4000). The skipped
+// frames reuse the previous job, so far models update at 30 or 15 Hz. SNAP_FULL_RATE_ANIM=1 sets the counter to a large value before
+// the compare (rt_gm_anim_rate, hook main+0x33a744), so the job is rebuilt every frame like LOD0. SNAP_TRACE_LODSEL=1 logs LOD histograms.
+namespace {
+float g_dd_ratio_mul = 1.0f;   // SNAP_DRAW_DISTANCE squared
+bool g_full_rate, g_lodsel_trace, g_lodmods_init;
+uint64_t g_dd_ab;              // SNAP_DRAW_DISTANCE_AB=<P> (test aid): the multiplier applies only while (present count / P) is odd
+uint64_t g_lod_hist[2][4], g_lod_calls, g_anim_seen, g_anim_forced;
+
+void lodmods_init() {
+    if (g_lodmods_init) return;
+    g_lodmods_init = true;
+    if (const char *e = getenv("SNAP_DRAW_DISTANCE")) {
+        double m = atof(e);
+        if (m > 0.01 && m <= 1000.0 && m != 1.0) g_dd_ratio_mul = (float)(m * m);
+    }
+    if (const char *e = getenv("SNAP_DRAW_DISTANCE_AB")) g_dd_ab = strtoull(e, nullptr, 0);
+    const char *f = getenv("SNAP_FULL_RATE_ANIM");
+    g_full_rate = f && f[0] && f[0] != '0';
+    const char *t = getenv("SNAP_TRACE_LODSEL");
+    g_lodsel_trace = t && t[0] && t[0] != '0';
+    if (g_dd_ratio_mul != 1.0f || g_full_rate || g_lodsel_trace)
+        trace("lodanim: SNAP_DRAW_DISTANCE ratio x%g (A/B period %llu presents), SNAP_FULL_RATE_ANIM %d, SNAP_TRACE_LODSEL %d", g_dd_ratio_mul,
+              (unsigned long long)g_dd_ab, (int)g_full_rate, (int)g_lodsel_trace);
+}
+
+extern "C" uint64_t snap_present_count();   // host/boot.cpp
+float ratio_mul() { return g_dd_ab && ((snap_present_count() / g_dd_ab) & 1) == 0 ? 1.0f : g_dd_ratio_mul; }
+
+float get_s0(Cpu *c) { uint32_t b = (uint32_t)c->v[0]; float f; memcpy(&f, &b, 4); return f; }
+void set_s0(Cpu *c, float f) { uint32_t b; memcpy(&b, &f, 4); c->v[0] = (__uint128_t)b; }
+
+void lod_trace(Cpu *c, float ratio, int path) {
+    // threshold table pointer at [sp+0x28]; group index in w22 (main path) or w25 (sub-model path)
+    uint64_t sp = c->sp;
+    int grp = (int)(int32_t)(uint32_t)c->x[path ? 25 : 22];
+    int lod = 0;
+    if (grp != 0 && readable((void *)(sp + 0x28), 8)) {
+        const float *t = *(const float **)(sp + 0x28);
+        if (t && grp > 0 && grp < 4096 && readable(t + grp * 3, 12)) {
+            t += grp * 3;
+            lod = ratio >= t[0] ? 0 : ratio >= t[1] ? 1 : ratio >= t[2] ? 2 : 3;
+            static int shown;
+            if (shown < 6) { shown++; trace("lodanim: LOD group %d thresholds %g %g %g (ratio %g)", grp, t[0], t[1], t[2], ratio); }
+        }
+    }
+    g_lod_hist[path][lod]++;
+    if (++g_lod_calls % 20000 == 0)
+        trace("lodanim: LOD picks (x%g) main lod0-3 %llu %llu %llu %llu, sub %llu %llu %llu %llu; anim rebuilds forced %llu of %llu", g_dd_ratio_mul,
+              (unsigned long long)g_lod_hist[0][0], (unsigned long long)g_lod_hist[0][1], (unsigned long long)g_lod_hist[0][2], (unsigned long long)g_lod_hist[0][3],
+              (unsigned long long)g_lod_hist[1][0], (unsigned long long)g_lod_hist[1][1], (unsigned long long)g_lod_hist[1][2], (unsigned long long)g_lod_hist[1][3],
+              (unsigned long long)g_anim_forced, (unsigned long long)g_anim_seen);
+}
+}  // namespace
+
+// Before main+0x337ca8 (main path, group in w22) and main+0x337ab8 (sub-model path, group in w25): s0 = screen-coverage ratio.
+extern "C" void rt_gm_lod_ratio(Cpu *c) {
+    lodmods_init();
+    if (g_dd_ratio_mul == 1.0f && !g_lodsel_trace) return;
+    const float m = ratio_mul();
+    float r = get_s0(c) * m;
+    if (m != 1.0f) set_s0(c, r);
+    if (g_lodsel_trace) lod_trace(c, r, 0);
+}
+extern "C" void rt_gm_lod_ratio_sub(Cpu *c) {
+    lodmods_init();
+    if (g_dd_ratio_mul == 1.0f && !g_lodsel_trace) return;
+    const float m = ratio_mul();
+    float r = get_s0(c) * m;
+    if (m != 1.0f) set_s0(c, r);
+    if (g_lodsel_trace) lod_trace(c, r, 1);
+}
+
+// Before main+0x33a744 `ldr w9, [x20, #0x170]` (x20 = instance+0x4000): counter +0x170, current LOD +0x174, last LOD +0x178.
+extern "C" void rt_gm_anim_rate(Cpu *c) {
+    lodmods_init();
+    if (!g_full_rate && !g_lodsel_trace) return;
+    uint8_t *p = (uint8_t *)c->x[20];
+    if (!p || !readable(p + 0x170, 12)) return;
+    int32_t cnt = *(int32_t *)(p + 0x170), cur = *(int32_t *)(p + 0x174), last = *(int32_t *)(p + 0x178);
+    g_anim_seen++;
+    if (cnt + 1 < last * 2 && cur == last) g_anim_forced++;   // the original code would skip the rebuild this frame
+    if (g_full_rate) *(int32_t *)(p + 0x170) = 0x3fffffff;    // cnt+1 >= 2*last always: rebuild every frame, counter resets to 0
+}
 namespace loader {
 void snap_lodanim_install() {
     const char *e = getenv("SNAP_FOV");
@@ -244,6 +344,7 @@ void snap_lodanim_install() {
         double v = atof(e);
         if (v >= 10.0) g_fov_target_deg = v; else if (v > 0.1) g_fov_scale = v;
     }
+    if (const char *ab = getenv("SNAP_FOV_AB")) g_fov_ab = strtoull(ab, nullptr, 0);
     g_fov_trace = getenv("SNAP_TRACE_FOV") && getenv("SNAP_TRACE_FOV")[0] != '0';
     if (const char *s = getenv("SNAP_FOV_SITES")) {   // override the allow list: comma separated module offsets
         g_fov_allow.clear();

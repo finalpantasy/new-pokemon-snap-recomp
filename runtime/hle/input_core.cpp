@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -409,6 +410,32 @@ static bool any_down(const std::vector<Source>& v, const RawInput& in, float thr
 
 PadFx& pad_fx() { static PadFx f; return f; }
 
+// Environment overrides (test and power-user switches): SNAP_RUMBLE=0..1.5 (0 = off), SNAP_RUMBLE_LOG=1, SNAP_GYRO=0/1,
+// SNAP_GYRO_SENS=<float>, SNAP_GYRO_FAKE=<yaw_dps>,<pitch_dps> (a pretend gyro on the pad, left/up positive like SDL).
+struct EnvFx {
+  bool rumble_set = false; float rumble = 1.0f; bool rumble_log = false;
+  bool gyro_set = false, gyro = false; bool sens_set = false; float sens = 1.0f;
+  bool fake = false; float fake_yaw = 0, fake_pitch = 0;
+};
+static const EnvFx& env_fx() {
+  static const EnvFx e = [] {
+    EnvFx r;
+    if (const char* v = std::getenv("SNAP_RUMBLE"); v && *v) { r.rumble_set = true; r.rumble = std::clamp((float)std::atof(v), 0.0f, 1.5f); }
+    if (const char* v = std::getenv("SNAP_RUMBLE_LOG"); v && *v && *v != '0') r.rumble_log = true;
+    if (const char* v = std::getenv("SNAP_GYRO"); v && *v) { r.gyro_set = true; r.gyro = *v != '0'; }
+    if (const char* v = std::getenv("SNAP_GYRO_SENS"); v && *v) { r.sens_set = true; r.sens = std::max(0.0f, (float)std::atof(v)); }
+    if (const char* v = std::getenv("SNAP_GYRO_FAKE"); v && *v) {
+      r.fake = true; r.fake_yaw = (float)std::atof(v);
+      if (const char* c = std::strchr(v, ',')) r.fake_pitch = (float)std::atof(c + 1);
+      if (!r.gyro_set) { r.gyro_set = true; r.gyro = true; }
+    }
+    return r;
+  }();
+  return e;
+}
+bool rumble_log_enabled() { return env_fx().rumble_log; }
+bool gyro_aim_enabled() { return env_fx().gyro_set ? env_fx().gyro : pad_fx().gyro_on.load(); }
+
 void gyro_to_stick(float yaw, float pitch, float sens, bool inv_x, bool inv_y, float* sx, float* sy) {
   auto dz = [](float v) {
     float a = std::fabs(v);
@@ -466,9 +493,10 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
     mlx = std::clamp(eff.mouse_vx * m.mouse_sensitivity / (float)kMouseLookFullPxPerSec, -1.0f, 1.0f) * (m.mouse_invert_x ? -1.f : 1.f);
     mly = std::clamp(-eff.mouse_vy * m.mouse_sensitivity / (float)kMouseLookFullPxPerSec, -1.0f, 1.0f) * (m.mouse_invert_y ? -1.f : 1.f);
   }
-  if (eff.gyro_present && pad_fx().gyro_on.load()) {
+  const EnvFx& ev = env_fx();
+  if (eff.gyro_present && (ev.gyro_set ? ev.gyro : pad_fx().gyro_on.load())) {
     float gx, gy;
-    gyro_to_stick(eff.gyro_y, eff.gyro_x, pad_fx().gyro_sens.load(), pad_fx().gyro_invert_x.load(), pad_fx().gyro_invert_y.load(), &gx, &gy);
+    gyro_to_stick(eff.gyro_y, eff.gyro_x, ev.sens_set ? ev.sens : pad_fx().gyro_sens.load(), pad_fx().gyro_invert_x.load(), pad_fx().gyro_invert_y.load(), &gx, &gy);
     mlx += gx; mly += gy;
   }
   stick_value(m.right, false, m, eff, mlx, mly, &rx, &ry);
@@ -637,7 +665,7 @@ bool Hub::save(std::string* err) {
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -662,6 +690,16 @@ bool script_token(const std::string& t, ScriptEntry& en) {
   size_t eq = t.find('=');
   if (eq != std::string::npos) {
     std::string k = t.substr(0, eq);
+    if (k == "gyro") {   // gyro=<yaw_dps>,<pitch_dps>: a pretend gyro rate while the entry is active (needs SNAP_GYRO=1)
+      en.has_gyro = true; en.gyro_yaw = (float)std::atof(t.c_str() + eq + 1);
+      size_t c = t.find(',', eq); en.gyro_pitch = c == std::string::npos ? 0.0f : (float)std::atof(t.c_str() + c + 1);
+      return true;
+    }
+    if (k == "rumble") {   // rumble=<low>,<high>: a host-side rumble request while the entry is active (test of the host chain)
+      en.has_rumble = true; en.rumble_lo = (float)std::atof(t.c_str() + eq + 1);
+      size_t c = t.find(',', eq); en.rumble_hi = c == std::string::npos ? en.rumble_lo : (float)std::atof(t.c_str() + c + 1);
+      return true;
+    }
     int i = k == "lx" ? 0 : k == "ly" ? 1 : k == "rx" ? 2 : k == "ry" ? 3 : -1;
     if (i < 0) return false;
     double f = std::atof(t.c_str() + eq + 1);
@@ -719,7 +757,10 @@ void script_load() {
 }
 
 // Applies the script at time `now` (seconds since the first poll) to `p`.
+float g_script_rumble_lo = 0, g_script_rumble_hi = 0;
+bool g_script_gyro_on = false; float g_script_gyro_yaw = 0, g_script_gyro_pitch = 0;   // read by Hub::poll after script_apply
 void script_apply(uint64_t now_ns_v, PadSample& p) {
+  g_script_rumble_lo = g_script_rumble_hi = 0; g_script_gyro_on = false; g_script_gyro_yaw = g_script_gyro_pitch = 0;
   static uint64_t last = ~0ull;
   uint64_t cur = 0;
   const int seg = g_script.cur.load();
@@ -738,6 +779,8 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     if (!on) continue;
     cur |= en.buttons;
     p.buttons |= en.buttons;
+    if (en.has_gyro) { g_script_gyro_on = true; g_script_gyro_yaw += en.gyro_yaw; g_script_gyro_pitch += en.gyro_pitch; }
+    if (en.has_rumble) { g_script_rumble_lo = std::max(g_script_rumble_lo, en.rumble_lo); g_script_rumble_hi = std::max(g_script_rumble_hi, en.rumble_hi); }
     for (int i = 0; i < 4; ++i) if (en.has_ax[i]) (&p.lx)[i] = en.ax[i];
     p.connected = true;
   }
@@ -811,6 +854,7 @@ void Hub::inject_source(const Source& s, bool down) {
   }
 }
 
+static void apply_rumble(Backend* be, float low, float high, const char* src, uint64_t buttons, bool log_it);
 void Hub::poll(int min_interval_ms) {
   std::lock_guard<std::mutex> g(mu_);
   if (!backend_) backend_ = make_default_backend();
@@ -823,6 +867,8 @@ void Hub::poll(int min_interval_ms) {
   backend_->set_cursor_mode(lock, recenter);
   RawInput r;
   backend_->poll(r);
+  if (g_script_gyro_on) { r.gyro_present = true; r.gyro_y = g_script_gyro_yaw; r.gyro_x = g_script_gyro_pitch; }   // scripted `gyro=` token (applied one poll late)
+  if (env_fx().fake) { r.gyro_present = true; r.gyro_y = env_fx().fake_yaw; r.gyro_x = env_fx().fake_pitch; }   // SNAP_GYRO_FAKE
   cursor_hidden_ = recenter && r.focused;
   // injected sources (tests) and wheel pulses
   r.keys |= inject_.keys;
@@ -888,20 +934,40 @@ void Hub::poll(int min_interval_ms) {
     touch_ = TouchSample{};
   }
   if (!g_script.loaded) { script_load(); g_script.t0 = t; g_script.cur_t0 = t; g_script.cur_f0 = nvn::g_presentCount; }
-  if (!g_script.e.empty()) script_apply(t, pad_);
+  if (!g_script.e.empty()) {
+    script_apply(t, pad_);
+    static float sr_lo = 0, sr_hi = 0;
+    if (g_script_rumble_lo != sr_lo || g_script_rumble_hi != sr_hi) {   // scripted host rumble (`rumble=lo,hi` token)
+      sr_lo = g_script_rumble_lo; sr_hi = g_script_rumble_hi;
+      apply_rumble(backend_.get(), sr_lo, sr_hi, "script", pad_.buttons, true);
+    }
+  }
   ++seq_;
 }
 PadSample Hub::pad() const { std::lock_guard<std::mutex> g(mu_); return pad_; }
 TouchSample Hub::touch() const { std::lock_guard<std::mutex> g(mu_); return touch_; }
 int64_t Hub::sampling_number() const { std::lock_guard<std::mutex> g(mu_); return seq_; }
 RawInput Hub::raw() const { std::lock_guard<std::mutex> g(mu_); return raw_; }
+// Scaling, logging and the backend call; the caller holds mu_ (Hub::rumble from the game, Hub::poll for scripted `rumble=` tokens).
+static void apply_rumble(Backend* be, float low, float high, const char* src, uint64_t buttons, bool log_it) {
+  const PadFx& fx = pad_fx();
+  const EnvFx& ev = env_fx();
+  const float in_lo = low, in_hi = high;
+  const float k = ev.rumble_set ? ev.rumble : std::clamp(fx.rumble_strength.load(), 0.0f, 1.5f);
+  if (ev.rumble_set ? k <= 0.0f : !fx.rumble_on.load()) { low = high = 0; }
+  else { low = std::min(1.0f, low * k); high = std::min(1.0f, high * k); }
+  if (ev.rumble_log && log_it) {
+    log("rumble: %s low=%.3f high=%.3f -> host low=%.3f high=%.3f (strength %.2f) present=%d buttons=%#llx", src, in_lo, in_hi, low, high, k, nvn::g_presentCount, (unsigned long long)buttons);
+  }
+  be->rumble(low, high);
+}
 void Hub::rumble(float low, float high) {
   std::lock_guard<std::mutex> g(mu_);
   if (!backend_ || menu_open_.load()) return;
-  const PadFx& fx = pad_fx();
-  if (!fx.rumble_on.load()) { low = high = 0; }
-  else { float k = std::clamp(fx.rumble_strength.load(), 0.0f, 1.5f); low = std::min(1.0f, low * k); high = std::min(1.0f, high * k); }
-  backend_->rumble(low, high);
+  static float last_lo = -1, last_hi = -1;   // log only changes (the game repeats its values every frame)
+  const bool changed = low != last_lo || high != last_hi;
+  last_lo = low; last_hi = high;
+  apply_rumble(backend_.get(), low, high, "game", pad_.buttons, changed);
 }
 
 Hub& hub() {

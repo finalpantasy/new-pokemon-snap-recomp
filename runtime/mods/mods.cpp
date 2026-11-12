@@ -18,6 +18,8 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <memory>
+#include <unordered_map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -85,10 +87,37 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
   return ok;
 }
 
+// Structural check of a replacement nutexb (ext id 5C156DBC) so a malformed file falls back to the original instead of
+// reaching the renderer. Footer (last 0xb0 bytes): u32 w,h,depth,format,dim,mips,tile,layers,data_size,"XET ",version at
+// footer+0x84. Returns a reason string, or nullptr when it looks sane. Sizes are NOT compared with the original (any size is fine).
+const char* nutexb_problem(const std::vector<uint8_t>& d) {
+  if (d.size() < 0xb0 + 16) return "smaller than a nutexb footer";
+  const uint8_t* f = d.data() + d.size() - 0xb0;
+  uint32_t v[11];
+  std::memcpy(v, f + 0x84, sizeof v);
+  if (v[9] != 0x54455820u) return "no XET footer magic";
+  uint32_t w = v[0], h = v[1], depth = v[2], dim = v[4], mips = v[5], layers = v[7], dsz = v[8];
+  if (!w || !h || w > 16384 || h > 16384) return "bad width or height";
+  if (!depth || depth > 2048 || !layers || layers > 64) return "bad depth or layer count";
+  if (dim != 2 && dim != 3 && dim != 4) return "bad dimension";
+  if (!mips || mips > 15) return "bad mip count";
+  if ((w >> (mips - 1)) == 0 && (h >> (mips - 1)) == 0) return "more mips than the size allows";
+  if ((uint64_t)dsz + 0xb0 > d.size()) return "data size larger than the file";
+  uint64_t sum = 0;
+  uint32_t ms[16];
+  std::memcpy(ms, f, sizeof ms);
+  for (uint32_t i = 0; i < mips; i++) sum += ms[i];
+  if (sum == 0 || sum > dsz) return "mip sizes do not fit the data size";
+  return nullptr;
+}
+
 }  // namespace
 
 // Archive path (normalized, e.g. "common/ui/master/foo.drp") of the entry worker's current chunk; false when unknown.
 bool mods_archive_of(Cpu* c, std::string* out);
+
+static std::mutex g_file_mu;
+static std::unordered_map<const mods::Override*, std::shared_ptr<const std::vector<uint8_t>>> g_files;
 
 extern "C" void rt_mod_entry(Cpu* c) {
   int st = g_state.load(std::memory_order_acquire);
@@ -108,11 +137,32 @@ extern "C" void rt_mod_entry(Cpu* c) {
   const mods::Override* o = g_index.find(archive, std::string(name, nlen), extcrc);
   if (!o) return;
   auto& buf = scratch();
-  std::vector<uint8_t> data;
-  if (!read_file(o->file, data)) {
-    if (g_failed++ < 20) fprintf(stderr, "[mods] cannot read %s (%s): using the original\n", o->file.c_str(), o->label.c_str());
-    return;
+  // Replacement files are read and validated once, then shared: the game reloads the same entries over and over, and a
+  // disk read per hit (up to 22 MB each) made loading about 15x slower with a large mod set.
+  std::shared_ptr<const std::vector<uint8_t>> sp;
+  {
+    std::lock_guard<std::mutex> g(g_file_mu);
+    auto f = g_files.find(o);
+    if (f != g_files.end()) sp = f->second;
   }
+  if (!sp) {
+    auto fresh = std::make_shared<std::vector<uint8_t>>();
+    if (!read_file(o->file, *fresh)) {
+      if (g_failed++ < 20) fprintf(stderr, "[mods] cannot read %s (%s): using the original\n", o->file.c_str(), o->label.c_str());
+      return;
+    }
+    if (extcrc == 0x5c156dbcu) {
+      if (const char* why = nutexb_problem(*fresh)) {
+        if (g_failed++ < 20) fprintf(stderr, "[mods] skipped %s <- %s: invalid nutexb (%s), using the original\n", o->label.c_str(), g_index.packs[o->pack].id.c_str(), why);
+        fresh->clear();   // cache the rejection (empty) so it is not re-read
+      }
+    }
+    sp = fresh;
+    std::lock_guard<std::mutex> g(g_file_mu);
+    g_files.emplace(o, sp);
+  }
+  if (sp->empty()) return;
+  const std::vector<uint8_t>& data = *sp;
   buf = mods::build_chunk(chunk, mods::chunk_header_len(nlen), data.data(), data.size());
   size_t idx = 0;
   for (; idx < g_ovr.size(); idx++) if (g_ovr[idx] == o) break;

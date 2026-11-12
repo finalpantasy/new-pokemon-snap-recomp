@@ -1,18 +1,27 @@
 <!doctype html><meta charset=utf-8><title>Photo gallery</title>
-<style>body{font:14px sans-serif;background:#111;color:#eee;margin:0}header{padding:8px;position:sticky;top:0;background:#222}
-#g{display:grid;grid-template-columns:repeat(auto-fill,160px);gap:6px;padding:8px}#g img{width:160px;cursor:pointer}
-#lb{display:none;position:fixed;inset:0;background:#000d;align-items:center;justify-content:center}#lb img{max-width:95vw;max-height:95vh}</style>
-<header>Course <select id=c></select> Species <select id=s></select> Sort <select id=o>
+<style>body{font:14px sans-serif;background:#111;color:#eee;margin:0}header{padding:8px;position:sticky;top:0;background:#222;z-index:2}
+#g{display:grid;grid-template-columns:repeat(auto-fill,240px);gap:10px;padding:10px}.c{background:#1b1b1b;border-radius:4px;overflow:hidden}
+.c img{width:240px;height:160px;object-fit:cover;cursor:pointer;display:block}.c div{padding:4px 6px;font-size:12px;color:#bbb;line-height:1.35}
+.c b{color:#fff}#lb{display:none;position:fixed;inset:0;background:#000d;align-items:center;justify-content:center;z-index:3}#lb img{max-width:95vw;max-height:95vh}</style>
+<header>Course <select id=c></select> Species <select id=s></select> Source <select id=r></select> Sort <select id=o>
 <option value=id>Order taken</option><option value=score>Score</option><option value=date>Date</option></select> <span id=n></span></header>
 <div id=g></div><div id=lb onclick="this.style.display='none'"><img></div>
 <script>
 let P=[];const $=i=>document.getElementById(i);
-function fill(sel,key){const v=[...new Set(P.map(p=>p[key]).filter(x=>x!=null))].sort();sel.innerHTML='<option value="">all</option>'+v.map(x=>`<option>${x}</option>`).join('')}
-function draw(){const c=$('c').value,s=$('s').value,o=$('o').value;
- let L=P.filter(p=>(!c||String(p.course)==c)&&(!s||String(p.species)==s));
- L.sort((a,b)=>o=='id'?a.id-b.id:(b[o]??-1)-(a[o]??-1));$('n').textContent=L.length+' photos';
- $('g').innerHTML='';for(const p of L){const i=new Image();i.loading='lazy';i.src='/data/'+(p.thumb||p.full);i.title=`#${p.id} course ${p.course??'?'} species ${p.species??'?'} score ${p.score??'?'}`;
-  i.onclick=()=>{$('lb').firstChild.src='/data/'+p.full;$('lb').style.display='flex'};$('g').append(i)}}
-fetch('/data/photos.json').then(r=>r.json()).then(j=>{P=j.photos;fill($('c'),'course');fill($('s'),'species');draw()}).catch(()=>$('n').textContent='no photos yet');
-for(const i of['c','s','o'])$(i).onchange=draw;
+const SRC={album:'in album','album+export':'album + PNG',export:'PNG export'};
+const when=p=>p.taken||p.date_text||'';
+function fill(sel,key,map){const v=[...new Set(P.map(p=>p[key]).filter(x=>x!=null))].sort();sel.innerHTML='<option value="">all</option>'+v.map(x=>`<option value="${x}">${map?map[x]||x:x}</option>`).join('')}
+function draw(){const c=$('c').value,s=$('s').value,r=$('r').value,o=$('o').value;
+ let L=P.filter(p=>(!c||String(p.course_name??p.course)==c)&&(!s||String(p.species_name??p.species)==s)&&(!r||p.source==r));
+ const key=p=>o=='id'?(typeof p.id=='number'?p.id:1e9):o=='date'?(when(p)||''):(p[o]??-1);
+ L.sort((a,b)=>key(a)<key(b)?-1:key(a)>key(b)?1:0);if(o!='id')L.reverse();$('n').textContent=L.length+' photos';
+ $('g').innerHTML='';for(const p of L){const d=document.createElement('div');d.className='c';
+  const i=new Image();i.loading='lazy';i.src=p.thumb_url||p.url;i.onclick=()=>{$('lb').firstChild.src=p.url;$('lb').style.display='flex'};
+  const t=document.createElement('div');
+  t.innerHTML=`<b>${p.species_name??(p.species!=null?'species '+p.species:'subject ?')}</b> &middot; ${p.course_name??(p.course!=null?'course '+p.course:'course ?')}<br>`+
+   `${when(p)||'date ?'}${p.score!=null?' &middot; score '+p.score:''}<br>${SRC[p.source]||p.source}${p.width?` &middot; ${p.width}x${p.height}`:''}`;
+  d.append(i,t);$('g').append(d)}}
+fetch('/data/photos.json').then(r=>r.json()).then(j=>{P=j.photos;fill($('c'),'course_name');if($('c').options.length<2)fill($('c'),'course');
+ fill($('s'),'species_name');if($('s').options.length<2)fill($('s'),'species');fill($('r'),'source',SRC);draw()}).catch(()=>$('n').textContent='no photos yet');
+for(const i of['c','s','r','o'])$(i).onchange=draw;
 </script>

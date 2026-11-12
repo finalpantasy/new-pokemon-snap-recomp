@@ -1,0 +1,8 @@
+# fixture: post_tutorial
+# QA: professor's lab. A taps get past the title and into the Lab (the hub remembers the Lab entry), then slow A taps advance
+# the lab dialogue and open its menu; Down/Right moves between entries. Dense dumps: -ShotAt 20 -ShotEvery 1.5 -ShotMax 170.
+repeat @f300 @f1560 120 8 A
+repeat @f2600 @f6000 200 8 A
+repeat @f6000 @f9000 300 8 Right
+repeat @f6150 @f9000 300 8 A
+repeat @f6300 @f9000 600 8 B

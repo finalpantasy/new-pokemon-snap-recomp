@@ -1,0 +1,6 @@
+# fixture: new_game
+# LOD A/B aid (lodanim worker, 2026-11-12): the tut_full A taps only, no stick input, so the camera stays still at the yard
+# "line up with Pikachu" step (active by 230-330 s). Pair with SNAP_DRAW_DISTANCE=<m> SNAP_DRAW_DISTANCE_AB=8 and NVN_FRAME_DUMP_AT
+# at presents 16k+7 (original) and 16k+15 (multiplied).
+repeat @f1500 @f9000 50 12 A
+repeat @f9000 @f90000 30 4 A

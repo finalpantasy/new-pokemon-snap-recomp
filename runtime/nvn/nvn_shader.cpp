@@ -20,7 +20,10 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <mutex>
+#include <unordered_set>
 
+#include "nvn_aa.h"
 #include "nvn_internal.h"
 #include "nvn_pipeline.h"
 #include "os/perf.h"   // SNAP_PERF instrumentation
@@ -28,7 +31,38 @@
 namespace nvn {
 namespace {
 
-constexpr const char* kTranslatorSalt = "nvn-xlate-v2|binding-model-1|interlock-off|clip7";
+// SNAP_XLATE_REV=<n> switches to translator revision n (patched Ryujinx translator, scripts/xlate_patch.sh): the revision joins the cache salt, so
+// old and new outputs never share a key, and the nvn_cache and shadercache folders get a _r<n> suffix (nvn_vk.cpp, nvn_pipeline.cpp).
+// Unset or 0 = the original translation, unchanged.
+const std::string& TranslatorSaltStr() {
+  static const std::string s = [] {
+    std::string b = "nvn-xlate-v2|binding-model-1|interlock-off|clip7";
+    const char* r = getenv("SNAP_XLATE_REV");
+    if (r && *r && strcmp(r, "0")) b += std::string("|xlate-r") + r;
+    return b;
+  }();
+  return s;
+}
+
+// Shader modules whose SPIR-V uses subgroup operations (GroupNonUniform*, SubgroupLocalInvocationId and the lane masks): their lane math
+// assumes 32 lanes, so the pipeline builders pin them to a required subgroup size of 32 (nvn_draw.cpp, g_sgPinStages).
+std::mutex g_sgMu;
+std::unordered_set<uint64_t> g_sgMods;
+bool SpvUsesSubgroup(const std::vector<uint32_t>& w) {
+  for (size_t i = 5; i < w.size();) {
+    const uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFF;
+    if (!wc || i + wc > w.size()) return false;
+    if (op >= 333 && op <= 366) return true;   // OpGroupNonUniform*
+    if (op == 71 && wc >= 4 && w[i + 2] == 11 && (w[i + 3] == 41 || (w[i + 3] >= 4416 && w[i + 3] <= 4420))) return true;   // BuiltIn SubgroupLocalInvocationId, SubgroupEq/Ge/Gt/Le/LtMask
+    i += wc;
+  }
+  return false;
+}
+void NoteSubgroup(VkShaderModule m, const std::vector<uint32_t>& w) {
+  if (!SpvUsesSubgroup(w)) return;
+  std::lock_guard<std::mutex> l(g_sgMu);
+  g_sgMods.insert((uint64_t)(uintptr_t)m);
+}
 
 // ---- SHA-256 (BCrypt) ---------------------------------------------------------------------------------------------
 std::string Sha256Hex(const uint8_t* d, size_t n, const std::string& extra) {
@@ -126,6 +160,11 @@ bool RunHarness(const std::string& bin, const std::string& spv, const std::strin
 #ifdef NVN_HARNESS_DLL
   dll = NVN_HARNESS_DLL;
 #endif
+  if (const char* e = getenv("SNAP_XLATE_REV"); e && *e && strcmp(e, "0")) {   // revision n: build\xlate\r<n>\h (scripts/xlate_build.ps1), under the same project root as the default harness
+    size_t k = dll.find("tools\\shader_harness");
+    if (k == std::string::npos) k = dll.find("tools/shader_harness");
+    if (k != std::string::npos) dll = dll.substr(0, k) + "build\\xlate\\r" + e + "\\h\\bin\\Release\\net10.0\\ShaderHarness.dll";
+  }
   if (const char* e = getenv("NVN_SHADER_HARNESS")) dll = e;
   if (dll.empty()) { LogError("shader translation needs the harness: set NVN_SHADER_HARNESS=<ShaderHarness.dll>"); return false; }
   std::ostringstream cl;
@@ -193,7 +232,7 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
       default: LogError("ProgramSetShaders: unknown SPH stage %u", (w0 >> 10) & 15); return false;
     }
   }
-  std::string key = Sha256Hex(data, dataSize, std::string(kTranslatorSalt) + "|" + std::to_string(stage) + "|" + std::to_string(codeOff));
+  std::string key = Sha256Hex(data, dataSize, TranslatorSaltStr() + "|" + std::to_string(stage) + "|" + std::to_string(codeOff));
   if (key.empty()) return false;
   const std::string base = h->cacheDir + "\\" + key;
   const std::string spvPath = base + ".spv", jsonPath = base + ".json";
@@ -212,7 +251,7 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   StageProg sp;
   sp.valid = true; sp.stage = stage; snprintf(sp.key, sizeof sp.key, "%.12s", key.c_str()); sp.fragOutputMap = m.i("fragmentOutputMap");
   snprintf(sp.fkey, sizeof sp.fkey, "%s", key.c_str());
-  PipelineRegisterStageKey(sp.key, sp.fkey);
+  PipelineRegisterStageKey(sp.key, sp.fkey, stage == 1 && (Rd32(sd.control, 0x718) & 1));
   if (auto* a = m.get("cbuffers")) for (auto& c : a->arr) sp.cb.push_back({c.i("slot"), c.i("set"), c.i("binding")});
   if (auto* a = m.get("sbuffers"))
     for (auto& c : a->arr) sp.sb.push_back({c.i("slot"), c.i("set"), c.i("binding"), c.i("sbCbSlot"), c.i("sbCbOffset"), c.i("write")});
@@ -236,9 +275,11 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
     if (!ReadFile(base + ".efz", &mark)) WriteFile(base + ".efz", "1", 1);   // the cache key hashes only the data section, so the pipeline service needs this marker
   }
   SpvAddStorageImageCaps(words);   // the translator omits StorageImageRead/WriteWithoutFormat for storage images of unknown format
+  if (stage == 1) AaPatchFragment(words, key.c_str());   // SNAP_AA=off/smaa: FXAA tonemap shaders lose their edge test (nvn_aa.cpp)
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
   ci.codeSize = words.size() * 4; ci.pCode = words.data();
   if (vkCreateShaderModule(h->device, &ci, nullptr, &sp.mod) != VK_SUCCESS) { LogError("vkCreateShaderModule failed for %s", key.c_str()); return false; }
+  NoteSubgroup(sp.mod, words);
   if (stage == 0) sp.inputMask = SpvVertexInputMask(words);
   if (stage == 1) { sp.spv = words; sp.outLocs = SpvFragmentOutputs(words); }
   // c[1]: the constant-data blob that follows the code (data section tail)
@@ -256,7 +297,7 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
 
 // Rebuilds a stage object (module, reflection, no constant buffer) from the translation cache by its full key. Used by the pipeline
 // service to compile pipelines without the game having created the program. Compute stages are not supported.
-bool LoadStageFromCacheImpl(Host* h, const std::string& key, StageProg* out) {
+bool LoadStageFromCacheImpl(Host* h, const std::string& key, StageProg* out, bool eft, bool* eftApplied) {
   std::vector<uint8_t> spv, js;
   const std::string base = h->cacheDir + "\\" + key;
   if (!ReadFile(base + ".spv", &spv) || !ReadFile(base + ".json", &js)) return false;
@@ -280,11 +321,13 @@ bool LoadStageFromCacheImpl(Host* h, const std::string& key, StageProg* out) {
   readTex(m.get("images"), sp.img);
   std::vector<uint32_t> words(spv.size() / 4);
   memcpy(words.data(), spv.data(), words.size() * 4);
-  { std::vector<uint8_t> mark; if (sp.stage == 1 && ReadFile(base + ".efz", &mark)) SpvAddEarlyFragmentTests(words); }
+  { std::vector<uint8_t> mark; if (sp.stage == 1 && (eft || ReadFile(base + ".efz", &mark)) && SpvAddEarlyFragmentTests(words) && eftApplied) *eftApplied = true; }
   SpvAddStorageImageCaps(words);
+  if (sp.stage == 1) AaPatchFragment(words, key.c_str());   // same patch for pipelines built by the pipeline service
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
   ci.codeSize = words.size() * 4; ci.pCode = words.data();
   if (vkCreateShaderModule(h->device, &ci, nullptr, &sp.mod) != VK_SUCCESS) return false;
+  NoteSubgroup(sp.mod, words);
   if (sp.stage == 0) sp.inputMask = SpvVertexInputMask(words);
   if (sp.stage == 1) { sp.spv = words; sp.outLocs = SpvFragmentOutputs(words); }
   *out = std::move(sp);
@@ -293,8 +336,9 @@ bool LoadStageFromCacheImpl(Host* h, const std::string& key, StageProg* out) {
 
 }  // namespace
 
-bool LoadStageFromCache(Host* h, const std::string& fullKey, StageProg* out) { return LoadStageFromCacheImpl(h, fullKey, out); }
-const char* TranslatorVersion() { return kTranslatorSalt; }
+bool LoadStageFromCache(Host* h, const std::string& fullKey, StageProg* out, bool eft, bool* eftApplied) { return LoadStageFromCacheImpl(h, fullKey, out, eft, eftApplied); }
+const char* TranslatorVersion() { return TranslatorSaltStr().c_str(); }
+bool ModuleUsesSubgroup(VkShaderModule m) { std::lock_guard<std::mutex> l(g_sgMu); return g_sgMods.count((uint64_t)(uintptr_t)m) != 0; }
 
 bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem, void** mapped) {
   VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};

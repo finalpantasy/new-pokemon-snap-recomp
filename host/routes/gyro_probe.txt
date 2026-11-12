@@ -1,0 +1,7 @@
+# fixture: post_tutorial
+# Gyro probe (input worker, 2026-11-12): enters Florio like florio_photos (A taps to f4300), then sends NO stick input. The `gyro=` token
+# feeds a pretend gyro rate (yaw deg/s left-positive, pitch up-positive) from present 4500 for 150 presents; it reaches the camera only with
+# SNAP_GYRO=1 (SNAP_GYRO=0 is the control run). Compare dumps at the same presents:
+#   $env:SNAP_GYRO='1'; $env:NVN_FRAME_DUMP_AT='4495,4560,4650,4780'; $env:SNAP_FAST_BOOT='1'; powershell -File host\run_boot.ps1 -BuildDir build\w\input -Route gyro_probe -Timeout 200 -ShotAt 5 -ShotMax 4
+repeat @f300 @f4300 120 8 A
+@f4500 150 gyro=90,0

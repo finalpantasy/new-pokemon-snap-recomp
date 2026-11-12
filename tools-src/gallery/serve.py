@@ -16,6 +16,11 @@ def make_handler(data_dir):
             p = path.split('?')[0]
             if p in ('/', '/index.html'):
                 return str(APP / 'index.html')
+            if p.startswith('/export/'):   # full-resolution PNG exports (never outside the photo folder)
+                pd = gallery.photo_dir().resolve()
+                t = (pd / p[8:]).resolve()
+                if t.is_relative_to(pd) and t.suffix == '.png':
+                    return str(t)
             if p.startswith('/data/'):
                 t = (root / p[6:]).resolve()
                 if t.is_relative_to(root):

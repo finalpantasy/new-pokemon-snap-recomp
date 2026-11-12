@@ -1,11 +1,11 @@
 # Dot-source: . host\locks.ps1   (needs $root = project root, set by the caller or derived below)
 # Lock files hold "<owner> pid=<pid> <MM/dd/yyyy HH:mm:ss> <what>"; created atomically (CreateNew). Stale = pid dead or older than 20 min.
 #   build lock : build\heavy.lock              one build (host\build_snap.py, snap_build) at a time. Take-BuildLock / Release-Lock
-#   run slots  : build\slots\run0..run2.lock   up to 3 hidden test runs at once (host\run_boot.ps1 does this itself)
+#   run slots  : build\slots\run0..run3.lock   up to 4 hidden test runs at once (host\run_boot.ps1 does this itself)
 #   priority   : while build\heavy.priority exists, run slot 0 is reserved for the run whose $env:SNAP_LOCK_OWNER equals its content
-#   exclusive  : -Bench / perf runs: build\slots\exclusive.lock (one exclusive at a time), then all 3 slots; new normal runs yield meanwhile
+#   exclusive  : -Bench / perf runs: build\slots\exclusive.lock (one exclusive at a time), then all 4 slots; new normal runs yield meanwhile
 if (-not $script:LockRoot) { $script:LockRoot = if ($root) { "$root" } else { (Resolve-Path (Join-Path $PSScriptRoot '..')).Path } }
-$script:LockMax = 3
+$script:LockMax = 4   # owner 2026-11-12: 4 hidden runs at once (was 6: CPU at 100%, runs crawled; was 3 before that)
 
 function Get-LockText([string]$Path) { try { (Get-Content -LiteralPath $Path -ErrorAction Stop) -join ' ' } catch { $null } }
 

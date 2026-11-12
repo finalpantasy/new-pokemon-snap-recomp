@@ -17,6 +17,7 @@
 #include "nvn_state.h"
 
 namespace nvn {
+extern bool g_customBorder;   // nvn_vk.cpp: VK_EXT_custom_border_color enabled
 namespace {
 
 Host* H(const void* dev) {
@@ -189,7 +190,7 @@ Boolean SamplerInitialize(void* samp, const void* builder) {
     float extra = g_lodBiasExtra;
     // auto: -log2(output / render), the upscaler mip bias. A higher render scale already picks finer mips by itself, so native
     // scaling (window textures scaled too) gives 0, and supersampling (scaleDisplay off) is clamped to 0.
-    if (g_lodBiasAuto) { const float out = g_scale.scaleDisplay ? g_scale.scale : 1.f; extra = g_scale.scale > 0.f ? std::min(0.f, -std::log2(out / g_scale.scale)) : 0.f; }
+    if (g_lodBiasAuto) { const float out = g_scale.displayScale > 0.f ? g_scale.displayScale : g_scale.scaleDisplay ? g_scale.scale : 1.f; /* [upscale] displayScale */ extra = g_scale.scale > 0.f ? std::min(0.f, -std::log2(out / g_scale.scale)) : 0.f; }
     bias = std::clamp(bias + extra, -15.99f, 15.99f);
   }
   ci.mipLodBias = bias;
@@ -204,9 +205,19 @@ Boolean SamplerInitialize(void* samp, const void* builder) {
   ci.minLod = mips ? std::max(b->lodMin, 0.f) : 0.f;
   ci.maxLod = mips ? std::max(b->lodMax, ci.minLod) : 0.f;
   const float* c = b->border;
-  if (c[3] == 0.f) ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+  VkSamplerCustomBorderColorCreateInfoEXT customBorder{VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
+  if (c[0] == 0.f && c[1] == 0.f && c[2] == 0.f && c[3] == 0.f) ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+  else if (c[0] == 0.f && c[1] == 0.f && c[2] == 0.f && c[3] == 1.f) ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+  else if (c[0] == 1.f && c[1] == 1.f && c[2] == 1.f && c[3] == 1.f) ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+  else if (g_customBorder) {   // any other RGBA (VK_EXT_custom_border_color, enabled in nvn_vk.cpp)
+    memcpy(customBorder.customBorderColor.float32, c, 16);
+    ci.borderColor = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT;
+    ci.pNext = &customBorder;
+  } else if (c[3] == 0.f) ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
   else if (c[0] > 0.5f) ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
   else ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+  static int borderLogged = 0;
+  if (getenv("NVN_BORDER_LOG") && borderLogged < 40 && (ci.borderColor == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT || (c[3] != 0.f && c[3] != 1.f))) fprintf(stderr, "[nvn] sampler border color %g %g %g %g (address modes %d %d %d)\n", c[0], c[1], c[2], c[3], (int)ci.addressModeU, (int)ci.addressModeV, (int)ci.addressModeW), borderLogged++;
   auto* s = new SamplerImpl();
   s->host = h; s->b = *b;
   if (vkCreateSampler(h->device, &ci, nullptr, &s->sampler) != VK_SUCCESS) { delete s; LogError("vkCreateSampler failed"); return 0; }

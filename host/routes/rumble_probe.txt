@@ -1,0 +1,16 @@
+# fixture: post_tutorial
+# Rumble probe (input worker, 2026-11-12): florio_photos start, then each action button alone on its own 600-present cycle from f4500
+# so every SNAP_RUMBLE_LOG "rumble:" line (it logs present= and buttons=) can be matched to the action. A = shutter (every 120 from f300).
+# Run: $env:SNAP_RUMBLE_LOG='1'; powershell -File host\run_boot.ps1 -BuildDir build\w\input -Route rumble_probe -Timeout 500
+# host chain self-test (not the game): scripted rumble requests in the title/menu phase
+@f1000 90 rumble=1,0.5
+@f1200 90 rumble=0,1
+repeat @f300 @f12000 120 8 A
+repeat @f6030 @f12000 1200 20 X
+repeat @f6150 @f12000 1200 20 Y
+repeat @f6270 @f12000 1200 20 B
+repeat @f6390 @f12000 1200 20 ZR
+repeat @f6510 @f12000 1200 20 R
+repeat @f6630 @f12000 1200 20 L
+repeat @f6750 @f12000 1200 40 ZL
+repeat @f6870 @f12000 1200 20 rx=0.4

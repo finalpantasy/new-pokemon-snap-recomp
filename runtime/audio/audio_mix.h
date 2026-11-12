@@ -60,35 +60,39 @@ inline void accumulate_s16(float* d, uint32_t dc, const int16_t* p, uint32_t sc,
 //   LFE += 0.5 * lowpass120Hz(L + R)  bass to the subwoofer
 //   BL  += 0.4 * delay15ms(L), BR += 0.4 * delay15ms(R)   ambience in the surrounds (7.1: side speakers)
 // FL/FR are left unchanged. The contribution fades in and out (about 100 ms) through a gate that is open while
-// FC/LFE/surround carry no energy, so a mix with real surround content (a future 5.1 bank) is never doubled.
+// FC+LFE carry no energy (center/bass gate) and, separately, while the surrounds carry none (surround gate), so real
+// game content is never doubled and real ambience in the surrounds does not stop the center and bass fill.
 class Upmixer {
  public:
   // buf: interleaved float, dc = 6 or 8 channels (FL FR FC LFE BL BR [SL SR]); anything else is left alone.
   void process(float* buf, uint32_t dc, uint32_t frames) {
     if (dc != 6 && dc != 8) return;
     const uint32_t rear0 = dc == 8 ? 6 : 4, rear1 = rear0 + 1;
-    double e = 0;
+    double ec = 0, es = 0;   // energy of the game's own FC+LFE and of its surrounds, measured separately
     for (uint32_t i = 0; i < frames; ++i) {
       const float* f = buf + (size_t)i * dc;
-      e += (double)f[2] * f[2] + (double)f[3] * f[3] + (double)f[rear0] * f[rear0] + (double)f[rear1] * f[rear1];
+      ec += (double)f[2] * f[2] + (double)f[3] * f[3];
+      es += (double)f[rear0] * f[rear0] + (double)f[rear1] * f[rear1];
     }
-    const bool surroundPresent = e / (frames ? frames : 1) > 1e-6;   // about -60 dBFS RMS over four channels
-    const float target = surroundPresent ? 0.0f : 1.0f;
+    const double n = frames ? frames : 1;
+    const float targetC = ec / n > 1e-6 ? 0.0f : 1.0f;   // about -60 dBFS RMS: real center/LFE content, leave it alone
+    const float targetS = es / n > 1e-6 ? 0.0f : 1.0f;   // real surround content (course ambience), leave it alone
     const float k = 1.0f / (0.1f * 48000.0f);                          // 100 ms ramp
     constexpr float lp = 0.0155f;                                      // one pole, about 120 Hz at 48 kHz
     for (uint32_t i = 0; i < frames; ++i) {
       float* f = buf + (size_t)i * dc;
-      gate_ += gate_ < target ? std::min(k, target - gate_) : -std::min(k, gate_ - target);
+      gate_ += gate_ < targetC ? std::min(k, targetC - gate_) : -std::min(k, gate_ - targetC);
+      gateS_ += gateS_ < targetS ? std::min(k, targetS - gateS_) : -std::min(k, gateS_ - targetS);
       const float l = f[0], r = f[1];
       const float dl = dly_[0][pos_], dr = dly_[1][pos_];
       dly_[0][pos_] = l; dly_[1][pos_] = r;
       pos_ = (pos_ + 1) % kDelay;
       lpState_ += lp * ((l + r) - lpState_);
-      const float g = gate_;
+      const float g = gate_, gs = gateS_;
       f[2] += g * 0.35355f * (l + r);
       f[3] += g * 0.5f * lpState_;
-      f[rear0] += g * 0.4f * dl;
-      f[rear1] += g * 0.4f * dr;
+      f[rear0] += gs * 0.4f * dl;
+      f[rear1] += gs * 0.4f * dr;
     }
   }
   float gate() const { return gate_; }
@@ -96,7 +100,7 @@ class Upmixer {
   static constexpr uint32_t kDelay = 720;   // 15 ms at 48 kHz
   float dly_[2][kDelay] = {};
   uint32_t pos_ = 0;
-  float lpState_ = 0, gate_ = 0;
+  float lpState_ = 0, gate_ = 0, gateS_ = 0;
 };
 
 }  // namespace mix

@@ -1,0 +1,22 @@
+# fixture: post_tutorial
+# QA exploration of the lab hub: gear (options) menu first, then back out and the house (lab) entry.
+# Hub appears ~p1550 (post_tutorial). A taps to pass title; then frame-timed presses.
+repeat @f300 @f1560 120 8 A
+@f1800 8 Down
+@f1860 8 Down
+@f1920 8 A
+@f2200 8 Down
+@f2300 8 Down
+@f2400 8 Down
+@f2500 8 Down
+@f2600 8 Right
+@f2700 8 Left
+@f2800 8 B
+@f3000 8 B
+@f3200 8 Up
+@f3300 8 A
+@f3700 8 Down
+@f3800 8 Down
+@f3900 8 A
+@f4300 8 B
+@f4500 8 B

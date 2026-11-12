@@ -35,7 +35,7 @@ float g_drag[SNAP_VOL_COUNT] = {-1, -1, -1, -1};   // value shown while the slid
 
 void tab_audio() {
   const Theme& t = theme();
-  ImGui::TextWrapped("Changes apply at once and are saved in audio.json next to your controls file.");
+  ImGui::TextWrapped("Volume changes apply at once and are saved in audio.json next to your controls file.");
   ImGui::Spacing();
   for (const Row& r : kRows) {
     ImGui::PushID(r.cat);
@@ -73,6 +73,7 @@ void tab_audio() {
   }
   ImGui::SameLine();
   ImGui::TextColored(t.text_dim, "All four back to 100%, the way the game ships.");
+  audio_output_section();
 }
 
 }  // namespace snap::ui

@@ -33,7 +33,8 @@ static_assert(std::is_trivially_copyable_v<PipeDesc> && sizeof(PipeDesc) == 464,
 VkPipeline CreateGraphicsPipeline(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout);
 
 // ---- implemented in nvn_shader.cpp --------------------------------------------------------------------------------------
-bool LoadStageFromCache(Host* h, const std::string& fullKey, StageProg* out);   // module + reflection from the translation cache
+// module + reflection from the translation cache; `eft`: add layout(early_fragment_tests) even without the .efz marker (*eftApplied: it has it)
+bool LoadStageFromCache(Host* h, const std::string& fullKey, StageProg* out, bool eft = false, bool* eftApplied = nullptr);
 const char* TranslatorVersion();
 
 // ---- implemented in nvn_pipeline.cpp ------------------------------------------------------------------------------------
@@ -45,6 +46,8 @@ VkPipeline PipelineAcquire(Host* h, const PipeDesc& pd, ProgramImpl* p, bool* pe
 void PipelineServiceInit(Host* h);       // after the device and cacheDir exist: loads the key list, starts the workers
 void PipelineServiceShutdown(Host* h);   // joins workers, saves the cache
 bool PipelineHoldGame();                 // true while "compile now" is running and the game must stay on its present loop
-void PipelineRegisterStageKey(const char* key12, const char* fullKey);   // BuildStage: prefix -> cache file key for background loads
+// BuildStage: prefix -> cache file key for background loads. `eft`: the program's control section asks for early fragment tests, so the
+// background template of this stage must carry the execution mode too (see PipelineRegisterStageKey in nvn_pipeline.cpp).
+void PipelineRegisterStageKey(const char* key12, const char* fullKey, bool eft = false);
 
 }  // namespace nvn

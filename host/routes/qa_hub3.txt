@@ -1,0 +1,19 @@
+# fixture: post_tutorial
+# QA: lab hub settings (gear) menu. Frame-timed, spaced 150+ presents so slow machines keep up. Run with -ShotAt 60 -ShotEvery 2.
+repeat @f300 @f1560 120 8 A
+@f2200 8 Down
+@f2350 8 Down
+@f2500 12 A
+@f2800 8 Down
+@f2950 8 Down
+@f3100 8 Right
+@f3250 8 Down
+@f3400 8 A
+@f3600 8 B
+@f3800 8 Right
+@f3950 8 Right
+@f4100 8 Down
+@f4250 8 A
+@f4500 8 B
+@f4700 8 B
+@f5000 8 B

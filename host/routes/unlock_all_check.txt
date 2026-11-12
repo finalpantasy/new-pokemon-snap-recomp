@@ -1,0 +1,4 @@
+# fixture: unlock_all
+# Check for the unlock_all fixture: slow A taps get past the title and the lab hub "Research" entry, then stop on the Lental Map
+# (course select). Run: powershell -File host\run_boot.ps1 -Route post_tutorial_check -Timeout 120 -ShotAt 20 -ShotEvery 20
+repeat @f300 @f4600 120 8 A

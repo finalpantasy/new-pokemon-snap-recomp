@@ -193,6 +193,8 @@ struct TextureImpl {
   std::vector<VkImageLayout> subLayout;
   uint32_t imgLevels = 1, imgLayers = 1;   // of the VkImage (set by EnsureImage)
   VkImageCreateFlags ci_flags = 0;         // flags the VkImage was created with
+  TextureImpl* bcShadow = nullptr;
+  uint32_t bcSubLevel = 0, bcSubLayer = 0;  // on a bcShadow: the level / layer of the BC texture it stands in for          // block-compressed render target: the uncompressed stand-in drawn into (RedirectCompressedTargets)
   bool EnsureImage();
   uint32_t LevelW(uint32_t l) const { return std::max(1u, HW() >> l); }
   uint32_t LevelH(uint32_t l) const { return std::max(1u, HH() >> l); }
@@ -282,6 +284,8 @@ struct ReplayCtx {
   TextureImpl* rt[9] = {};
   TexView rtView[9] = {};          // the NVNtextureView given to SetRenderTargets (level / layer selection)
   bool rtHasView[9] = {};
+  TextureImpl* bcDst[8] = {};      // rt[k] is the bcShadow of this block-compressed texture; copied into it when a scope ends
+  bool bcDirty = false;
   bool rendering = false;
   bool vpSet = false, scSet = false;
   // guest (unscaled) viewport / scissor 0..3 as last set, re-applied when SetRenderTargets changes the render scale (the game
@@ -336,6 +340,7 @@ struct WindowImpl {
   int crop[4] = {0, 0, 0, 0};
   int64_t nextPresentNs = 0;            // frame limiter schedule (steady clock, ns)
   bool needRecreate = true;
+  bool hdr = false;                     // swapchain is A2B10G10R10 + HDR10_ST2084 (nvn_hdr.cpp draws the present pass)
   bool Recreate();
 };
 
@@ -403,6 +408,7 @@ struct ScalePolicy {
   uint32_t nextTag = 0;                               // consumed by the next TextureInitialize
   int shadowRes = 0;                                  // 0 = original; else side of the 1024x1024 depth shadow maps
   bool scaleDisplay = true;                           // window (DISPLAY) textures follow the scale too, else the output stays 1080p
+  float displayScale = 0.0f;                          // [upscale] > 0: window textures take this scale (the upscaler's output), not `scale`
   ScalePolicy();
   float For(const TextureBuilder& b, uint32_t tag) const;   // 1.0 when the texture is not scaled
 };
@@ -426,6 +432,8 @@ void LoadPipelineCache(Host* h);   // nvn_draw.cpp: reads <cacheDir>/pipeline_ca
 void ReplayBegin(ReplayCtx& c);    // nvn_draw.cpp: allocate draw state, one-time dummy resources
 void ReplayEnd(ReplayCtx& c);      // nvn_draw.cpp: close rendering, free draw state
 void EndRendering(ReplayCtx& c);   // nvn_draw.cpp: vkCmdEndRendering + barrier when a rendering scope is open
+void RedirectCompressedTargets(ReplayCtx& c);   // nvn_draw.cpp: after SetRenderTargets, swap BC color targets for uncompressed stand-ins
+void FlushCompressedTargets(ReplayCtx& c);      // nvn_draw.cpp: copy the stand-ins' blocks into the BC textures
 void ReplayDrawOp(ReplayCtx& c, const Cmd& cmd);   // nvn_draw.cpp: every op except the legacy six
 void Transition(VkCommandBuffer cb, TextureImpl* t, VkImageLayout to);   // whole image
 void TransitionRange(VkCommandBuffer cb, TextureImpl* t, VkImageLayout to, const SubRange& r);   // only the given subresources

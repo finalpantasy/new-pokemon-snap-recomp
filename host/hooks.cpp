@@ -117,6 +117,7 @@ static void h_strlen(Cpu *c) { c->x[0] = strlen((const char *)gp(c->x[0])); }
 
 namespace loader {
 void snap_lodanim_install();
+void snap_photoexport_install();   // host/mods/photoexport.cpp (SNAP_PHOTO_EXPORT, on by default)
 void install_libc_overrides() {
     // No malloc/free/calloc/realloc/aligned_alloc/memalign overrides: main defines the first five (the nu heap, main+0x4e2f60..)
     // and sdk memalign routes into them; a host heap here mixes allocators (Oodle mallocs via memalign, frees via main free).
@@ -124,6 +125,7 @@ void install_libc_overrides() {
     add_override("memmove", h_memmove);
     add_override("memset", h_memset);
     add_override("strlen", h_strlen);
+    snap_photoexport_install();
     snap_lodanim_install();   // host/mods/lodanim.cpp: SNAP_FOV / SNAP_TRACE_FOV (registers only when asked)
 }
 }  // namespace loader

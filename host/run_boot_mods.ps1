@@ -4,8 +4,8 @@
 # -Route <name>: feeds host\routes\<name>.txt as SNAP_INPUT_SCRIPT, defaults the save fixture to the route's first-line
 #   '# fixture: <name>' (else <name>), and saves checkpoint screenshots (first at -ShotAt s, then every -ShotEvery s, at most -ShotMax; NVN_FRAME_DUMP).
 #   -ShotAt without -Route also dumps frames, to analysis\boot\run_<id>_NN.png.
-# PARALLEL RUNS (owner exception to the one-heavy-process rule): takes one of 3 run slots (build\slots\run0..2.lock, host\locks.ps1) instead of
-# build\heavy.lock (that stays the BUILD lock). -Bench / -Exclusive (or SNAP_PERF set) take all 3 slots and wait for them. While build\heavy.priority
+# PARALLEL RUNS (owner exception to the one-heavy-process rule): takes one of 6 run slots (build\slots\run0..5.lock, host\locks.ps1) instead of
+# build\heavy.lock (that stays the BUILD lock). -Bench / -Exclusive (or SNAP_PERF set) take all 6 slots and wait for them. While build\heavy.priority
 # exists, slot 0 is reserved for the run whose $env:SNAP_LOCK_OWNER equals its content. -NoLock = the caller already holds a slot (scratch dir slotnl<pid>).
 # Each run works in build\runs\slot<N>\ (copy of build\snap exe + DLLs + nvn_cache, own save dir, own copy of the shared shader cache), so a
 # concurrent build can relink. Output carries a run id <slot>-<stamp>: analysis\boot\runs\<id>\boot_{trace,stderr,stdout}.log and
@@ -39,7 +39,7 @@ if ($Route) {
 }
 $dumpOn = (-not $Bench) -and ($Route -or $PSBoundParameters.ContainsKey('ShotAt'))
 
-# ---- slot: one of 3 concurrent run slots (all 3 for -Bench / -Exclusive / perf)
+# ---- slot: one of 6 concurrent run slots (all 6 for -Bench / -Exclusive / perf)
 $excl = [bool]($Bench -or $Exclusive -or $env:SNAP_PERF)
 $what = "run_boot $(if ($Route) { "route=$Route" } else { 'run' })$(if ($Bench) { ' bench' })"
 $slots = @()

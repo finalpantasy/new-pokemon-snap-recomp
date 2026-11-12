@@ -125,9 +125,11 @@ it through ImGui gamepad navigation (D-pad or left stick moves, south button act
 - **Controller tab, Gyro aim and Rumble (bottom):** gyro aim is off by default; with a pad that reports a gyroscope (SDL3 sensor API) the angular rate is added
   to the right (camera) stick, with sensitivity (1 = full deflection at 90 deg/s, dead zone 1.5 deg/s) and invert X/Y. Rumble on/off and strength (0 to 1.5) scale what the game sends through
   `SendVibrationValue`; rumble goes through `SDL_RumbleGamepad` (DualSense, Xbox, Switch Pro) with XInput as the fallback. Both apply at once.
-- **Graphics tab, Look and Ambient occlusion:** presets for `SNAP_LOOK` (neutral, vivid, warm, cool + strength) and `SNAP_SSAO_QUALITY` (default, high, ultra). They need a restart
-  (the mods read them at start); the tab shows a "Restart now" button once changed. An env var set by hand wins. No frame-rate cap or frame pacing exists in the build, so none is offered.
-- **Gallery tab:** starts `tools-src\gallery\serve.py --no-open` for the active profile with `--port-file`; the server tries 8777 then any free port (8765 is taken by other software on some PCs) and the tab opens the port it reports.
+- **Settings menu (F1) option pages** (`runtime\ui\ui_options.cpp`, table-driven): Graphics (render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution, ambient occlusion, color look and strength, HDR + peak and paper-white nits, frame cap, UI font scale, field of view 1.0-1.4 with `SNAP_FOV_SITES=0x296400,0x38cdbc`, draw distance 1-4 and full-rate distant animation, the last three marked "may change photo scores, being tested"), Display (window mode, monitor, windowed size, pause when unfocused, mute in background, fast boot), Photos (PNG export on/off, folder, open folder, gallery), Mods (packs with enable box and load order, written to `mods.json`) and the output mode on the Audio tab. Every row shows "applies now" or "restart needed" (yellow "changed: restart to apply" once changed); a help panel on the right gives plain-language help, the default, the effective render size and the env override name. A bar under the title counts pending restart changes and "Apply and restart" calls `restart_now`.
+- **Coming soon (disabled rows, env already wired in `settings.cpp`):** Upscaler (`SNAP_UPSCALER`), Upscaler quality (`SNAP_UPSCALE_QUALITY`), Lighting preset (`SNAP_LIGHTING`). Flip `kSoon` in the option table when the feature code lands.
+- **Where values live:** graphics, photo and fast-boot keys in the per-profile `settings.cfg` (exported as env vars at start, a hand-set env wins; "Default" erases the key); window mode, monitor and frame cap in `window.json`; audio output in `audio.json`; mods in `mods.json`.
+- **Photos tab:** PNG export options plus the gallery: starts `tools-src\gallery\serve.py --no-open` for the active profile with `--port-file`; the server tries 8777 then any free port (8765 is taken by other software on some PCs) and the tab opens the port it reports.
+- **Options test:** `tests\hle\run_options_test.ps1 -BuildDir <dir>` runs stage A (sets options through `SNAP_UI_TEST`, toggles and reorders mods, Apply and restart) then stage B (a fresh run on the same profile: checks saved values, exported env vars and mods order) and writes `analysis\ui\options_test.log`; `tests\hle\opt_shots.py` makes `analysis\ui\f1_*.png`. Verified: stage A 23 PASS, stage B 22 checks 0 failed; the game log shows `aa: mode smaa, sharpen 0.30` and `gamemods: UI font scale 2` after the restart. Settings load only when `SNAP_PROFILES_DIR` is set (tests also set `SNAP_PROFILE` and `SNAP_PROFILE_PICKER=0`); in hidden runs the relaunched child dies with the run, hence two runs.
 - **Per-profile settings** live in `%APPDATA%\SnapRecomp\profiles\<id>\settings.cfg` (flat `key=value`; `runtime\hle\settings.cpp`): `look`, `look_intensity`, `ssao_quality`,
   `gyro_on`, `gyro_sens`, `gyro_invert_x/y`, `rumble_on`, `rumble_strength`. Loaded in `hle::activate_profiles()`; test runs with `SNAP_SAVE_DIR` do not load them.
 - **Accessibility tab:** toggle-or-hold for ZL and ZR, UI scale.  **Test input tab:** live readout of what npad 0 would report.
@@ -152,6 +154,12 @@ Switch B is the bottom one (Xbox A); the Controller tab can switch to Nintendo l
 | D-pad | D-pad | T / F / H / G (up, left, right, down) |
 | Touch screen | | left mouse button |
 
+Input switches (environment, override the profile): `SNAP_RUMBLE=0..1.5` (strength, 0 = off), `SNAP_RUMBLE_LOG=1` (log each game vibration request and
+host rumble call), `SNAP_GYRO=0|1` (gyro aim on the camera stick; needs a pad with a gyro; untested on real hardware), `SNAP_GYRO_SENS=<n>` (1 = full
+stick at 90 deg/s), `SNAP_GYRO_FAKE=<yaw_dps>,<pitch_dps>` (pretend gyro for tests; yaw positive turns left, pitch positive tips up; implies `SNAP_GYRO=1`).
+Test routes: `host\routes\rumble_probe.txt`, `host\routes\gyro_probe.txt`; input-script tokens `rumble=<lo>,<hi>` and `gyro=<yaw>,<pitch>` (pretend gyro, needs `SNAP_GYRO=1`).
+Mouse aim (Controls, Mouse tab) already has mouse-look, sensitivity, invert and smoothing (`mouse.sensitivity`, `mouse.smoothing` in `input.json`).
+
 The game polls only the Full-key (Pro controller) npad 0 state, the touch screen and gestures; it never asks for six-axis (motion) data.
 Pads: every gamepad SDL3 reports is opened and merged with every XInput slot into npad 0 (buttons OR-ed, larger stick value wins), the
 joystick list is rescanned every second (hot-plug, wake-up) and each device is printed (`pad:` lines in `play_stdout.log`). SDL3 is used when
@@ -173,10 +181,11 @@ an optional `@f` prefix (frames either way on such a line). Time lines and frame
 Locks (`host\locks.ps1`; a lock file holds `owner pid=<pid> <time> <what>`, stale when the pid is dead or it is older than 20 min):
 
 - **Build lock** `build\heavy.lock`: one build (`host\build_snap.py`, `snap_build`) at a time. Unchanged.
-- **Run slots** `build\slots\run0..2.lock`: `host\run_boot.ps1` takes one (up to 3 hidden runs at once), waits and prints the owners when full,
+- **Run slots** `build\slots\run0..3.lock`: `host\run_boot.ps1` takes one (up to 4 hidden runs at once; owner 2026-11-12, cut from 6 because 6 held the CPU at 100%), waits and prints the owners when full,
   releases in a finally block. While `build\heavy.priority` exists slot 0 is only for the run with `$env:SNAP_LOCK_OWNER` equal to its content.
 - **Muted**: hidden runs (`run_boot.ps1`, `run_boot_mods.ps1` without `-Visible`) default to `SNAP_AUDIO_BACKEND=null`: no sound reaches the speakers, while audio timing and `SNAP_AUDIO_CAPTURE` work as before. Set `SNAP_AUDIO_BACKEND=wasapi` only for a test that needs the real device (spatial or WASAPI channel checks), and then mute the game with `SNAP_VOL_MASTER=0` unless the sound itself is under test.
-- **Exclusive**: `-Bench`, `-Exclusive` or `SNAP_PERF` set: takes `build\slots\exclusive.lock`, then all 3 slots; new normal runs wait behind it.
+- **Own builds**: `host\build_snap.py --out build\w\<owner>` relinks into a private folder without `build\heavy.lock`; run it with `run_boot.ps1 -BuildDir build\w\<owner>` (or `$env:SNAP_BUILD_DIR`). A build dir without its own `nvn_cache` gets the warm one from `build\snap`. Take `heavy.lock` only to write `build\snap`, rebuild the main/sdk libs (`recomp\snap_build.py`) or regenerate main.
+- **Exclusive**: `-Bench`, `-Exclusive` or `SNAP_PERF` set: takes `build\slots\exclusive.lock`, then all 4 slots; new normal runs wait behind it.
 
 Each run copies `build\snap\snap_boot.exe`, DLLs and `nvn_cache` to `build\runs\slot<N>\` (a concurrent build may relink), uses
 `build\runs\slot<N>\save` and its own copy of the shared `%APPDATA%\SnapRecomp\shadercache` (via `SNAP_SHADERCACHE_DIR`; warm, no concurrent

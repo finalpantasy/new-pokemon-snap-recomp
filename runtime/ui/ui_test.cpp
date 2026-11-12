@@ -10,6 +10,8 @@
 //   <t> expect_open <0|1> / expect_rebinding <0|1>
 //   <t> expect_bind <A|...> <kb|mouse|pad> <slot> <src|none>
 //   <t> shot <file.bmp>             copy the window client area from the screen (needs a visible window)
+//   <t> opt <key> <value>, expect_opt, expect_when, expect_pending <n>, expect_env <NAME> <value>   option pages (ui_options.cpp); "-" = empty value
+//   <t> mods <toggle|move> <id> [offset], expect_mods <id:1,id:0>, apply_restart   Mods tab and the Apply and restart button
 //   <t> quit                        print the summary and exit the process
 // Every check logs "ui-test: ... PASS|FAIL"; the summary line is "ui-test: SUMMARY n checks, m failed".
 #include <windows.h>
@@ -167,6 +169,51 @@ void run(const std::string& line, double t) {
     int cat = c == "master" ? SNAP_VOL_MASTER : c == "bgm" ? SNAP_VOL_BGM : c == "se" ? SNAP_VOL_SE : SNAP_VOL_VOICE;
     if (cmd == "vol") { snap_audio_set_volume(cat, pct / 100.0f); out("t=%.1f set volume %s = %.0f%%", t, c.c_str(), pct); }
     else check(std::fabs(snap_audio_get_volume(cat) - pct / 100.0f) < 0.006f, "volume " + c + " == " + std::to_string((int)pct) + "% (got " + std::to_string((int)std::lround(snap_audio_get_volume(cat) * 100.0f)) + "%)");
+  } else if (cmd == "opt") {   // opt <key> <value|-> : what changing the control does ("-" = empty value)
+    std::string k, v;
+    is >> k >> v;
+    if (v == "-") v.clear();
+    check(options_test_set(k, v), "set option " + k + " = '" + v + "'");
+  } else if (cmd == "expect_opt") {   // expect_opt <key> <value|->
+    std::string k, v;
+    is >> k >> v;
+    if (v == "-") v.clear();
+    const std::string got = options_test_get(k);
+    check(got == v, "option " + k + " == '" + v + "' (is '" + got + "')");
+  } else if (cmd == "scroll") {   // scroll <0..1>: the option list of the open page
+    float f = 0;
+    is >> f;
+    options_test_scroll(f);
+  } else if (cmd == "expect_when") {   // expect_when <key> <live|restart|soon>
+    std::string k, w, got;
+    is >> k >> w;
+    check(options_test_option_when(k, &got) && got == w, "option " + k + " is " + w + " (is '" + got + "')");
+  } else if (cmd == "expect_pending") {   // expect_pending <n>: settings that wait for a restart
+    int n = 0;
+    is >> n;
+    std::string names;
+    const int got = options_pending_restart(&names);
+    check(got == n, "pending restart options == " + std::to_string(n) + " (is " + std::to_string(got) + ": " + names + ")");
+  } else if (cmd == "expect_env") {   // expect_env <NAME> <value|->: the env var the game reads at start
+    std::string n, v;
+    is >> n >> v;
+    const char* e = std::getenv(n.c_str());
+    if (v == "-") v.clear();
+    check(std::string(e ? e : "") == v, "env " + n + " == '" + v + "' (is '" + (e ? e : "") + "')");
+  } else if (cmd == "mods") {   // mods <toggle|move> <pack id> [offset]: what the Mods tab buttons do (writes mods.json)
+    std::string op, id, state;
+    int arg = 0;
+    is >> op >> id >> arg;
+    check(options_test_mods(op, id, arg, &state), "mods " + op + " " + id + " " + std::to_string(arg));
+  } else if (cmd == "expect_mods") {   // expect_mods <id:1,id:0,...> : packs in priority order with enabled flags
+    std::string want, state;
+    is >> want;
+    options_test_mods("read", "", 0, &state);
+    check(state == want, "mods state == " + want + " (is " + state + ")");
+  } else if (cmd == "apply_restart") {   // the "Apply and restart" button
+    out("t=%.1f apply and restart (the game restarts)", t);
+    std::fflush(stderr);
+    restart_game();
   } else if (cmd == "expect_open") {
     int want = 1;
     is >> want;

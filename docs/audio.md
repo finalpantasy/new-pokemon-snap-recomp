@@ -212,6 +212,22 @@ Three things stack, all needed:
 Lab capture (`florio_photos`, 130 s, speakers, per-channel RMS FL FR FC LFE BL BR): game mix
 0.021 0.021 0.0000 0.0000 0.0001 0.0001; device mix after the upmixer 0.021 0.021 0.014 0.009 0.008 0.008.
 
+**Course capture (2026-11-12, `florio_photos`, post_tutorial fixture, `SNAP_AUDIO_OUTPUT=speakers`, `surround-bus` pack installed, 450 s run `1-20261112_074123`, WASAPI backend (started before the muted-by-default change), `SNAP_AUDIO_CAPTURE_SECS=400`, files in `buildudio_capslorio\`).**
+RMS per 20 s window of `device_speakers_6ch.wav` (FL FR FC LFE BL BR); the wav starts at the first non-silent frame, about 45 s into the run, so the ride (presents 3300 to 14300, about 60 to 270 s) is roughly wav t=15 to 225 s (alignment estimated, the log has no wav timestamps):
+
+| wav t (s) | scene | FL | FR | FC | LFE | BL | BR |
+|---|---|---|---|---|---|---|---|
+| 0-20 | title, map, ride start | 0.026 | 0.026 | 0.016 | 0.009 | 0.010 | 0.010 |
+| 40-60 | ride | 0.018 | 0.020 | 0.0003 | 0.0002 | 0.002 | 0.003 |
+| 60-200 | ride | 0.014-0.029 | 0.017-0.029 | 0.0000 (0.0007 at 120) | 0.0000 (0.0005 at 120) | 0.003-0.010 | 0.005-0.009 |
+| 220-380 | professor, photo select, album | 0.023-0.030 | 0.023-0.029 | 0.011-0.018 | 0.004-0.013 | 0.008-0.012 | 0.008-0.012 |
+
+Result: **during the ride FC and LFE are about 0 and the surrounds (BL/BR) are non-zero (0.003 to 0.010)**. The surrounds are real game content: the guest mix itself has BL/BR 0.006 to 0.010 in the ride (guest wav, the Wwise 5.1 bus carries course ambience), so the course is not purely stereo. Because the upmixer gate (`audio_mix.h`, `surroundPresent` over FC+LFE+BL+BR together, threshold 1e-6) sees that surround energy, it closes and does not fill FC and LFE either. FC and LFE come back only in menus and the evaluation (no surround in the guest mix, gate open). So the "non-zero on all channels in the ride" target is met for BL/BR only. Fix (needs a build, not done): gate per channel pair (FC+LFE separate from BL/BR) so a mix with real surrounds but no center still gets the phantom center and bass. FL/FR 0.014 to 0.03 throughout.
+
+**Per-channel upmixer gate (2026-11-12, `runtime/audio/audio_mix.h`, `tests/audio/mix_test.cpp` 'ambient surrounds' check, all pass):** the Upmixer now has two gates: FC and LFE are filled from the stereo content whenever the game's own FC+LFE are silent, and BL/BR (7.1: sides) are filled whenever the game's own surrounds are silent; each gate closes only on its own channels, so real ambience in BL/BR no longer blocks the center and bass fill, and the game's own surround content is never touched. Florio capture after the change (run `2-20261112_084938`, null backend, `SNAP_AUDIO_OUTPUT=speakers`, `buildudio_capslorio2\`, 20 s windows, FL FR FC LFE BL BR): ride windows t=40 to 220 s give FC 0.009 to 0.019 and LFE 0.003 to 0.008 (before: 0.0000), BL/BR unchanged at 0.002 to 0.009; menus and the evaluation FC 0.016 to 0.018, LFE 0.0075 to 0.013.
+
+**Spatial (2026-11-12, `SNAP_AUDIO_OUTPUT=spatial SNAP_AUDIO_BACKEND=wasapi SNAP_VOL_MASTER=0 SNAP_AUDIO_TRACE=1`, 80 s, run `0-20261112_075033`):** opens. Log: `[audio] output=spatial, game channels=6, device mix channels=6`, `[audio] spatial audio stream: 6 static bed objects (FL FR FC LFE SL SR)`, sink opened with 6 channels (config word `0x0060f106`); no fallback to speakers or stereo. Not heard (master volume 0, hidden run).
+
 ## Listening checklist (owner; the output could not be heard while building this)
 
 1. `stereo` mode, play a course: sound is unchanged from before, no new hiss or clipping in busy scenes (the 5.1 downmix only runs if you force 6 channels).

@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 #include "nvn_internal.h"
+#include <windows.h>
+#include <atomic>
 
 namespace nvn {
 namespace {
@@ -212,6 +214,25 @@ void QueueShaderWriteback(ReplayCtx& cx, PoolImpl* pool, uint64_t off, uint64_t 
   cx.readbacks->push_back(std::move(rb));
 }
 
+// Debug (NVN_WB_WATCH=1): after a fragment-shader write-back lands, the page gets PAGE_GUARD; the first access logs the host RIP
+// (resolve it with build\snap\snap_boot.map: lifted functions are f_71xxxxxxxx) so the CPU reader of the evaluation counts can be found.
+static std::atomic<int> g_wbWatchHits{0};
+static LONG CALLBACK WbWatchHandler(EXCEPTION_POINTERS* ep) {
+  if (ep->ExceptionRecord->ExceptionCode != STATUS_GUARD_PAGE_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+  if (g_wbWatchHits.fetch_add(1) < 64) {
+    const uintptr_t base = (uintptr_t)GetModuleHandleA(nullptr);
+    fprintf(stderr, "[wbwatch] p%d access %s 0x%llx by rip=0x%llx (exe+0x%llx) thread=%lu\n", g_presentCount,
+            ep->ExceptionRecord->ExceptionInformation[0] ? "write" : "read", (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1],
+            (unsigned long long)ep->ContextRecord->Rip, (unsigned long long)(ep->ContextRecord->Rip - base), GetCurrentThreadId());
+    void* fr[24]; const USHORT nf = RtlCaptureStackBackTrace(0, 24, fr, nullptr);
+    fprintf(stderr, "[wbwatch]   stack:");
+    for (USHORT i = 0; i < nf; i++) fprintf(stderr, " exe+0x%llx", (unsigned long long)((uintptr_t)fr[i] - base));
+    fprintf(stderr, "\n");
+    fflush(stderr);
+  }
+  return EXCEPTION_CONTINUE_EXECUTION;   // the guard bit is cleared by the fault; the access then succeeds
+}
+
 void FlushReadbacks(Host* h, bool wait) {
   std::lock_guard<std::mutex> lk(h->rbMutex);
   size_t n = 0;
@@ -231,7 +252,21 @@ void FlushReadbacks(Host* h, bool wait) {
     } else if (rb.kind == 0) {
       memcpy(rb.dst, rb.map, (size_t)rb.size);
     } else if (rb.kind == 3) {
-      if (memcmp(rb.dst, rb.expect.data(), (size_t)rb.size) == 0) memcpy(rb.dst, rb.map, (size_t)rb.size);
+      if (memcmp(rb.dst, rb.expect.data(), (size_t)rb.size) == 0) {
+        memcpy(rb.dst, rb.map, (size_t)rb.size);
+        if (XferLog()) {   // the counts themselves (EvaluationAggregatePS: one uint per bucket)
+          fprintf(stderr, "[xfer] wb values %p:", (void*)rb.dst);
+          for (uint64_t i = 0; i + 4 <= rb.size && i < 128; i += 4) { uint32_t v; memcpy(&v, rb.dst + i, 4); fprintf(stderr, " %u", v); }
+          fprintf(stderr, "\n");
+        }
+        static const bool watch = getenv("NVN_WB_WATCH") != nullptr;
+        if (watch) {
+          static bool installed = false;
+          if (!installed) { installed = true; AddVectoredExceptionHandler(1, WbWatchHandler); }
+          DWORD old = 0;
+          VirtualProtect(rb.dst, (size_t)rb.size, PAGE_READWRITE | PAGE_GUARD, &old);
+        }
+      }
       else if (XferLog()) fprintf(stderr, "[xfer] shader write-back skipped: the CPU rewrote %p since the submit\n", (void*)rb.dst);
       rb.pool->wbPending.fetch_sub(1, std::memory_order_relaxed);
       continue;   // no scratch buffer: the source is the pool's own mapped mirror

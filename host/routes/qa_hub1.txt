@@ -1,0 +1,3 @@
+# fixture: post_tutorial
+# QA exploration: title, lab hub, then idle (no input after f2200) to see where it parks.
+repeat @f300 @f2200 120 8 A

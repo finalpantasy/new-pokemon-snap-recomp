@@ -193,7 +193,7 @@ void draw_shader_screen(ImVec2 size) {
 void shader_screen_closed() { Q.focus_next = true; Q.was_screen = false; }
 
 // ---- Graphics tab -------------------------------------------------------------------------------------------------------
-void tab_graphics() {
+void shader_cache_section() {
   const Theme& t = theme();
   ImGui::TextColored(t.title, "Shader cache");
   ImGui::TextWrapped("Pipelines are compiled from shaders as the game needs them and saved in %s. Compiling ahead of time avoids stutter.", cache_dir().c_str());
@@ -257,7 +257,6 @@ void tab_graphics() {
     if (ImGui::Button("Cancel")) Q.confirm_rebuild = false;
   }
   if (ImGui::GetTime() < Q.msg_until) { ImGui::Spacing(); ImGui::TextColored(Q.msg_err ? t.error : t.good, "%s", Q.msg.c_str()); }
-  extras_graphics();
 }
 
 }  // namespace snap::ui

@@ -58,3 +58,4 @@ bin/
 # local run outputs and per-user settings
 /.out
 /audio.json
+/.claude/

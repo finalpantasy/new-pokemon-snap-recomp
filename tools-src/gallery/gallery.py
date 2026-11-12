@@ -5,7 +5,7 @@ file 10 = 1200 thumbnails, file 6 = 1200 x 0x148 byte metadata records. Entry in
 Metadata field offsets are NOT decoded yet: every record keeps its raw u32 words in `raw_words`, and
 META_LAYOUT (field -> (offset, struct fmt)) fills course/species/score/date once confirmed from a real run.
 """
-import argparse, json, os, struct, sys
+import argparse, binascii, json, os, struct, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,8 +32,79 @@ def parse_meta(data):
     return rec
 
 
-def extract(files, out_dir):
-    """files: {index: object with .count and .read(e) -> None | (meta, data)}. Returns the photo list."""
+def photo_dir():
+    """Folder the host writes full-resolution PNG exports to (host/mods/photoexport.cpp, SNAP_PHOTO_DIR overrides)."""
+    return Path(os.environ.get('SNAP_PHOTO_DIR') or Path(os.environ.get('APPDATA', '')) / 'SnapRecomp' / 'photos')
+
+
+def export_date(name):
+    """photo_YYYYMMDD_HHMMSS_NNN -> unix-less sortable 'YYYY-MM-DD HH:MM:SS' or None."""
+    p = name.split('_')
+    if len(p) >= 3 and len(p[1]) == 8 and len(p[2]) == 6 and (p[1] + p[2]).isdigit():
+        return '%s-%s-%s %s:%s:%s' % (p[1][:4], p[1][4:6], p[1][6:], p[2][:2], p[2][2:4], p[2][4:])
+    return None
+
+
+def load_exports(pdir):
+    """PNG exports with a .json sidecar: [{name, png, width, height, jpeg_crc32, date}]."""
+    out = []
+    pdir = Path(pdir)
+    if not pdir.is_dir():
+        return out
+    for j in sorted(pdir.glob('photo_*.json')):
+        try:
+            d = json.loads(j.read_text())
+        except (OSError, ValueError):
+            continue
+        if not (pdir / (j.stem + '.png')).is_file():
+            continue
+        d['name'] = j.stem
+        d['date'] = export_date(j.stem)
+        out.append(d)
+    return out
+
+
+def make_thumb(png, dest, width=320):
+    """Small JPEG of an exported PNG (needs Pillow; without it the page scales the PNG)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return False
+    try:
+        if dest.exists() and dest.stat().st_mtime >= png.stat().st_mtime:
+            return True
+        im = Image.open(png).convert('RGB')
+        im.thumbnail((width, width * 10))
+        im.save(dest, 'JPEG', quality=85)
+        return True
+    except OSError:
+        return False
+
+
+def _small(img_path, size=(24, 16)):
+    from PIL import Image
+    return list(Image.open(img_path).convert('L').resize(size).getdata())
+
+
+def match_album(x, photos, taken, out, png):
+    """The album entry an export came from: same JPEG byte size (the CRC differs because the game edits the JPEG after the
+    encoder, so it is not used), confirmed by comparing 24x16 grey thumbnails when Pillow is installed."""
+    cand = [p for p in photos if p.get('source') == 'album' and p['id'] not in taken and p['bytes'] == x.get('jpeg_bytes')]
+    for p in cand:
+        try:
+            a, b = _small(png), _small(out / p['full'])
+            if sum(abs(i - j) for i, j in zip(a, b)) / len(a) > 12:
+                continue
+        except (ImportError, OSError):
+            pass
+        taken.add(p['id'])
+        return p
+    return None
+
+
+def extract(files, out_dir, export_dir=None):
+    """files: {index: object with .count and .read(e) -> None | (meta, data)}. Returns the photo list.
+    export_dir: folder of PNG exports; each is joined to its album entry by the CRC32 of the album JPEG."""
     out = Path(out_dir)
     (out / 'full').mkdir(parents=True, exist_ok=True)
     (out / 'thumb').mkdir(exist_ok=True)
@@ -45,17 +116,36 @@ def extract(files, out_dir):
             jpg = find_jpeg(r[1]) if r else None
             if jpg is None:
                 continue
-            rec = {'id': e, 'full': 'full/%04d.jpg' % e, 'bytes': len(jpg)}
+            rec = {'id': e, 'full': 'full/%04d.jpg' % e, 'bytes': len(jpg), 'source': 'album',
+                   'crc': '%08x' % (binascii.crc32(jpg) & 0xffffffff)}
+            rec['url'] = '/data/' + rec['full']
             (out / rec['full']).write_bytes(jpg)
             t = tf.read(e) if tf is not None and e < tf.count else None
             tj = find_jpeg(t[1]) if t else None
             if tj:
                 rec['thumb'] = 'thumb/%04d.jpg' % e
+                rec['thumb_url'] = '/data/' + rec['thumb']
                 (out / rec['thumb']).write_bytes(tj)
             m = mf.read(e) if mf is not None and e < mf.count else None
             if m:
                 rec.update(parse_meta(m[1]))
             photos.append(rec)
+    if export_dir is not None:
+        taken = set()
+        (out / 'xthumb').mkdir(exist_ok=True)
+        for x in load_exports(export_dir):
+            png = Path(export_dir) / (x['name'] + '.png')
+            th = '/data/xthumb/%s.jpg' % x['name'] if make_thumb(png, out / 'xthumb' / (x['name'] + '.jpg')) else '/export/%s.png' % x['name']
+            p = match_album(x, photos, taken, out, png)
+            if p is None:
+                p = {'id': 'x_' + x['name'], 'source': 'export', 'thumb_url': th}
+                photos.append(p)
+            else:
+                p['source'] = 'album+export'
+                p['thumb_url'] = th
+            p.update(url='/export/%s.png' % x['name'], png=x['name'] + '.png', width=x['width'], height=x['height'])
+            if x['date']:
+                p['taken'] = x['date']
     (out / 'photos.json').write_text(json.dumps({'photos': photos, 'layout_known': bool(META_LAYOUT)}, indent=1))
     return photos
 
@@ -76,13 +166,19 @@ def main(argv=None):
     a = ap.parse_args(argv)
     roots = save_roots(a.profile)
     src = a.save or (str(roots[0]) if roots else None)
-    if not src:
-        sys.exit('no save found')
-    sys.path.insert(0, str(ROOT / 'scripts'))
-    import snap_save
-    gdir, _ = snap_save.resolve_gen(src)
     out = a.out or ROOT / 'build' / 'gallery' / a.profile
-    photos = extract(snap_save.open_gen(gdir), out)
+    files = {}
+    if src:
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        try:
+            import snap_save
+            gdir, _ = snap_save.resolve_gen(src)
+            files = snap_save.open_gen(gdir)
+        except (SystemExit, Exception) as e:   # no save yet or no crypto package: still list the PNG exports
+            print('album not read:', e)
+    else:
+        print('no save found; listing PNG exports only')
+    photos = extract(files, out, photo_dir())
     print('%d photos -> %s' % (len(photos), out))
 
 

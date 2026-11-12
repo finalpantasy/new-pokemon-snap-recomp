@@ -167,7 +167,17 @@ MAIN_INLINE_HOOKS = {BASE + 0x5e3a58: 'rt_mod_entry',
                      # host/mods/gamemods.cpp (SSAO quality #16, pass toggles #7): all no-ops unless their env vars are set
                      BASE + 0x5a6c94: 'rt_gm_ao_simple',    # SimpleAO/Hemisphere/Alchemy execute: x21 = pass, +0x17c kernelSize
                      BASE + 0x5a7bac: 'rt_gm_ao_hbao',      # HBAO execute: x21 = pass, +0x174 numDirections, +0x178 numSamples
-                     BASE + 0x989048: 'rt_gm_pass'}         # per-frame pass loop: x20 = entry, [x20+8] = pass
+                     BASE + 0x989048: 'rt_gm_pass',         # per-frame pass loop: x20 = entry, [x20+8] = pass
+                     # host/mods/lodanim.cpp (draw distance #27, full-rate distant animation #26): no-ops unless their env vars are set
+                     BASE + 0x337ca8: 'rt_gm_lod_ratio',      # model LOD pick (update 0x334db0): s0 = screen-coverage ratio, w22 = LOD group
+                     BASE + 0x337ab8: 'rt_gm_lod_ratio_sub',  # same for attached sub-models: s0 = ratio, w25 = LOD group
+                     BASE + 0x33a744: 'rt_gm_anim_rate',      # pre-draw 0x338170: x20 = instance+0x4000, [+0x170] skip counter
+                     # host/mods/gamemods.cpp (sharper UI fonts #29): no-ops unless SNAP_UI_FONT_SCALE is set
+                     BASE + 0x6410bc: 'rt_gm_font_atlas_info',  # before the atlas texture create: info at sp+0xe0, w/h at +0x18
+                     BASE + 0x641288: 'rt_gm_font_atlas_dims',  # after `str x20, [x25, #0x2188]`
+                     BASE + 0x4358c0: 'rt_gm_font_glyph1',      # after GetGlyph (0xa37dc0) in the glyph cache fill 0x435560: x0 = glyph
+                     BASE + 0x435eb0: 'rt_gm_font_glyph2',      # after the second (outline) GetGlyph
+                     BASE + 0x435cf0: 'rt_gm_font_fix'}         # before the entry's +0x1a/+0x1c store: x1 = glyph, x21 = entry
 
 
 def sdk_plan():

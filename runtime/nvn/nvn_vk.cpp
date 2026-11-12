@@ -10,6 +10,8 @@
 #include <cstring>
 
 #include "nvn_internal.h"
+#include "nvn_hdr.h"   // HDR10 output (SNAP_HDR=1)
+#include "upscale/upscale_nvn.h"   // [upscale] DLSS / FSR / XeSS (SNAP_UPSCALER)
 #include "os/perf.h"   // SNAP_PERF instrumentation (off unless the env var is set)
 #include "ui/ui_present.h"   // controls overlay hook (runtime/ui); the stub below keeps nvn-only builds linking
 extern "C" void snap_ui_present_none(const SnapUiFrame*) {}
@@ -22,6 +24,9 @@ extern "C" int snap_window_frame_cap_none() { return 0; }
 #pragma comment(linker, "/alternatename:snap_window_frame_cap=snap_window_frame_cap_none")
 
 namespace nvn {
+
+bool g_provokingLast = false, g_customBorder = false;   // device features enabled in Host::Init (provoking vertex LAST, custom border colors)
+VkShaderStageFlags g_sgPinStages = 0;                    // stages that accept requiredSubgroupSize = 32 (0: no pin)
 
 int PerfGpuBegin(Host* h, VkCommandBuffer cb);   // nvn_perf.cpp (SNAP_PERF only)
 void PerfGpuEnd(Host* h, VkCommandBuffer cb, int slot);
@@ -202,6 +207,8 @@ bool Host::Init(bool wantValidation) {
     iext.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     if (haveValFeat) iext.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
   }
+  snap_hdr::AppendInstanceExt(iext);
+  UpscaleInstanceExtensions(iext);   // [upscale]
   const char* layers[] = {"VK_LAYER_KHRONOS_validation"};
   VkValidationFeatureEnableEXT enables[] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
   VkValidationFeaturesEXT vf{VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
@@ -284,15 +291,56 @@ bool Host::Init(bool wantValidation) {
   qci.queueFamilyIndex = family;
   qci.queueCount = 1;
   qci.pQueuePriorities = &prio;
-  const char* dext[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  std::vector<const char*> dext = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  snap_hdr::AppendDeviceExt(phys, dext);
+  // Maxwell/NVN behaviours Vulkan lacks by default (docs/nvn-vulkan-design.md "Maxwell checks"): flat varyings come from the last vertex,
+  // sampler border colors are arbitrary RGBA, and the translated shaders' subgroup ops assume 32 lanes. Each is optional and has an
+  // env switch (=0) for A/B runs: SNAP_VK_PROVOKING, SNAP_VK_BORDER, SNAP_VK_SGPIN.
+  VkPhysicalDeviceProvokingVertexFeaturesEXT pvf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+  VkPhysicalDeviceCustomBorderColorFeaturesEXT cbf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
+  {
+    auto on = [](const char* n) { const char* e = getenv(n); return !(e && e[0] == '0'); };
+    uint32_t ne = 0;
+    vkEnumerateDeviceExtensionProperties(phys, nullptr, &ne, nullptr);
+    std::vector<VkExtensionProperties> ep(ne);
+    vkEnumerateDeviceExtensionProperties(phys, nullptr, &ne, ep.data());
+    auto has = [&](const char* n) { for (auto& e : ep) if (!strcmp(e.extensionName, n)) return true; return false; };
+    VkPhysicalDeviceProvokingVertexFeaturesEXT qpv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+    VkPhysicalDeviceCustomBorderColorFeaturesEXT qcb{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
+    VkPhysicalDeviceVulkan13Features q13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    qpv.pNext = &qcb; qcb.pNext = &q13;
+    VkPhysicalDeviceFeatures2 q2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &qpv};
+    vkGetPhysicalDeviceFeatures2(phys, &q2);
+    if (has(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME) && qpv.provokingVertexLast && on("SNAP_VK_PROVOKING")) {
+      dext.push_back(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME); pvf.provokingVertexLast = VK_TRUE; g_provokingLast = true;
+      pvf.pNext = f11.pNext; f11.pNext = &pvf;
+    }
+    if (has(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME) && qcb.customBorderColors && qcb.customBorderColorWithoutFormat && on("SNAP_VK_BORDER")) {
+      dext.push_back(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME); cbf.customBorderColors = cbf.customBorderColorWithoutFormat = VK_TRUE; g_customBorder = true;
+      cbf.pNext = f11.pNext; f11.pNext = &cbf;
+    }
+    if (q13.subgroupSizeControl && on("SNAP_VK_SGPIN")) {
+      VkPhysicalDeviceVulkan13Properties p13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+      VkPhysicalDeviceProperties2 pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13};
+      vkGetPhysicalDeviceProperties2(phys, &pp);
+      if (p13.minSubgroupSize <= 32 && 32 <= p13.maxSubgroupSize) {
+        f13.subgroupSizeControl = VK_TRUE; g_sgPinStages = p13.requiredSubgroupSizeStages;
+        Log("subgroup size %u-%u, required-size stages 0x%x: pinning shaders with subgroup ops to 32", p13.minSubgroupSize, p13.maxSubgroupSize, (unsigned)g_sgPinStages);
+      }
+    }
+    fprintf(stderr, "[nvn] maxwell checks: provokingVertexLast=%d customBorderColor=%d subgroupPin=0x%x\n", (int)g_provokingLast, (int)g_customBorder, (unsigned)g_sgPinStages);
+  }
+  UpscaleDeviceExtensions(this, dext, &en.pNext, &f11, &f12, &f13);   // [upscale] backend extensions and features
   VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   dci.pNext = &en;
   dci.queueCreateInfoCount = 1;
   dci.pQueueCreateInfos = &qci;
-  dci.enabledExtensionCount = 1;
-  dci.ppEnabledExtensionNames = dext;
+  dci.enabledExtensionCount = (uint32_t)dext.size();
+  dci.ppEnabledExtensionNames = dext.data();
   if (vkCreateDevice(phys, &dci, nullptr, &device) != VK_SUCCESS) { LogError("vkCreateDevice failed"); return false; }
   vkGetDeviceQueue(device, family, 0, &queue);
+  snap_hdr::LoadDeviceFuncs(device);
+  UpscaleDeviceCreated(this);   // [upscale]
   VkPipelineCacheCreateInfo pci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
   VKCHK(vkCreatePipelineCache(device, &pci, nullptr, &pipelineCache));
   {
@@ -305,6 +353,7 @@ bool Host::Init(bool wantValidation) {
       size_t k = d.find_last_of("\\/");
       cacheDir = (k == std::string::npos ? std::string(".") : d.substr(0, k)) + "\\nvn_cache";
     }
+    if (const char* r = getenv("SNAP_XLATE_REV"); r && *r && strcmp(r, "0")) cacheDir += std::string("_r") + r;   // translator revision: separate shader cache (nvn_shader.cpp)
     CreateDirectoryA(cacheDir.c_str(), nullptr);
     LoadPipelineCache(this);
   }
@@ -314,6 +363,7 @@ bool Host::Init(bool wantValidation) {
 
 void Host::Shutdown() {
   if (device) vkDeviceWaitIdle(device);
+  if (device) UpscaleDestroy(this);   // [upscale]
   if (device) DestroyHostExtras(this);
   if (pipelineCache) vkDestroyPipelineCache(device, pipelineCache, nullptr);
   if (device) vkDestroyDevice(device, nullptr);
@@ -515,6 +565,8 @@ VkImageView TextureImpl::RenderView(const TexView* v, SubRange* out) {
 
 void DestroyTexture(TextureImpl* t) {
   if (!t) return;
+  UpscaleForgetTexture(t);   // [upscale]
+  if (t->bcShadow) { DestroyTexture(t->bcShadow); t->bcShadow = nullptr; }
   if (t->host && t->host->device) {
     for (auto& kv : t->views) vkDestroyImageView(t->host->device, kv.second, nullptr);
     if (t->image) vkDestroyImage(t->host->device, t->image, nullptr);
@@ -836,6 +888,7 @@ static void EmitViewport(ReplayCtx& cx, int i) {
   if (v[2] <= 0 || v[3] <= 0) return;
   cx.vpScale = RtScale(cx);
   VkViewport vp = MakeNvnViewport(cx.h->originMode, v[0], v[1], v[2], v[3], cx.vpScale);
+  { float jx, jy; UpscaleViewportJitter(cx, &jx, &jy); vp.x += jx; vp.y += jy; }   // [upscale] sub-pixel jitter of the scene's draws
   vkCmdSetViewport(cx.cb, (uint32_t)i, 1, &vp);
 }
 static void EmitScissor(ReplayCtx& cx, int i) {
@@ -867,8 +920,11 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
           const size_t o = (size_t)k * (1 + sizeof(TexView));
           if (rt[k] && c.blob.size() >= o + 1 + sizeof(TexView) && c.blob[o]) { memcpy(&cx.rtView[k], &c.blob[o + 1], sizeof(TexView)); cx.rtHasView[k] = true; }
         }
+        RedirectCompressedTargets(cx);
         if (DebugDrawLogActive()) DebugDrawLog("SetRenderTargets rt0=%p(%dx%d f%x) depth=%p\n", (void*)rt[0], rt[0] ? rt[0]->b.width : 0, rt[0] ? rt[0]->b.height : 0, rt[0] ? rt[0]->b.format : 0, (void*)rt[8]);
         // render scale changed: viewports / scissors set for the previous targets are re-applied at the new scale
+        { const bool jit = UpscaleOnSetRenderTargets(cx);   // [upscale] scene / upscale point; jitter changed: re-emit viewports
+          if (jit && cx.vpHave) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i); }
         if (cx.vpHave && RtScale(cx) != cx.vpScale) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i);
         if (cx.scHave && RtScale(cx) != cx.scScale) for (int i = 0; i < 4; i++) if (cx.scHave & (1u << i)) EmitScissor(cx, i);
         break;
@@ -886,6 +942,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         else memcpy(v.int32, c.f, sizeof v.int32);
         VkImageSubresourceRange rg{VK_IMAGE_ASPECT_COLOR_BIT, rr.lb, 1, rr.yb, rr.yn};
         vkCmdClearColorImage(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v, 1, &rg);
+        if (cx.bcDst[c.i[0]]) { cx.bcDirty = true; FlushCompressedTargets(cx); }   // a cleared compressed target (stand-in)
         break;
       }
       case Op::ClearDepthStencil: {
@@ -895,11 +952,14 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         VkImageAspectFlags asp = 0;
         if (c.i[0] && (t->fi->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) asp |= VK_IMAGE_ASPECT_DEPTH_BIT;     // depthMask
         if (c.i[2] && (t->fi->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) asp |= VK_IMAGE_ASPECT_STENCIL_BIT;  // stencilMask
+        if (c.i[2] && (c.i[2] & 0xFF) != 0xFF) { static int pm = 0; if (pm++ < 20) Log("ClearDepthStencil with a partial stencil mask 0x%x (cleared whole; value %d)", c.i[2], c.i[1]); }
         if (!asp) break;
         t->uploaded = true;
         const SubRange rr = RtRange(t, cx.rtHasView[8] ? &cx.rtView[8] : nullptr);
         TransitionRange(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rr);
         VkClearDepthStencilValue v{c.f[0], (uint32_t)c.i[1]};
+        { static const bool el = getenv("NVN_EVAL_LOG") != nullptr; static int n = 0;
+          if (el && t->b.format == 0x36 && n++ < 200) fprintf(stderr, "[eval] p%d ClearDepthStencil depth=%d(%g) stencil=%d(%d) t=%p\n", g_presentCount, c.i[0], c.f[0], c.i[2], c.i[1], (void*)t); }
         VkImageSubresourceRange rg{asp, rr.lb, 1, rr.yb, rr.yn};
         vkCmdClearDepthStencilImage(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v, 1, &rg);
         break;
@@ -954,6 +1014,7 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
   std::lock_guard<std::mutex> lk(h->queueMutex);
   g_replayEpoch++;
   q->Reap(false);
+  UpscaleBeforeSubmit(n, lists);   // [upscale] photo frames
   std::vector<VkCommandBufferSubmitInfo> infos;
   std::vector<Retired> pending;
   std::vector<Readback> readbacksOut;
@@ -1076,6 +1137,11 @@ bool WindowImpl::Recreate() {
   for (int k = 0; k < 2 && !found; k++)
     for (auto& f : fm)
       if (f.format == want[k] && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { pick = f; found = true; break; }
+  hdr = false;
+  if (snap_hdr::Requested()) {   // SNAP_HDR=1: A2B10G10R10 + HDR10_ST2084 when the display and driver offer it, else the SDR pick above (logged)
+    VkSurfaceFormatKHR hp{};
+    if (snap_hdr::PickFormat(fm.data(), (uint32_t)fm.size(), &hp, hwnd)) { pick = hp; hdr = true; }
+  }
 
   vkGetPhysicalDeviceSurfacePresentModesKHR(h->phys, surface, &n, nullptr);
   std::vector<VkPresentModeKHR> pm(n);
@@ -1111,6 +1177,7 @@ bool WindowImpl::Recreate() {
   swapchain = ns;
   scFormat = pick.format;
   scExtent = ext;
+  if (hdr) snap_hdr::SetMetadata(h->device, swapchain);
   vkGetSwapchainImagesKHR(h->device, swapchain, &n, nullptr);
   scImages.resize(n);
   vkGetSwapchainImagesKHR(h->device, swapchain, &n, scImages.data());
@@ -1124,6 +1191,8 @@ bool WindowImpl::Recreate() {
   }
   needRecreate = false;
   Log("swapchain %ux%u images=%u fmt=%d mode=%d", ext.width, ext.height, n, (int)scFormat, (int)mode);
+  if (snap_hdr::Requested()) fprintf(stderr, "hdr: swapchain %ux%u fmt=%d colorspace=%d %s (peak %.0f nits, paper white %.0f nits, mode %s)\n", ext.width, ext.height, (int)scFormat, (int)pick.colorSpace,
+                                     hdr ? (snap_hdr::IsScrgb() ? "scRGB active" : "HDR10 ST2084 active") : "SDR (fallback)", snap_hdr::Peak(), snap_hdr::Paper(), snap_hdr::ModeName());
   return true;
 }
 
@@ -1173,6 +1242,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   std::lock_guard<std::mutex> lk(h->queueMutex);
   q->Reap(false);
   g_presentCount++;
+  UpscaleOnPresent();   // [upscale]
   if (g_hooks.on_present) g_hooks.on_present(g_hooks.user, slot, src->b.width, src->b.height);
 
   uint32_t idx = 0;
@@ -1231,6 +1301,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   uint32_t fdW = src->HW(), fdH = src->HH(); bool fdBgra = src->fi && (src->fi->vk == VK_FORMAT_B8G8R8A8_UNORM || src->fi->vk == VK_FORMAT_B8G8R8A8_SRGB);
   if (fdPost) { fdW = w->scExtent.width; fdH = w->scExtent.height; fdBgra = w->scFormat == VK_FORMAT_B8G8R8A8_UNORM || w->scFormat == VK_FORMAT_B8G8R8A8_SRGB; }
   const bool fdBurstNow = g_fdBurst > 0 && (g_fdBurst-- % 4) == 0;   // NVN_THUMB_LOG: a photo-thumbnail draw requests a short burst of frames
+  const bool fdHdr = fdPost && w->hdr;   // HDR10 swapchain: the dump is the raw A2B10G10R10 PQ image, written through snap_hdr::DumpPQ
   if (fdDir && *fdDir && fdCount < fdMax && src->fi && src->fi->bytes == 4 && src->fi->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
     const double nowS = std::chrono::duration<double>(std::chrono::steady_clock::now() - fdT0).count();
     // NVN_FRAME_DUMP_AT=<p1,p2,...>: dump at those present counts instead of by time (frame-exact comparisons between runs)
@@ -1240,7 +1311,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     if (!fdAt.empty()) { if (fdAtIdx < fdAt.size() && g_presentCount >= fdAt[fdAtIdx]) { fdAtNow = true; fdAtIdx++; } }
     if (fdBurstNow || fdAtNow || (fdAt.empty() && nowS >= fdFrom && nowS <= fdTo && nowS >= fdNext)) {
       fdNext = nowS + fdEvery;
-      if (CreateHostBuffer(h, (uint64_t)fdW * fdH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &fdBuf, &fdMem, &fdMap)) {
+      if (CreateHostBuffer(h, (uint64_t)fdW * fdH * (fdHdr && snap_hdr::IsScrgb() ? 8 : 4), VK_BUFFER_USAGE_TRANSFER_DST_BIT, &fdBuf, &fdMem, &fdMap)) {
         VkBufferImageCopy bc{}; bc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; bc.imageExtent = {src->HW(), src->HH(), 1};
         if (!fdPost) vkCmdCopyImageToBuffer(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, fdBuf, 1, &bc);
         VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -1252,11 +1323,14 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
       } else { fdBuf = VK_NULL_HANDLE; }
     }
   }
+  bool hdrDone = false;   // HDR10 swapchain (SNAP_HDR=1): nvn_hdr.cpp draws the PQ pass instead of the clear + blit below (set after the rects are known)
+  if (!w->hdr) {
   imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
   VkClearColorValue black{};
   VkImageSubresourceRange rg{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   vkCmdClearColorImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rg);
   imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  }
 
   // source rectangle: crop if set, else the whole texture
   // render scale: the window texture may be larger than the guest-visible size (crop is in guest pixels)
@@ -1277,9 +1351,32 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   blit.dstOffsets[0] = {dx, dy, 0}; blit.dstOffsets[1] = {dx + dw, dy + dh, 1};
   const bool same = (sw == dw && sh == dh);
-  vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+  if (w->hdr) {
+    // HDR path: the scene is blitted into an SDR scratch image so SNAP_LOOK and the F1 overlay (SDR code) keep working; the overlay draws into a
+    // transparent layer. nvn_hdr.cpp then encodes scene (inverse tone map) + layer (paper white) into the HDR swapchain image.
+    snap_hdr::Scratch sc{};
+    if (snap_hdr::PrepScratch(cb, h->phys, h->device, w->scExtent, &sc)) {
+      VkImageBlit sb = blit;
+      sb.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      if (sc.dbg != 1) vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc.sdr, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &sb, same ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+      imgBarrier(sc.sdr, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+      SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, sc.sdr, sc.sdrFmt, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd};
+      snap_look_present(&uf);
+      SnapUiFrame ul = uf; ul.image = sc.layer; ul.format = sc.layerFmt;
+      snap_ui_present(&ul);
+      snap_hdr::Frame hf{h->phys, h->device, cb, dst, w->scFormat, w->scExtent, w->swapchain, sc.sdr, sc.sdrFmt, w->scExtent.width, w->scExtent.height,
+                         0, 0, (int)w->scExtent.width, (int)w->scExtent.height, 0, 0, (int)w->scExtent.width, (int)w->scExtent.height, sc.layer};
+      hdrDone = snap_hdr::Record(hf);
+    }
+    if (!hdrDone) {   // setup failed: this frame blits, then the swapchain is recreated as SDR
+      w->hdr = false; w->needRecreate = true;
+      imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+      LogError("HDR pass failed; the next frame recreates an SDR swapchain");
+    }
+  }
+  if (!w->hdr && !hdrDone) vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                  same ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
-  { SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, dst, w->scFormat, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd}; snap_look_present(&uf); snap_ui_present(&uf); }
+  { SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, dst, w->scFormat, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd}; if (!hdrDone) { snap_look_present(&uf); snap_ui_present(&uf); } }
   if (fdBuf && fdPost) {   // NVN_FRAME_DUMP_POST: copy the finished swapchain image (TRANSFER_DST after the overlay)
     imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     VkBufferImageCopy bc{}; bc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; bc.imageExtent = {fdW, fdH, 1};
@@ -1310,7 +1407,14 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   { snap_perf::Scope perfScope(snap_perf::C_QSUBMIT); VKCHK(vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE)); }
   PerfGpuSubmitted(perfSlot, v);
   q->inflight.push_back({v, cb, nullptr});
-  if (fdBuf) {   // debug frame dump: wait for the copy, write a half-size BMP
+  if (fdBuf && fdHdr) {
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1; wi.pSemaphores = &q->timeline; wi.pValues = &v;
+    vkWaitSemaphores(h->device, &wi, UINT64_MAX);
+    std::string base = fdName; if (base.size() > 4) base.resize(base.size() - 4);
+    snap_hdr::DumpPQ(base.c_str(), fdMap, fdW, fdH);
+    vkDestroyBuffer(h->device, fdBuf, nullptr); vkFreeMemory(h->device, fdMem, nullptr);
+  } else if (fdBuf) {   // debug frame dump: wait for the copy, write a half-size BMP
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wi.semaphoreCount = 1; wi.pSemaphores = &q->timeline; wi.pValues = &v;
     vkWaitSemaphores(h->device, &wi, UINT64_MAX);
@@ -1354,3 +1458,4 @@ bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
 }
 
 }  // namespace nvn
+
