@@ -141,7 +141,31 @@ try {
     if ((Test-Path $testSave) -and (Get-ChildItem $testSave -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
         $keep = Join-Path $root "build\runs\saves\$runId"; New-Item -ItemType Directory -Force $keep | Out-Null
         Copy-Item -Recurse -Force (Join-Path $testSave '*') $keep -ErrorAction SilentlyContinue; Write-Host "save kept in $keep"
+        # owner 2026-11-12: these copies filled F: (195 runs x ~3.7 GB = 721 GB). Keep only the generation CURRENT names, and only the newest 20 runs.
+        Get-ChildItem $keep -Recurse -Filter CURRENT -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $lines = @(Get-Content $_.FullName -ErrorAction SilentlyContinue)   # "SNAPSAVE1", current generation, checksum
+            $gen = if ($lines.Count -ge 2 -and $lines[0] -eq 'SNAPSAVE1') { $lines[1].Trim() } else { '' }
+            $gens = Join-Path $_.DirectoryName 'gens'
+            if ($gen -and (Test-Path (Join-Path $gens $gen))) {
+                Get-ChildItem $gens -Directory | Where-Object { $_.Name -ne $gen } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Get-ChildItem (Join-Path $root 'build\runs\saves') -Directory | Sort-Object LastWriteTime -Descending | Select-Object -Skip 20 |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
+    # owner 2026-11-12 "keep my drive a little clean": route screenshots in analysis\boot older than 24 h are deleted unless a doc names them
+    # (AGENTS.md, host\README.md, docs\*.md, analysis\**\*.md); *_raw dump folders older than 24 h go too. Copy a shot you want to keep
+    # into analysis\mods\compare\ or name it in a doc.
+    try {
+        $bootDir = Join-Path $root 'analysis\boot'; $cut = (Get-Date).AddHours(-24)
+        $old = @(Get-ChildItem $bootDir -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut -and $_.Extension -in '.png','.bmp','.jpg' })
+        if ($old.Count) {
+            $docs = @((Join-Path $root 'AGENTS.md'), (Join-Path $root 'host\README.md')) + @(Get-ChildItem (Join-Path $root 'docs'), (Join-Path $root 'analysis') -Recurse -Filter *.md -File -ErrorAction SilentlyContinue | ForEach-Object FullName)
+            $refs = @{}; Select-String -Path $docs -Pattern '[A-Za-z0-9_.-]+\.(png|bmp|jpg)' -AllMatches -ErrorAction SilentlyContinue | ForEach-Object { $_.Matches | ForEach-Object { $refs[$_.Value] = 1 } }
+            $old | Where-Object { -not $refs.ContainsKey($_.Name) } | Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+        Get-ChildItem $bootDir -Directory -Filter '*_raw' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    } catch { Write-Host "screenshot cleanup skipped: $_" }
 } finally {
     if ($p -and -not $p.HasExited) { taskkill /PID $p.Id /T /F | Out-Null }
     if (-not $NoLock) { Exit-RunSlots }
