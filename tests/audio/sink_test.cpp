@@ -163,6 +163,7 @@ static void play(Sink& s, double seconds, int mode, Run& r) {
 }
 
 int main(int argc, char** argv) {
+  _putenv_s("SNAP_CONFIG_DIR", ".");  // keep the test volume out of the real audio.json
   std::string backend = "null", wavPath = "analysis/audio/sink_test.wav", logPath = "analysis/audio/sink_test.log";
   double seconds = 10.0, volume = 1.0;
   for (int i = 1; i < argc; ++i) {

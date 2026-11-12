@@ -14,8 +14,13 @@
 #include <ks.h>
 #include <ksmedia.h>
 #include <functiondiscoverykeys_devpkey.h>
+#include <SpatialAudioClient.h>
+#include <propidl.h>
+#include "audio_mix.h"
 
+#include <algorithm>
 #include <atomic>
+#include <new>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -62,7 +67,9 @@ void make_format(WAVEFORMATEXTENSIBLE& w, uint32_t rate, uint32_t ch) {
   w.Format.nAvgBytesPerSec = rate * ch * 4;
   w.Format.cbSize = 22;
   w.Samples.wValidBitsPerSample = 32;
-  w.dwChannelMask = ch == 6 ? (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+  w.dwChannelMask = ch == 8 ? (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                               SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT)
+          : ch == 6 ? (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
                                SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT)
                             : (ch == 1 ? SPEAKER_FRONT_CENTER : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT));
   w.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
@@ -95,6 +102,19 @@ class WasapiBackend : public Backend {
     if (stopEv_) { CloseHandle(stopEv_); stopEv_ = nullptr; }
   }
   int kind() const override { return SNAP_AUDIO_BACKEND_WASAPI; }
+  int spatial_available() override {
+    HRESULT hi = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    int ok = 0;
+    IMMDeviceEnumerator* en = nullptr;
+    IMMDevice* dev = nullptr;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&en))) &&
+        SUCCEEDED(en->GetDefaultAudioEndpoint(eRender, eConsole, &dev))) {
+      ok = probe_spatial(dev, 48000, nullptr) ? 1 : 0;
+    }
+    safe_release(dev); safe_release(en);
+    if (SUCCEEDED(hi)) CoUninitialize();
+    return ok;
+  }
   uint32_t native_channels() override {
     HRESULT hi = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     uint32_t ch = 2;
@@ -126,14 +146,124 @@ class WasapiBackend : public Backend {
     }
   };
 
-  bool open_stream(IMMDeviceEnumerator* en, Stream& s) {
+
+  // ---- Windows spatial audio: static bed objects (Windows Sonic, Dolby Atmos for Headphones, DTS) ---------------------
+  struct Spatial {
+    ISpatialAudioClient* sac = nullptr;
+    ISpatialAudioObjectRenderStream* st = nullptr;
+    ISpatialAudioObject* obj[6] = {};
+    HANDLE ev = nullptr;
+    bool started = false;
+    ~Spatial() {
+      if (st && started) st->Stop();
+      for (auto& o : obj) safe_release(o);
+      safe_release(st); safe_release(sac);
+      if (ev) CloseHandle(ev);
+    }
+  };
+
+  static AudioObjectType bed_type(mix::BedObject b) {
+    switch (b) {
+      case mix::BedObject::FrontLeft: return AudioObjectType_FrontLeft;
+      case mix::BedObject::FrontRight: return AudioObjectType_FrontRight;
+      case mix::BedObject::FrontCenter: return AudioObjectType_FrontCenter;
+      case mix::BedObject::LowFrequency: return AudioObjectType_LowFrequency;
+      case mix::BedObject::SideLeft: return AudioObjectType_SideLeft;
+      default: return AudioObjectType_SideRight;
+    }
+  }
+
+  static void spatial_format(WAVEFORMATEX& f, uint32_t rate) {
+    ZeroMemory(&f, sizeof(f));
+    f.wFormatTag = WAVE_FORMAT_IEEE_FLOAT; f.nChannels = 1; f.nSamplesPerSec = rate; f.wBitsPerSample = 32;
+    f.nBlockAlign = 4; f.nAvgBytesPerSec = rate * 4; f.cbSize = 0;
+  }
+
+  static AudioObjectType bed_mask() {
+    unsigned m = 0;
+    for (auto b : mix::kBed51) m |= (unsigned)bed_type(b);
+    return (AudioObjectType)m;
+  }
+
+  // Probe: activate the client and ask whether the 6 bed objects are available. Nothing is started.
+  static bool probe_spatial(IMMDevice* dev, uint32_t rate, ISpatialAudioClient** out) {
+    ISpatialAudioClient* sac = nullptr;
+    if (FAILED(dev->Activate(__uuidof(ISpatialAudioClient), CLSCTX_INPROC_SERVER, nullptr, (void**)&sac)) || !sac) return false;
+    WAVEFORMATEX f; spatial_format(f, rate);
+    bool ok = SUCCEEDED(sac->IsAudioObjectFormatSupported(&f));
+    AudioObjectType native = AudioObjectType_None;
+    if (ok) ok = SUCCEEDED(sac->GetNativeStaticObjectTypeMask(&native));
+    if (ok) ok = (native & bed_mask()) == bed_mask();
+    if (ok && out) { *out = sac; return true; }
+    sac->Release();
+    return ok;
+  }
+
+  bool open_spatial(IMMDeviceEnumerator* en, Spatial& sp) {
+    IMMDevice* dev = nullptr;
+    if (FAILED(en->GetDefaultAudioEndpoint(eRender, eConsole, &dev))) return false;
+    bool ok = probe_spatial(dev, fmt_.rate, &sp.sac);
+    safe_release(dev);
+    if (!ok) return false;
+    WAVEFORMATEX f; spatial_format(f, fmt_.rate);
+    sp.ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    SpatialAudioObjectRenderStreamActivationParams ap = {};
+    ap.ObjectFormat = &f;
+    ap.StaticObjectTypeMask = bed_mask();
+    ap.MinDynamicObjectCount = 0;
+    ap.MaxDynamicObjectCount = 0;
+    ap.Category = AudioCategory_GameMedia;
+    ap.EventHandle = sp.ev;
+    ap.NotifyObject = nullptr;
+    PROPVARIANT pv; PropVariantInit(&pv);
+    pv.vt = VT_BLOB; pv.blob.cbSize = sizeof(ap); pv.blob.pBlobData = (BYTE*)&ap;
+    HRESULT hr = sp.sac->ActivateSpatialAudioStream(&pv, IID_PPV_ARGS(&sp.st));
+    if (FAILED(hr) || !sp.st) { std::fprintf(stderr, "[audio] spatial stream activation failed 0x%08lx\n", (unsigned long)hr); return false; }
+    for (int i = 0; i < 6; ++i)
+      if (FAILED(sp.st->ActivateSpatialAudioObject(bed_type(mix::kBed51[i]), &sp.obj[i]))) return false;
+    if (FAILED(sp.st->Start())) return false;
+    sp.started = true;
+    return true;
+  }
+
+  // Returns false if the stream broke (rebuild), true if stopped.
+  bool run_spatial(Spatial& sp, HANDLE changeEv) {
+    HANDLE h[3] = {sp.ev, changeEv, stopEv_};
+    std::vector<float> mixbuf;
+    bool first = true;
+    while (run_.load()) {
+      DWORD w = WaitForMultipleObjects(3, h, FALSE, 250);
+      if (w == WAIT_OBJECT_0 + 2) return true;
+      if (w == WAIT_OBJECT_0 + 1) return false;
+      if (w == WAIT_TIMEOUT) continue;
+      UINT32 dyn = 0, frames = 0;
+      HRESULT hr = sp.st->BeginUpdatingAudioObjects(&dyn, &frames);
+      if (FAILED(hr)) return false;
+      mixbuf.resize((size_t)frames * 6);
+      core_mix(mixbuf.data(), frames);
+      for (int c = 0; c < 6; ++c) {
+        BYTE* buf = nullptr; UINT32 bytes = 0;
+        if (SUCCEEDED(sp.obj[c]->GetBuffer(&buf, &bytes)) && buf) {
+          float* o = reinterpret_cast<float*>(buf);
+          const UINT32 n = std::min<UINT32>(frames, bytes / 4);
+          for (UINT32 i = 0; i < n; ++i) o[i] = mixbuf[(size_t)i * 6 + c];
+        }
+      }
+      hr = sp.st->EndUpdatingAudioObjects();
+      if (FAILED(hr)) return false;
+      if (first) { first = false; core_set_device_info(true, frames, 1000.0 * frames / fmt_.rate * 2.0, 6, fmt_.rate, SNAP_AUDIO_OUT_SPATIAL); }
+    }
+    return true;
+  }
+
+  bool open_stream(IMMDeviceEnumerator* en, Stream& s, uint32_t ch) {
     IMMDevice* dev = nullptr;
     if (FAILED(en->GetDefaultAudioEndpoint(eRender, eConsole, &dev))) return false;
     HRESULT hr = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&s.ac);
     safe_release(dev);
     if (FAILED(hr)) return false;
     WAVEFORMATEXTENSIBLE wf;
-    make_format(wf, fmt_.rate, fmt_.channels);
+    make_format(wf, fmt_.rate, ch);
     s.ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     const DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
     bool done = false;
@@ -167,19 +297,19 @@ class WasapiBackend : public Backend {
     REFERENCE_TIME lat = 0;
     s.ac->GetStreamLatency(&lat);
     const double bufMs = 1000.0 * s.frames / fmt_.rate;
-    core_set_device_info(true, s.frames, lat / 10000.0 + bufMs, fmt_.channels, fmt_.rate);
+    core_set_device_info(true, s.frames, lat / 10000.0 + bufMs, ch, fmt_.rate, ch == 2 ? SNAP_AUDIO_OUT_STEREO : SNAP_AUDIO_OUT_SPEAKERS);
     return SUCCEEDED(s.ac->Start());
   }
 
   void timer_wait(std::chrono::milliseconds total) {  // consume at stream rate while there is no device
     using clk = std::chrono::steady_clock;
     const uint32_t block = fmt_.rate / 100;
-    std::vector<float> buf((size_t)block * fmt_.channels);
+    std::vector<float> buf((size_t)block * 8);
     const auto period = std::chrono::nanoseconds(1000000000ll * block / fmt_.rate);
     auto next = clk::now() + period;
     const auto end = clk::now() + total;
     while (run_.load() && clk::now() < end) {
-      core_mix(buf.data(), block);
+      core_mix(buf.data(), block);   // the core's current channel count never exceeds 8
       std::this_thread::sleep_until(next);
       next += period;
     }
@@ -197,14 +327,38 @@ class WasapiBackend : public Backend {
     bool first = true;
     while (run_.load()) {
       Stream s;
-      if (!en || !open_stream(en, s)) {
-        core_set_device_info(false, 0, 0.0, fmt_.channels, fmt_.rate);
+      Spatial sp;
+      // Mode ladder: the configured mode first, then speakers 5.1, then stereo. Re-tried from the top on every rebuild.
+      int mode = fmt_.mode;
+      uint32_t ch = fmt_.channels;
+      bool ok = false, spatialOpen = false;
+      if (en && mode == SNAP_AUDIO_OUT_SPATIAL) {
+        if (open_spatial(en, sp)) { ok = true; spatialOpen = true; }
+        else {
+          std::fprintf(stderr, "[audio] spatial audio unavailable on the default device (enable Windows Sonic or Dolby Atmos for it), falling back to 5.1 speakers\n");
+          sp.~Spatial(); new (&sp) Spatial();
+          mode = SNAP_AUDIO_OUT_SPEAKERS; ch = 6;
+        }
+      }
+      if (en && !ok && mode == SNAP_AUDIO_OUT_SPEAKERS) {
+        if (open_stream(en, s, ch)) ok = true;
+        else { std::fprintf(stderr, "[audio] %u-channel stream failed, falling back to stereo\n", ch); s.~Stream(); new (&s) Stream(); mode = SNAP_AUDIO_OUT_STEREO; ch = 2; }
+      }
+      if (en && !ok) { ok = open_stream(en, s, 2); ch = 2; mode = SNAP_AUDIO_OUT_STEREO; }
+      if (!ok) {
+        core_set_device_info(false, 0, 0.0, 0, fmt_.rate, mode);
         timer_wait(std::chrono::milliseconds(500));  // no endpoint: keep time, retry
         continue;
       }
       if (!first) core_notify_device_change();
       first = false;
-      std::fprintf(stderr, "[audio] WASAPI stream: %u frames (%.1f ms)%s\n", s.frames, 1000.0 * s.frames / fmt_.rate,
+      if (spatialOpen) {
+        std::fprintf(stderr, "[audio] spatial audio stream: 6 static bed objects (FL FR FC LFE SL SR)\n");
+        core_set_device_info(true, 480, 20.0, 6, fmt_.rate, SNAP_AUDIO_OUT_SPATIAL);
+        if (!run_spatial(sp, changeEv)) core_set_device_info(false, 0, 0.0, 0, fmt_.rate, SNAP_AUDIO_OUT_SPATIAL);
+        continue;
+      }
+      std::fprintf(stderr, "[audio] WASAPI stream: %u ch, %u frames (%.1f ms)%s\n", ch, s.frames, 1000.0 * s.frames / fmt_.rate,
                    lowLat_ ? " low-latency" : "");
       HANDLE h[3] = {s.ev, changeEv, stopEv_};
       bool rebuild = false;
@@ -223,7 +377,7 @@ class WasapiBackend : public Backend {
         core_mix(reinterpret_cast<float*>(p), avail);
         s.rc->ReleaseBuffer(avail, 0);
       }
-      if (rebuild) core_set_device_info(false, 0, 0.0, fmt_.channels, fmt_.rate);
+      if (rebuild) core_set_device_info(false, 0, 0.0, 0, fmt_.rate, mode);
     }
     if (en) { en->UnregisterEndpointNotificationCallback(nc); en->Release(); }
     nc->Release();

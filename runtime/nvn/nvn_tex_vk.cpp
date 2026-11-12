@@ -11,6 +11,7 @@
 #include <vector>
 #include "nvn_internal.h"
 #include "nvn_tex.h"
+#include "os/perf.h"   // SNAP_PERF instrumentation
 
 namespace nvn {
 namespace {
@@ -105,6 +106,15 @@ uint64_t TextureStorageSize(const TextureBuilder& b) {
 void UploadStaticTexture(ReplayCtx& cx, TextureImpl* t) {
   if (t->uploaded) return;
   t->uploaded = true;   // one attempt only
+  struct PerfUp {
+    uint64_t t0; const TextureImpl* t;
+    ~PerfUp() {
+      if (!snap_perf::on) return;
+      const uint64_t dt = snap_perf::now_ns() - t0;
+      snap_perf::add(snap_perf::C_UPLOAD, dt); snap_perf::count(snap_perf::V_UPLOADS);
+      if (dt > 2000000) { char det[96]; snprintf(det, sizeof det, "%dx%d fmt=%x levels=%d", t->b.width, t->b.height, t->b.format, t->b.levels); snap_perf::event("texupload", (double)dt / 1e6, det); }
+    }
+  } perfUp{snap_perf::on ? snap_perf::now_ns() : 0, t};
   const TextureBuilder& b = t->b;
   if (!t->EnsureImage()) return;
   const uint8_t* src = static_cast<const uint8_t*>(b.packaged);
@@ -209,7 +219,8 @@ void RefreshDynamicTexture(ReplayCtx& cx, TextureImpl* t) {
   const uint8_t* src = DynamicSource(t, &n);
   if (!src || n > (32u << 20)) return;
   t->hashSeq = g_replaySeq;
-  if (HashBytes(src, n) == t->srcHash) return;
+  { snap_perf::Scope perfHash(snap_perf::C_HASH); snap_perf::count(snap_perf::V_HASH_CALLS); snap_perf::count(snap_perf::V_HASH_BYTES, n);
+    if (HashBytes(src, n) == t->srcHash) return; }
   t->uploaded = false;
   UploadStaticTexture(cx, t);
 }

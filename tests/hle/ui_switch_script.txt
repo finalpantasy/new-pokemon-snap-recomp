@@ -1,0 +1,5 @@
+# Stage 1 of the profile switch test (run_profiles_test.ps1 -Mode switch): import the unlock_all fixture as a new profile
+# ("Import test save"), then "Switch to this profile". The game relaunches and runs ui_switch_script2.txt.
+20 expect_profile Photo run
+22 saves_import unlock_all
+24 saves_switch

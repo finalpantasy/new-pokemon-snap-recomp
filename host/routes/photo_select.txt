@@ -1,0 +1,10 @@
+# fixture: post_tutorial
+# Photo worker probe (frame timed, from tutorial_pass): mash A through the intro and the yard camera tutorial, with a constant yaw
+# drift plus a slow pitch oscillation so the centered pointer eventually crosses Pikachu (the tutorial's "line up with Pikachu" step).
+# Run with -ShotAt/-ShotEvery dumps to catch the photo-select and evaluation screens (a fast A mash skips through them).
+repeat @f1500 @f8000 50 12 A
+repeat @f8000 @f60000 8 3 A
+@f8100 100000 lx=-0.22
+@f8100 60 ry=-0.3
+repeat @f8200 @f60000 480 120 ry=0.3
+repeat @f8440 @f60000 480 120 ry=-0.3

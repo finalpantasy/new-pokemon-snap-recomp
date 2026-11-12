@@ -1,6 +1,7 @@
 # Scripted controls-menu test (SNAP_UI_TEST). Times are seconds after the first present. See runtime/ui/ui_test.cpp.
+# The menu stays open from 28 s to 80 s with tab changes and rebinding to prove it is stable.
 25 expect_open 0
-26 key F1
+26 key F1 1
 28 expect_open 1
 29 tab Bindings
 30 rebind A kb 0
@@ -8,21 +9,28 @@
 32 press key:P 1.0
 35 expect_rebinding 0
 35.5 expect_bind A kb 0 key:P
-36 press key:P 1.0
-37 expect_preview A 1
-37.2 expect_button A 0
+36 press key:P 3.0
+38 expect_preview A 1
+38.5 expect_button A 0
 39 rebind B kb 1
 40 press key:Space 1.0
 43 expect_bind B kb 1 key:Space
-44 key F1
-46 expect_open 0
-47 press key:P 1.5
-48 expect_button A 1
-50 press key:L 1.0
-51 expect_button A 0
-53 key F1
-55 expect_open 1
-56 tab Bindings
-58 shot build/testconfig/menu.bmp
-62 save
-63 quit
+45 tab Mouse
+50 tab Controller
+55 tab Accessibility
+60 tab Test_input
+64 press key:Q 1.0
+66 rebind X mouse 0
+67 press mouse:right 1.0
+70 tab Controller
+74 key F1 1
+75 tab Bindings
+76 shot build/testconfig/menu.bmp
+80 key F1 0
+82 expect_open 0
+83 press key:P 1.5
+84 expect_button A 1
+86 press key:L 1.0
+87 expect_button A 0
+89 save
+90 quit

@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "variants": [
+    {
+      "id": "x4_detail",
+      "label": "Procedural detail \u00d74",
+      "scale": 4
+    },
+    {
+      "id": "x4_warm",
+      "label": "Warm study \u00d74",
+      "scale": 4
+    }
+  ],
+  "assets": [
+    {
+      "id": "contour_vessel",
+      "name": "Contour vessel",
+      "category": "prop",
+      "model": "contour_vessel/model.gltf",
+      "lods": [
+        "contour_vessel/model.gltf",
+        "contour_vessel/model_lod1.gltf"
+      ],
+      "materials": [
+        {
+          "name": "ceramic",
+          "albedo": "ceramic_color",
+          "normal": "ceramic_normal",
+          "mask": null,
+          "emissive": null
+        },
+        {
+          "name": "cutout",
+          "albedo": "cutout_color",
+          "normal": null,
+          "mask": null,
+          "emissive": null
+        }
+      ],
+      "textures": [
+        {
+          "name": "ceramic_color",
+          "role": "albedo",
+          "orig": "contour_vessel/textures/ceramic_color.orig.png",
+          "w": 64,
+          "h": 64,
+          "format": "RGBA8",
+          "variants": {
+            "x4_detail": "contour_vessel/textures/ceramic_color.x4_detail.png",
+            "x4_warm": "contour_vessel/textures/ceramic_color.x4_warm.png"
+          }
+        },
+        {
+          "name": "ceramic_normal",
+          "role": "normal",
+          "orig": "contour_vessel/textures/ceramic_normal.orig.png",
+          "w": 64,
+          "h": 64,
+          "format": "RGBA8",
+          "variants": {
+            "x4_detail": "contour_vessel/textures/ceramic_normal.x4_detail.png",
+            "x4_warm": "contour_vessel/textures/ceramic_normal.x4_warm.png"
+          }
+        },
+        {
+          "name": "cutout_color",
+          "role": "albedo",
+          "orig": "contour_vessel/textures/cutout_color.orig.png",
+          "w": 64,
+          "h": 64,
+          "format": "RGBA8",
+          "variants": {
+            "x4_detail": "contour_vessel/textures/cutout_color.x4_detail.png",
+            "x4_warm": "contour_vessel/textures/cutout_color.x4_warm.png"
+          }
+        }
+      ]
+    },
+    {
+      "id": "alpha_card",
+      "name": "Alpha calibration",
+      "category": "ui",
+      "model": null,
+      "lods": [],
+      "materials": [],
+      "textures": [
+        {
+          "name": "cutout_color",
+          "role": "albedo",
+          "orig": "contour_vessel/textures/cutout_color.orig.png",
+          "w": 64,
+          "h": 64,
+          "format": "RGBA8",
+          "variants": {
+            "x4_detail": "contour_vessel/textures/cutout_color.x4_detail.png",
+            "x4_warm": "contour_vessel/textures/cutout_color.x4_warm.png"
+          }
+        }
+      ]
+    }
+  ]
+}

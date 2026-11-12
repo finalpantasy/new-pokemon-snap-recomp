@@ -1,0 +1,7 @@
+# fixture: post_tutorial
+# Yard tutorial: constant slow upward pointer drift (ly negative) while lx sweeps; A mash fires whenever the pointer crosses Pikachu.
+repeat @f1500 @f8000 50 12 A
+repeat @f8000 @f60000 8 3 A
+@f8100 200000 ly=-0.03
+repeat @f8100 @f60000 400 200 lx=-0.2
+repeat @f8300 @f60000 400 200 lx=0.2

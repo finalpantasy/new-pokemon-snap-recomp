@@ -1,0 +1,22 @@
+{
+  "lods": [
+    "contour_vessel/model.gltf",
+    "contour_vessel/model_lod1.gltf"
+  ],
+  "materials": [
+    {
+      "name": "ceramic",
+      "albedo": "ceramic_color",
+      "normal": "ceramic_normal",
+      "mask": null,
+      "emissive": null
+    },
+    {
+      "name": "cutout",
+      "albedo": "cutout_color",
+      "normal": null,
+      "mask": null,
+      "emissive": null
+    }
+  ]
+}

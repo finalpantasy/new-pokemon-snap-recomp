@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../../runtime/os/os.h"
@@ -650,6 +651,82 @@ static void test_wake_order(Cpu *c) {
           g_order.size() > 2 ? g_order[2] : -1, g_order.size() > 3 ? g_order[3] : -1, g_order.size() > 4 ? g_order[4] : -1);
 }
 
+// =========================================================================================== core handoff (lost core wakeup)
+// Regression for the intro hang (analysis/boot/runs/1-20261112_001041, photo r5/r8): pinned threads sat in acquire_core
+// with every virtual core free. Two cores are freed back to back while a better, unpinned waiter A sleeps; both releases
+// notify A. A takes its ideal core 2 and must hand the wakeup for core 0 on to the core-0-pinned waiter P. Before the fix,
+// take_core still saw A in the wait list and notified A itself, so P (and the main thread joining it) slept forever.
+extern "C" void os_dump_threads(void (*emit)(void *, uint64_t, uint64_t, int, uint64_t, uint64_t, int, int, Cpu *), void *ud);
+static std::atomic<int> g_ch_go{0}, g_ch_on_core{0}, g_ch_p_ran{0}, g_ch_round{0};
+static void th_ch_holder(Cpu *c) {   // holds its pinned core, polling like a lifted loop, until go
+    g_ch_on_core++;
+    while (!g_ch_go.load()) call(c, S_TICK);
+}
+static void th_ch_a(Cpu *c) {}
+static void th_ch_p(Cpu *c) { g_ch_p_ran = 1; }
+static void ch_dump(void *, uint64_t tt, uint64_t id, int wkind, uint64_t, uint64_t, int core, int prio, Cpu *) {
+    if (tt == 0xC0DE) fprintf(stderr, "    core %llu holder prio %d\n", (unsigned long long)id, prio);
+    else fprintf(stderr, "    thread %llu waiting_core=%d mask=%#llx wkind=%d core=%d prio=%d\n", (unsigned long long)(id & 0xffffffffffffull),
+                 (int)((id >> 62) & 1), (unsigned long long)((id >> 48) & 0xff), wkind, core, prio);
+}
+static void test_core_handoff(Cpu *c) {
+    const int ROUNDS = 300;
+    std::atomic<bool> done{false};
+    std::thread wd([&] {   // a lost wakeup hangs the test: report it and fail instead of waiting forever
+        int last = -1;
+        auto t = std::chrono::steady_clock::now();
+        while (!done) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            int r = g_ch_round.load();
+            if (r != last) { last = r; t = std::chrono::steady_clock::now(); continue; }
+            if (ms_since(t) > 3000) {
+                fprintf(stderr, "FAIL core handoff: round %d stuck 3 s with free cores (lost core wakeup)\n", r);
+                os_dump_threads(ch_dump, nullptr);
+                fflush(stderr);
+                _exit(1);
+            }
+        }
+    });
+    OsStats s0;
+    os_get_stats(&s0);
+    uint64_t me = call(c, S_CURT);
+    int old = (int)call(c, S_PRIO, me);
+    call(c, S_CHPRIO, me, 5ull);   // the main thread is the core 0 holder
+    for (int r = 0; r < ROUNDS; r++) {
+        g_ch_go = 0; g_ch_on_core = 0; g_ch_p_ran = 0;
+        GThread h1 = spawn(c, th_ch_holder, 0, 5, 1), h2 = spawn(c, th_ch_holder, 0, 5, 2);
+        while (g_ch_on_core < 2) std::this_thread::yield();   // host wait: core 0 stays held
+        OsStats w0;
+        os_get_stats(&w0);
+        GThread a = spawn(c, th_ch_a, 0, 10, 2, false);
+        call(c, S_SETMASK, a.tt, 2ull, 7ull);   // ideal 2, may run anywhere
+        call(c, S_START, a.tt);
+        GThread p = spawn(c, th_ch_p, 0, 16, 0);
+        for (;;) {   // both wait for a core: every core is held by a better thread
+            OsStats w1;
+            os_get_stats(&w1);
+            if (w1.core_waits >= w0.core_waits + 2) break;
+            std::this_thread::yield();
+        }
+        g_ch_go = 1;     // H2 exits (frees core 2) while this thread blocks in the join (frees core 0)
+        join(c, p);
+        join(c, a);
+        join(c, h1);
+        join(c, h2);
+        CHECK(g_ch_p_ran == 1, "P did not run");
+        g_ch_round++;
+    }
+    call(c, S_CHPRIO, me, (uint64_t)old);
+    done = true;
+    wd.join();
+    OsStats s1;
+    os_get_stats(&s1);
+    CHECK(s1.core_wake_rescues == s0.core_wake_rescues, "%llu core waits were rescued by the safety-net timeout (lost handoff)",
+          (unsigned long long)(s1.core_wake_rescues - s0.core_wake_rescues));
+    printf("  core handoff: %d rounds, core_waits +%llu, rescues +%llu\n", ROUNDS, (unsigned long long)(s1.core_waits - s0.core_waits),
+           (unsigned long long)(s1.core_wake_rescues - s0.core_wake_rescues));
+}
+
 // =========================================================================================== memory + sdk-internal shims
 static void th_noop(Cpu *c) {}
 static void test_memory(Cpu *c) {
@@ -778,6 +855,7 @@ int main(int argc, char **argv) {
         {"priority inversion", test_priority_inversion},
         {"fibers", test_fibers},             {"multiwait", test_multiwait},
         {"wake order", test_wake_order},     {"memory+boot", test_memory},
+        {"core handoff", test_core_handoff},
         {"stress 10K", test_stress},
         {"svcGetInfo", test_getinfo},
     };
@@ -785,7 +863,7 @@ int main(int argc, char **argv) {
     for (int r = 0; r < reps; r++)
         for (auto &t : tests) {
             if (r > 0 && (t.fn == test_threads || t.fn == test_producer_consumer || t.fn == test_fibers ||
-                          t.fn == test_wake_order || t.fn == test_memory || t.fn == test_stress))
+                          t.fn == test_wake_order || t.fn == test_memory || t.fn == test_core_handoff || t.fn == test_stress))
                 continue;   // these use one-shot globals
             int f0 = g_fail;
             auto t0 = std::chrono::steady_clock::now();
@@ -803,6 +881,7 @@ int main(int argc, char **argv) {
            (unsigned long long)s.overflow_grants, (unsigned long long)s.pi_boosts, (unsigned long long)s.fiber_switches,
            s.max_cores_in_use);
     CHECK(s.max_cores_in_use <= 3 + (int)s.overflow_grants, "cores in use %d", s.max_cores_in_use);
+    CHECK(s.core_wake_rescues == 0, "%llu lost core wakeups rescued by the safety net", (unsigned long long)s.core_wake_rescues);
     printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

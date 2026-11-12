@@ -1,0 +1,3 @@
+# fixture: unlock_all
+# probe: A taps only, to see where the unlock_all save lands
+repeat 0 290 1.5 0.25 A

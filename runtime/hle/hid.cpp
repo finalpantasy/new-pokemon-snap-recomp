@@ -153,6 +153,7 @@ void hid_send_vibration_value(Cpu* c) {  // (const VibrationDeviceHandle&, const
   const float* v = ptr<const float>(arg(c, 1));
   float low = std::clamp(v[0], 0.0f, 1.0f), high = std::clamp(v[2], 0.0f, 1.0f);
   input::hub().rumble(low, high);
+  input::script_event("vibration");   // first call: the lab cutscene hands over the camera (scripted-input anchor, host/skip_intro.txt)
 }
 
 // ---- controller applet: one player, the active npad

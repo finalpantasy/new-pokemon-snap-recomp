@@ -26,9 +26,11 @@ NVN_HOST_EXPORT void nvnHostSetFramePacing(double hz);
 // (TextureFlags COMPRESSIBLE, not DISPLAY/LINEAR, 2D or 2D array, single sample) created after the call, so set it before the
 // game creates its textures. The guest still sees the original size from every NVN getter; viewports, scissors and clear
 // regions are scaled at replay; copies between targets of different scale become blits. Exempt targets keep scale 1:
-//   - by signature: nvnHostAddScaleExemption(width, height, nvnFormat, depthOnly), -1 = any (a built-in exemption covers
-//     1920-wide depth targets, the Evaluation depth target; nvnHostClearScaleExemptions removes it),
-//   - by tag: call nvnHostSetNextTextureTag(tag) right before the allocation and nvnHostAddScaleExemptionTag(tag) once.
+//   - by signature: nvnHostAddScaleExemption(width, height, nvnFormat, depthOnly), -1 = any,
+//   - by tag: call nvnHostSetNextTextureTag(tag) right before the allocation and nvnHostAddScaleExemptionTag(tag) once,
+//   - by guest call site (built in): the Evaluation depth target, created from main+0x5c3d38 ("Evaluation DepthStencil"), is
+//     found in the guest frame-pointer chain of its TextureInitialize call (nvnHostSetGuestFrame, set by the generated bridge).
+//     nvnHostClearScaleExemptions also turns this off.
 // nvnHostGetTextureHostSize reports the Vulkan image size of a guest texture (0 if it is not a texture).
 NVN_HOST_EXPORT void nvnHostSetRenderScale(float scale);
 NVN_HOST_EXPORT float nvnHostGetRenderScale(void);
@@ -37,9 +39,27 @@ NVN_HOST_EXPORT void nvnHostClearScaleExemptions(void);
 NVN_HOST_EXPORT void nvnHostSetNextTextureTag(uint32_t tag);
 NVN_HOST_EXPORT void nvnHostAddScaleExemptionTag(uint32_t tag);
 NVN_HOST_EXPORT int nvnHostGetTextureHostSize(const void* guestTexture, int* width, int* height);
+// Guest frame pointer (x29) and link register (x30) of the NVN call about to run; the bridge sets it for TextureInitialize only.
+NVN_HOST_EXPORT void nvnHostSetGuestFrame(uint64_t fp, uint64_t lr);
 // Anisotropic filtering override applied at SamplerInitialize to mipmapped, non-comparison samplers (the game uses 1x).
-// 0 = off (default, original behavior); e.g. 16 forces up to 16x. Must be set before samplers are created.
+// Default 16 (host default since 2026-11-12); 0 = off (original 1x). Must be set before samplers are created. Env SNAP_ANISO=0..16.
 NVN_HOST_EXPORT void nvnHostSetAnisotropyOverride(float maxAnisotropy);
+// Anisotropy applies only to mipmapped samplers with linear min and mag filters and no depth compare; point, nearest and shadow-compare
+// samplers keep the game's value. Clamped to the device limit. Read-back: nvnHostGetAnisotropyOverride (0 = off).
+NVN_HOST_EXPORT float nvnHostGetAnisotropyOverride(void);
+// LOD bias added to the game's bias on mipmapped, non-compare samplers (set before samplers are created). Auto = -log2(output /
+// render resolution), the upscaler bias: 0 at native render scale (a 2x target already samples one mip finer), negative only when
+// the scene renders below the output size. Env: SNAP_LOD_BIAS=<float>|auto; unset = auto. At native 4K, -1 is sharper still in
+// stills (analysis/mods/compare/lod_crop_s2.png) but samples two mips finer than 1080p and may shimmer in motion; it is opt-in.
+NVN_HOST_EXPORT void nvnHostSetLodBias(float bias);
+NVN_HOST_EXPORT void nvnHostSetLodBiasAuto(int on);
+// Side of the 1024x1024 depth shadow maps (1024 = original, 2048, 4096; set before the game creates them). Independent of the render scale.
+NVN_HOST_EXPORT void nvnHostSetShadowResolution(int side);
+NVN_HOST_EXPORT int nvnHostGetShadowResolution(void);
+// Whether window (DISPLAY) textures follow the render scale (default 1). Needed for a real 4K frame: the game composes UI into them.
+NVN_HOST_EXPORT void nvnHostSetScaleDisplay(int on);
+// Environment read once at DeviceInitialize: SNAP_RENDER_SCALE, SNAP_ANISO (1..16), SNAP_LOD_BIAS, SNAP_SHADOW_RES. The output
+// (swapchain) resolution is the window size: SNAP_WINDOW_W / SNAP_WINDOW_H (host/window_opts.cpp).
 // Number of guest entry points registered in the getProcAddress table.
 NVN_HOST_EXPORT int nvnHostProcCount(void);
 // Name of the idx-th registered entry point (0 <= idx < count), for tests and coverage reports.

@@ -1,0 +1,3 @@
+# fixture: post_tutorial
+# gfx comparison route: frame-based (load independent) A mash through title, intro and yard tutorial
+repeat @f300 @f12000 120 15 A

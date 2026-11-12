@@ -38,6 +38,7 @@ struct MenuState {
   double dirty_t = 0;
   Rebind rb;
   const char* want_tab = nullptr;
+  int cur_tab = 0;               // index into kTabs of the page drawn this frame
   int reset_dev = -1;            // device whose reset is awaiting confirmation
   std::string note;              // short feedback line ("Bound A to P", "Saved")
   double note_until = 0;
@@ -224,10 +225,15 @@ void reset_button(Device d) {
 }
 
 // ---- tabs ------------------------------------------------------------------------------------------------------------
+const char* const kTabs[] = {"Bindings", "Mouse", "Controller", "Accessibility", "Audio", "Graphics", "Saves", "Test input"};
+constexpr int kTabCount = (int)(sizeof kTabs / sizeof kTabs[0]);
+
 bool begin_tab(const char* name) {
   ImGuiTabItemFlags fl = 0;
   if (S.want_tab && std::string(S.want_tab) == name) { fl = ImGuiTabItemFlags_SetSelected; S.want_tab = nullptr; }
-  return ImGui::BeginTabItem(name, nullptr, fl);
+  const bool open = ImGui::BeginTabItem(name, nullptr, fl);
+  if (open) for (int i = 0; i < kTabCount; ++i) if (std::string(kTabs[i]) == name) S.cur_tab = i;
+  return open;
 }
 
 void tab_bindings(float footer_h) {
@@ -259,7 +265,7 @@ void tab_bindings(float footer_h) {
     auto section = [&](const char* title) {
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::TextColored(t.accent_hover, "%s", title);
+      ImGui::TextColored(t.title, "%s", title);
     };
     auto row = [&](int action) {
       ImGui::TableNextRow();
@@ -343,7 +349,7 @@ void tab_controller() {
   for (int i = 0; i < 2; ++i) {
     StickMap& sm = *sticks[i].sm;
     ImGui::PushID(sticks[i].id);
-    ImGui::TextColored(theme().accent_hover, "%s", sticks[i].name);
+    ImGui::TextColored(theme().title, "%s", sticks[i].name);
     ImGui::BeginGroup();
     ch |= slider("Dead zone (inner)", "##dz", &sm.deadzone, 0.0f, 0.6f, "%.2f", "Ignores small movements near the center, which stops drift.");
     ch |= slider("Outer dead zone", "##oz", &sm.outer_deadzone, 0.5f, 1.0f, "%.2f", "Reaches full deflection before the stick hits its edge. Lower it if your stick cannot reach 100%.");
@@ -367,6 +373,7 @@ void tab_controller() {
   ch |= slider("ZR trigger threshold", "##zr", &m.zr_threshold, 0.05f, 1.0f, "%.2f", "The same for the right trigger.");
   ImGui::TextDisabled("Live triggers: ZL %.2f   ZR %.2f   (%s)", raw.lt, raw.rt, raw.pad_connected ? "controller connected" : "no controller detected");
   if (ch) apply();
+  extras_controller();
 }
 
 void tab_access() {
@@ -398,7 +405,7 @@ void tab_test() {
   RawInput raw = hub().raw();
   ImGui::Text("Controller: %s    Keyboard focus: %s", raw.pad_connected ? "connected" : "none detected", raw.focused ? "yes" : "no");
   ImGui::Spacing();
-  ImGui::TextColored(t.accent_hover, "Buttons");
+  ImGui::TextColored(t.title, "Buttons");
   static const int order[] = {kA, kB, kX, kY, kL, kR, kZL, kZR, kPlus, kMinus, kUp, kDown, kLeft, kRight, kStickL, kStickR};
   int n = 0;
   for (int b : order) {
@@ -415,7 +422,7 @@ void tab_test() {
     if (++n % 8) ImGui::SameLine();
   }
   ImGui::Spacing();
-  ImGui::TextColored(t.accent_hover, "Sticks");
+  ImGui::TextColored(t.title, "Sticks");
   ImGui::BeginGroup();
   stick_plot("l", p.lx / 32767.0f, p.ly / 32767.0f, 0, 1);
   ImGui::Text("L  %6d %6d", p.lx, p.ly);
@@ -474,10 +481,18 @@ void draw_menu(ImVec2 size, bool* want_close) {
   resolve_rebind(&esc_used);
   if (!S.rb.active && !was_rebinding && !esc_used && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) *want_close = true;
 
+  // controller: LB/RB switch pages, B closes (the same as Escape)
+  if (!S.rb.active && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive()) {
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) S.want_tab = kTabs[(S.cur_tab + kTabCount - 1) % kTabCount];
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) S.want_tab = kTabs[(S.cur_tab + 1) % kTabCount];
+    if (!esc_used && !was_rebinding && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) *want_close = true;
+  }
+
   ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), size, col(t.backdrop));
   const float scale = ImGui::GetFontSize() / t.font_px;
   const float w = std::min(size.x * t.panel_width, t.panel_max_w * scale);
   const float h = std::min(size.y * t.panel_height, 1100.0f * scale);
+  style_shadow(ImGui::GetBackgroundDrawList(), ImVec2((size.x - w) * 0.5f, (size.y - h) * 0.5f), ImVec2(w, h), t.window_round * scale);
   ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
   const ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
@@ -486,7 +501,7 @@ void draw_menu(ImVec2 size, bool* want_close) {
 
   // header
   ImGui::AlignTextToFramePadding();
-  ImGui::TextColored(t.accent_hover, "Controls and input");
+  ImGui::TextColored(t.title, "Controls and input");
   ImGui::SameLine();
   ImGui::TextDisabled("   game input is paused while this menu is open");
   const char* closeLabel = "Close  (F1)";
@@ -510,7 +525,7 @@ void draw_menu(ImVec2 size, bool* want_close) {
     ImGui::PopStyleColor();
   }
 
-  const float footer_h = ImGui::GetTextLineHeightWithSpacing() * 2.2f;
+  const float footer_h = ImGui::GetTextLineHeightWithSpacing() * 3.4f;
   if (ImGui::BeginTabBar("tabs", ImGuiTabBarFlags_None)) {
     if (begin_tab("Bindings")) { tab_bindings(footer_h); ImGui::EndTabItem(); }
     if (begin_tab("Mouse")) {
@@ -525,6 +540,26 @@ void draw_menu(ImVec2 size, bool* want_close) {
     }
     if (begin_tab("Accessibility")) {
       if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_access();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("Audio")) {
+      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_audio();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("Graphics")) {
+      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_graphics();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("Gallery")) {
+      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_gallery();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("Saves")) {
+      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_saves();
       ImGui::EndChild();
       ImGui::EndTabItem();
     }
@@ -552,6 +587,7 @@ void draw_menu(ImVec2 size, bool* want_close) {
   float tw = ImGui::CalcTextSize(right.c_str()).x;
   ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - tw - ImGui::GetStyle().WindowPadding.x));
   ImGui::TextDisabled("%s", right.c_str());
+  style_footer_prompts(true, true);
   ImGui::End();
 }
 

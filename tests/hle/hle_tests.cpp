@@ -7,7 +7,9 @@
 //   input : binding resolution, slot editing, input.json round trip / migration / invalid fallback, capture, toggle, suppression
 //   misc  : registry, account, oe, settings, time, album PNG, unimplemented backstop
 // Usage: hle_tests [project_root]   (default: three levels above this file)
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -24,9 +26,13 @@
 #include "../../runtime/hle/hle.h"
 #include "../../runtime/hle/hle_config.h"
 #include "../../runtime/hle/input_core.h"
+#include "../../runtime/hle/profiles.h"
+#include "../../runtime/hle/settings.h"
 
 namespace stdfs = std::filesystem;
 using namespace hle;
+namespace nvn { int g_presentCount = 0; }   // input_core.cpp reads the nvn frame clock; the renderer is not linked into this test
+
 
 // ---- tiny test framework
 static int g_checks = 0, g_failed = 0;
@@ -1210,6 +1216,262 @@ static void test_services() {
   fatal_hook = nullptr;
 }
 
+
+// ---- save profiles
+static std::string read_via_fs(const std::string& save_root, const std::string& path) {
+  fs::Fs f;
+  f.set_save_root(save_root);
+  if (f.mount_save("savedata", kUid) != 0u) return "<mount failed>";
+  std::string body;
+  if (!get(f, "savedata:/" + path, &body)) body = "<missing>";
+  f.unmount("savedata");
+  return body;
+}
+static void write_via_fs(const std::string& save_root, const std::string& path, const std::string& text, bool create) {
+  fs::Fs f;
+  f.set_save_root(save_root);
+  f.mount_save("savedata", kUid);
+  if (create) f.create_file("savedata:/" + path, 64);
+  put(f, "savedata:/" + path, text);
+  f.commit("savedata");
+  f.unmount("savedata");
+}
+
+static int g_picked_count = 0;
+static int pick_new(const hle::profiles::PickItem*, int n) { g_picked_count = n; return n; }   // "New profile"
+static int pick_first(const hle::profiles::PickItem*, int n) { g_picked_count = n; return 0; }
+
+static void test_profiles() {
+  g_test = "profiles";
+  namespace pr = hle::profiles;
+  stdfs::path base = g_tmp / "profiles";
+  std::string err;
+
+  // --- migration of the old single save: copy, verify, rename, never delete
+  stdfs::path legacy = base / "legacy_save";
+  write_via_fs(legacy.string(), "0000000100000002", "legacy progress", true);
+  stdfs::path root = base / "profiles";
+  {
+    pr::Store s(root.string());
+    CHECK(s.load());
+    CHECK(s.list().empty());
+    CHECK(s.migrate_legacy(legacy.string(), &err));
+    CHECK_EQ((int)s.list().size(), 1);
+    CHECK(s.list()[0].name == "Profile 1");
+    CHECK(read_via_fs(s.save_dir(s.list()[0].id), "0000000100000002") == "legacy progress");
+    CHECK(!stdfs::exists(legacy));                       // renamed away ...
+    int migrated = 0;
+    for (auto& e : stdfs::directory_iterator(base)) if (e.path().filename().string().rfind("legacy_save.migrated-", 0) == 0) ++migrated;
+    CHECK_EQ(migrated, 1);                               // ... but kept
+  }
+  // --- persistence, create, rename, name rules
+  pr::Store s(root.string());
+  CHECK(s.load());
+  CHECK_EQ((int)s.list().size(), 1);
+  std::string p1 = s.list()[0].id;
+  std::string p2 = s.create("Second", &err);
+  CHECK(!p2.empty());
+  CHECK(s.create("second", &err).empty());               // duplicate, case-insensitive
+  CHECK(s.create("  ", &err).empty());
+  CHECK(s.create("_trash", &err).empty());
+  CHECK(!s.rename(p2, "Profile 1", &err));
+  CHECK(s.rename(p2, "Photo run", &err));
+  { pr::Store again(root.string()); CHECK(again.load()); CHECK_EQ((int)again.list().size(), 2); CHECK(again.find("photo run") != nullptr); }
+  CHECK(s.next_free_name() == "Profile 2");
+
+  // --- duplicate copies one consistent generation; later changes to the source do not leak into the copy
+  write_via_fs(s.save_dir(p1), "0000000100000002", "newer progress", false);
+  std::string p3 = s.duplicate(p1, "Profile 1 copy", &err);
+  CHECK(!p3.empty());
+  CHECK(read_via_fs(s.save_dir(p3), "0000000100000002") == "newer progress");
+  write_via_fs(s.save_dir(p1), "0000000100000002", "even newer", false);
+  CHECK(read_via_fs(s.save_dir(p3), "0000000100000002") == "newer progress");
+  CHECK(read_via_fs(s.save_dir(p1), "0000000100000002") == "even newer");
+  // a save with a torn pointer file still imports and mounts (the layer repairs it from the newest complete generation)
+  {
+    stdfs::path torn = base / "torn";
+    write_via_fs(torn.string(), "0000000100000002", "torn test", true);
+    for (auto& e : stdfs::recursive_directory_iterator(torn)) if (e.path().filename() == "CURRENT") { std::ofstream(e.path(), std::ios::trunc) << "garbage"; }
+    std::string id = s.import_folder(torn.string(), "Torn import", &err);
+    CHECK(!id.empty());
+    CHECK(read_via_fs(s.save_dir(id), "0000000100000002") == "torn test");
+  }
+  // an import of a folder with no save fails and leaves no profile behind
+  { stdfs::create_directories(base / "empty_dir"); size_t n = s.list().size(); CHECK(s.import_folder((base / "empty_dir").string(), "Nothing", &err).empty()); CHECK_EQ(s.list().size(), n); }
+
+  // --- clear moves the save to the trash; the profile stays and is empty
+  CHECK(s.has_data(p1));
+  int64_t sz = s.size_bytes(p1);
+  CHECK(sz > 0);
+  CHECK(s.clear(p1, &err));
+  CHECK(!s.has_data(p1));
+  CHECK(s.find(p1) != nullptr);
+  auto tr = s.trash_list();
+  CHECK_EQ((int)tr.size(), 1);
+  CHECK(tr[0].kind == "clear" && tr[0].name == "Profile 1" && tr[0].size == sz);
+  CHECK(read_via_fs(s.save_dir(p1), "0000000100000002") == "<missing>");   // a cleared profile mounts fresh
+
+  // --- restore brings the data back as a new profile
+  std::string r = s.restore(tr[0].folder, &err);
+  CHECK(!r.empty());
+  CHECK(s.find(r)->name == "Profile 1 (restored)");
+  CHECK(read_via_fs(s.save_dir(r), "0000000100000002") == "even newer");
+  CHECK_EQ((int)s.trash_list().size(), 0);
+
+  // --- delete: moved to the trash, entry gone, last_used moves on
+  s.set_last_used(p3);
+  CHECK(s.remove(p3, &err));
+  CHECK(s.find(p3) == nullptr);
+  CHECK(s.last_used() != p3);
+  CHECK(!stdfs::exists(stdfs::path(s.save_dir(p3)).parent_path()));
+  tr = s.trash_list();
+  CHECK_EQ((int)tr.size(), 1);
+  CHECK(tr[0].kind == "delete");
+
+  // --- the trash keeps the newest 10
+  for (int i = 0; i < 13; ++i) {
+    std::string id = s.create("tmp" + std::to_string(i), &err);
+    write_via_fs(s.save_dir(id), "0000000100000002", "x", true);
+    CHECK(s.remove(id, &err));
+  }
+  CHECK_EQ((int)s.trash_list().size(), 10);
+
+  // --- pending actions for the mounted profile are applied at the next startup, before anything mounts
+  s.queue("clear", p2);
+  write_via_fs(s.save_dir(p2), "0000000100000002", "will be cleared", true);
+  { pr::Store q(root.string()); CHECK(q.load()); CHECK(q.is_pending(p2, "clear")); }
+  CHECK(s.has_data(p2));                                 // queueing touched nothing
+  pr::Active a = pr::startup(root.string(), "", "", nullptr, false);
+  CHECK(a.on);
+  { pr::Store q(root.string()); CHECK(q.load()); CHECK(!q.is_pending(p2)); CHECK(!q.has_data(p2)); CHECK(q.find(p2) != nullptr); }
+
+  // --- startup: selection by name, picker with several profiles, "New profile" from the picker
+  g_picked_count = 0;
+  pr::Active b = pr::startup(root.string(), "", "Photo run", pick_new, false);
+  CHECK(b.on && b.name == "Photo run");
+  CHECK_EQ(g_picked_count, 0);                           // a named profile skips the picker
+  pr::Active c = pr::startup(root.string(), "", "", pick_new, false);
+  CHECK(g_picked_count >= 2);
+  CHECK(c.on && c.name.rfind("Profile ", 0) == 0);
+  pr::Active d = pr::startup(root.string(), "", "", pick_first, false);
+  CHECK(d.on);
+  pr::Active e2 = pr::startup(root.string(), "", "Brand new", nullptr, false);   // an unknown name is created
+  CHECK(e2.on && e2.name == "Brand new");
+  stdfs::path root1 = base / "single";
+  g_picked_count = -1;
+  pr::Active f1 = pr::startup(root1.string(), "", "", pick_new, false);          // one profile, no hold key: no picker
+  CHECK(f1.on && f1.name == "Profile 1");
+  CHECK_EQ(g_picked_count, -1);
+  pr::startup(root1.string(), "", "", pick_first, true);                         // hold key: the picker is shown
+  CHECK_EQ(g_picked_count, 1);
+
+  // --- an invalid profiles.json is kept aside and the profiles are rebuilt from their folders
+  { std::ofstream(root / "profiles.json", std::ios::trunc) << "{ not json"; }
+  { pr::Store q(root.string()); CHECK(!q.load()); CHECK(!q.message().empty()); CHECK(stdfs::exists(root / "profiles.json.invalid")); CHECK(!q.list().empty()); }
+
+  // --- startup migrates the old save once; the second start does not migrate again
+  stdfs::path legacy2 = base / "legacy2";
+  write_via_fs(legacy2.string(), "0000000100000002", "again", true);
+  stdfs::path root2 = base / "profiles2";
+  pr::Active g1 = pr::startup(root2.string(), legacy2.string(), "", nullptr, false);
+  CHECK(g1.on && g1.name == "Profile 1" && !g1.note.empty());
+  CHECK(read_via_fs(g1.save_dir, "0000000100000002") == "again");
+  pr::Active g2 = pr::startup(root2.string(), legacy2.string(), "", nullptr, false);
+  CHECK(g2.on && g2.id == g1.id);
+
+  pr::set_active(pr::Active());
+  CHECK(!pr::active().on);
+}
+
+// ---- gyro aim, rumble and per-profile settings (fake sensor feed: the owner has no gyro controller)
+static void test_padfx() {
+  g_test = "padfx";
+  using namespace input;
+  float sx, sy;
+  gyro_to_stick(0, 0, 1.0f, false, false, &sx, &sy);
+  CHECK(sx == 0 && sy == 0);
+  gyro_to_stick(1.0f, -1.0f, 1.0f, false, false, &sx, &sy);   // inside the dead zone
+  CHECK(sx == 0 && sy == 0);
+  gyro_to_stick(-kGyroFullDegPerSec, 0, 1.0f, false, false, &sx, &sy);   // turn right at full rate: stick right, full
+  CHECK(std::fabs(sx - 1.0f) < 1e-4f && sy == 0);
+  gyro_to_stick(kGyroFullDegPerSec, 0, 1.0f, false, false, &sx, &sy);
+  CHECK(std::fabs(sx + 1.0f) < 1e-4f);
+  gyro_to_stick(0, kGyroFullDegPerSec * 0.5f, 1.0f, false, false, &sx, &sy);   // pitch up: stick up, about half
+  CHECK(sy > 0.4f && sy < 0.6f);
+  float hx, hy;
+  gyro_to_stick(0, kGyroFullDegPerSec * 0.5f, 2.0f, false, true, &hx, &hy);     // double sensitivity, inverted Y
+  CHECK(hy < 0 && std::fabs(hy + std::min(1.0f, sy * 2.0f)) < 1e-4f);
+  gyro_to_stick(-1000, 1000, 4.0f, false, false, &sx, &sy);                     // clamped
+  CHECK(sx == 1.0f && sy == 1.0f);
+
+  // through the hub: fake gyro feed moves the right stick only when enabled
+  static RawInput raw;
+  raw = RawInput{};
+  Hub h;
+  auto fb = std::make_unique<FakeBackend>(&raw);
+  FakeBackend* fbp = fb.get();
+  h.set_backend(std::move(fb));
+  h.set_mapping(Mapping::defaults());
+  auto poll = [&]() { std::this_thread::sleep_for(std::chrono::milliseconds(3)); h.poll(1); };
+  raw.pad_connected = true;
+  raw.gyro_present = true;
+  raw.gyro_y = -kGyroFullDegPerSec * 0.5f;   // turning right
+  pad_fx().gyro_on = false;
+  poll();
+  CHECK(h.pad().rx == 0);                    // off by default
+  pad_fx().gyro_on = true;
+  pad_fx().gyro_sens = 1.0f;
+  poll();
+  CHECK(h.pad().rx > kStickMax * 4 / 10 && h.pad().rx < kStickMax * 6 / 10);
+  CHECK(h.pad().ry == 0);
+  raw.gyro_present = false;                  // pad without a gyro
+  poll();
+  CHECK(h.pad().rx == 0);
+  pad_fx().gyro_on = false;
+
+  // rumble: scaled and switched off by the settings, forwarded to the backend otherwise
+  pad_fx().rumble_on = true; pad_fx().rumble_strength = 1.0f;
+  h.rumble(0.5f, 0.25f);
+  CHECK(fbp->rumble_low == 0.5f && fbp->rumble_high == 0.25f);
+  pad_fx().rumble_strength = 0.5f;
+  h.rumble(0.5f, 0.25f);
+  CHECK(std::fabs(fbp->rumble_low - 0.25f) < 1e-5f && std::fabs(fbp->rumble_high - 0.125f) < 1e-5f);
+  pad_fx().rumble_on = false;
+  h.rumble(1.0f, 1.0f);
+  CHECK(fbp->rumble_low == 0 && fbp->rumble_high == 0);
+  pad_fx().rumble_on = true; pad_fx().rumble_strength = 1.0f;
+
+  // settings: persisted per file, live values pushed to pad_fx, env vars exported at load only when unset, forgotten on restart
+  std::string f = (g_tmp / "settings_test.cfg").string();
+  stdfs::remove(f);
+  _putenv_s("SNAP_LOOK", "");
+  _putenv_s("SNAP_SSAO_QUALITY", "");
+  settings::use_path_for_test(f);
+  CHECK(!pad_fx().gyro_on.load() && pad_fx().rumble_on.load());
+  settings::set_bool("gyro_on", true);
+  settings::set_float("gyro_sens", 2.5f);
+  settings::set("look", "warm");
+  settings::set("ssao_quality", "high");
+  CHECK(pad_fx().gyro_on.load() && std::fabs(pad_fx().gyro_sens.load() - 2.5f) < 1e-4f);
+  settings::use_path_for_test(f);            // re-read from disk
+  CHECK(settings::get("look") == "warm" && settings::get_bool("gyro_on", false) && std::fabs(settings::get_float("gyro_sens", 0) - 2.5f) < 1e-3f);
+  CHECK(!std::getenv("SNAP_LOOK") || !*std::getenv("SNAP_LOOK"));   // env is exported only by load(), not while editing
+  settings::apply(true);
+  CHECK(std::getenv("SNAP_LOOK") && std::string(std::getenv("SNAP_LOOK")).rfind("warm:", 0) == 0);
+  CHECK(std::getenv("SNAP_SSAO_QUALITY") && std::string(std::getenv("SNAP_SSAO_QUALITY")) == "high");
+  settings::forget_exported_env();
+  CHECK(!std::getenv("SNAP_LOOK") || !*std::getenv("SNAP_LOOK"));
+  _putenv_s("SNAP_LOOK", "vivid:0.5");       // an env var set by hand wins
+  settings::apply(true);
+  CHECK(std::string(std::getenv("SNAP_LOOK")) == "vivid:0.5");
+  settings::forget_exported_env();
+  _putenv_s("SNAP_LOOK", "");
+  _putenv_s("SNAP_SSAO_QUALITY", "");
+  settings::set_bool("gyro_on", false);
+  settings::set_float("gyro_sens", 1.0f);
+  stdfs::remove(f);
+}
+
 int main(int argc, char** argv) {
   if (argc > 1) g_root = argv[1];
   else g_root = stdfs::path(__FILE__).parent_path().parent_path().parent_path();
@@ -1231,6 +1493,8 @@ int main(int argc, char** argv) {
       {"input.mapping", test_input_mapping},
       {"input.config", test_input_config},
       {"input.hub", test_input_hub},
+      {"profiles", test_profiles},
+      {"padfx", test_padfx},
       {"services", test_services},
   };
   int before_failed;

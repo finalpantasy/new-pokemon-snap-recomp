@@ -1,0 +1,15 @@
+# Audio tab, run 1 (run_profiles_test.ps1 -Mode audio1): set the four volumes, show the tab, read them back. Run 2 (audio2) is a fresh process on the same config folder.
+25 vol master 70
+25 vol bgm 40
+25 vol se 60
+25 vol voice 20
+26 key F1 1
+28 expect_open 1
+29 tab Audio
+32 shot build/testconfig_prof/audio_tab.bmp
+34 expect_vol master 70
+34 expect_vol bgm 40
+34 expect_vol se 60
+34 expect_vol voice 20
+36 key F1 0
+38 quit

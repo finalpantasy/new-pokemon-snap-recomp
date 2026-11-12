@@ -1,0 +1,13 @@
+# fixture: post_tutorial
+# Capture route (frame timed, load independent): mash A through title, intro cutscene and camera tutorial (a mashed A also skips photo
+# select and the evaluation) until the autosave after the tutorial. Run with -Exclusive (~9 min), then check the save with snap_save.py dump.
+# Observed: tutorial starts ~present 8000. Either stick turns the camera (the pointer stays centered); the tutorial wants the pointer on Pikachu + A.
+# So: a slow constant yaw drift and a fast A tap (period 8 presents), before that a slower A for the dialogue.
+repeat @f1500 @f8000 50 12 A
+repeat @f8000 @f60000 8 3 A
+@f8100 100000 lx=-0.22
+@f8100 100000 rx=-0.22
+# pitch: positive ly looks DOWN, ~0.18 deg per present at 0.07. Pikachu sits ~12 degrees below the pointer, so a +-16 degree sawtooth
+# (90 presents down, 90 up) sweeps the pointer across it while the yaw drift sweeps sideways; A is tapped every 8 presents.
+repeat @f8100 @f60000 180 90 ly=0.07 ry=0.07
+repeat @f8190 @f60000 180 90 ly=-0.07 ry=-0.07

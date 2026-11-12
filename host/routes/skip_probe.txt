@@ -1,0 +1,12 @@
+# fixture: new_game
+# Probe: reach the yard tutorial's Pikachu step (~p12700 under load), open the pause menu with Plus and try the "Skip the tutorial?" path.
+repeat @f1500 @f9000 50 12 A
+repeat @f9000 @f13500 60 10 A
+@f14000 10 Plus
+@f14400 10 Down
+@f14800 10 A
+@f15300 10 Up
+@f15700 10 A
+@f16200 10 Left
+@f16600 10 A
+repeat @f17200 @f40000 120 10 A

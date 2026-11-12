@@ -16,7 +16,7 @@ class NullBackend : public Backend {
   bool start(const DeviceFormat& f) override {
     fmt_ = f;
     run_.store(true);
-    core_set_device_info(false, 0, 0.0, f.channels, f.rate);
+    core_set_device_info(false, 0, 0.0, f.channels, f.rate, f.mode);
     th_ = std::thread([this] { loop(); });
     return true;
   }

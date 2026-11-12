@@ -1,0 +1,37 @@
+# fixture: new_game
+# Yard tutorial dwell scan: pitch down (ly+, 35 then +55 presents at 0.07), then yaw-left steps (10 presents at lx=-0.07) with a 150-present dwell each; A taps throughout.
+repeat @f1500 @f9000 50 12 A
+repeat @f9000 @f60000 30 4 A
+@f16000 35 ly=0.07
+@f16185 10 lx=-0.07
+@f16345 10 lx=-0.07
+@f16505 10 lx=-0.07
+@f16665 10 lx=-0.07
+@f16825 10 lx=-0.07
+@f16985 10 lx=-0.07
+@f17145 10 lx=-0.07
+@f17305 10 lx=-0.07
+@f17465 10 lx=-0.07
+@f17625 10 lx=-0.07
+@f17785 10 lx=-0.07
+@f17945 10 lx=-0.07
+@f18105 10 lx=-0.07
+@f18265 10 lx=-0.07
+@f18425 10 lx=-0.07
+@f18585 55 ly=0.07
+@f18790 10 lx=0.07
+@f18950 10 lx=0.07
+@f19110 10 lx=0.07
+@f19270 10 lx=0.07
+@f19430 10 lx=0.07
+@f19590 10 lx=0.07
+@f19750 10 lx=0.07
+@f19910 10 lx=0.07
+@f20070 10 lx=0.07
+@f20230 10 lx=0.07
+@f20390 10 lx=0.07
+@f20550 10 lx=0.07
+@f20710 10 lx=0.07
+@f20870 10 lx=0.07
+@f21030 10 lx=0.07
+# end of scan at f21190

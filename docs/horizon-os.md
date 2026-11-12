@@ -93,6 +93,7 @@ ThreadType fields:
 - **Cores and stacks.** Every guest thread is a host thread with its own `Cpu`, a 256 MiB reserved host stack (every guest BL is a host call), the guest stack it was given, and a TLR. A guest thread runs guest code only while it holds one of three virtual cores, subject to its core mask.
 - **Blocking.** A thread releases its core whenever it blocks: in a mutex, condvar, event, sleep, MultiWait, or `os_host_block_begin`. It takes a core back before returning to guest code.
 - **Free core.** A free core goes to the best waiter whose mask allows it: lowest effective priority value first, then longest ready.
+- **Core handoff (fixed 2026-11-12).** A waiter takes a free core only if it is that core's best waiter, so the best waiter of every free core must be woken after any change (core freed, waiter leaves the wait list, waiter priority or mask changes); `kick_free_cores` does this. Before the fix, a waiter that took one of two freed cores still counted as waiting while it handed on the other core's wakeup, so it woke itself and a core-pinned waiter slept forever with all cores free. That was the intermittent lab-intro hang (main thread 65, timer thread and audio thread in `run` with `waiting_core=1`, cores free). An untimed core wait now rechecks every `core_rescue_ms` (20 ms) as a safety net; any wait it ends is a missed handoff and is logged and counted in `OsStats::core_wake_rescues`, which should stay 0. The watchdog dump prints the core wait list and the waiter each free core is reserved for.
 - **Preemption** is cooperative.
   - **Request:** a ready thread that outranks a core holder sets the holder's preempt flag. So does an equal-priority thread at priority 31 once the holder has run longer than the 10 ms round-robin slice (Horizon round-robins only kernel priority 59).
   - **Where the holder yields:** at its next poll point. Poll points are `GetSystemTick`, `UnlockMutex`, `SignalEvent`, `SleepThread(0)`, `YieldThread`, every blocking call, and `os_spin_gate`/`os_poll`.
@@ -180,6 +181,7 @@ The harness's `rt_dispatch` calls `c->pc` as a host function. Thread entries and
 | multiwait | timed WaitAny timeout, WaitAny on 3 events, link order, thread holder |
 | wake order | 5 condvar waiters woken one at a time, in priority order |
 | memory+boot | VAMM, heap, TlsManager/ThreadManager members with a null `this`, available core mask |
+| core handoff | 300 rounds: cores 0 and 2 freed back to back while a better unpinned waiter sleeps; the core-0-pinned waiter must still run (hung on round 0-2 before the fix) and no wait may end by the safety net |
 | stress 10K | mutex 6x10K, Event and LightEvent ping-pong 10K, Semaphore 10K, condvar 10K, RW lock, Barrier 3x1000, Sdk* types, periodic timer |
 
 **Result:** 145 checks, 0 failed, on 7 consecutive runs. One run takes about 4 s on a loaded PC.

@@ -1,0 +1,27 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Asset Studio · Local texture viewer</title><link rel="stylesheet" href="/style.css">
+<script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
+</head><body>
+<header><div class="brand"><span class="mark">◈</span> Asset Studio <small>LOCAL VIEWER</small></div><button id="reload">Refresh cache</button></header>
+<div class="workspace"><aside>
+<div class="rail-heading">Library <span id="assetCount">0 assets</span></div>
+<input id="search" type="search" placeholder="Search assets…" aria-label="Search assets">
+<select id="category" aria-label="Category"><option value="">All categories</option></select>
+<div id="assetList" aria-label="Assets"></div><div class="rail-footer">Read-only preview<br><span>Cache contract v1</span></div>
+</aside><main>
+<section id="empty" hidden><h1>Your cache is waiting</h1><p id="emptyMessage">No assets are available yet. Build the cache, then refresh.</p><code>python -E -P scripts\hd\build_cache.py ...</code></section>
+<div id="editor" hidden>
+<div class="asset-heading"><div><div id="breadcrumb"></div><h1 id="assetName"></h1></div><div class="tabs" role="tablist"><button id="modelTab" class="active" role="tab" aria-selected="true">3D model</button><button id="textureTab" role="tab" aria-selected="false">Textures <span id="textureCount"></span></button></div></div>
+<div class="toolbar">
+<label>Model A <select id="variantA"></select></label><button id="swap" title="Swap A and B">Swap A/B</button><label>Model B <select id="variantB"></select></label><span class="spacer"></span>
+<label class="check"><input type="checkbox" id="split" checked> A/B split</label><label class="check"><input type="checkbox" id="wireframe"> Wireframe</label><label>LOD <select id="lod"></select></label><button id="background">Background: dark</button><button id="frame">Frame model</button>
+</div><p id="notice" role="status" aria-live="polite"></p>
+<section id="modelPanel"><div id="viewport"><div class="view-label left" id="labelA"></div><div class="view-label right" id="labelB"></div><div id="modelDivider" class="divider" role="slider" tabindex="0" aria-label="3D split position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span>↔</span></div><p id="modelMessage"></p><div class="canvas-hint">Drag to orbit · Scroll to zoom · Right-drag to pan</div></div></section>
+<section id="texturePanel" hidden><div id="textureGrid"></div><div id="textureCompare" hidden>
+<div class="texture-tools"><button id="backToGrid">← All textures</button><strong id="textureName"></strong><span class="spacer"></span><div id="channels" aria-label="Texture channel"><button class="active" data-channel="RGB">RGB</button><button data-channel="R">R</button><button data-channel="G">G</button><button data-channel="B">B</button><button data-channel="A">A</button></div><label>Zoom <select id="zoom"><option>1</option><option>2</option><option>4</option><option>8</option><option>16</option></select>×</label><label><input type="checkbox" id="nativeB"> B at native 1:1</label><button id="resetPan">Center</button></div>
+<div id="textureViewport"><canvas id="textureCanvas"></canvas><div class="view-label left" id="texLabelA"></div><div class="view-label right" id="texLabelB"></div><div id="textureDivider" class="divider" role="slider" tabindex="0" aria-label="Texture split position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span>↔</span></div><div class="canvas-hint">Drag image to pan · Same UV region on both sides (B scaled to A)</div></div><div id="textureSizes"></div>
+</div></section><footer><span id="status">Loading…</span><span><kbd>A</kbd>/<kbd>B</kbd> swap &nbsp; <kbd>W</kbd> wireframe &nbsp; <kbd>1</kbd>–<kbd>4</kbd> variant B</span></footer>
+</div></main></div><script type="module" src="/app.js"></script></body></html>

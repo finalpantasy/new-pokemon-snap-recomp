@@ -22,6 +22,8 @@
 #include <sstream>
 
 #include "nvn_internal.h"
+#include "nvn_pipeline.h"
+#include "os/perf.h"   // SNAP_PERF instrumentation
 
 namespace nvn {
 namespace {
@@ -209,6 +211,8 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   if (!jp.parse(m)) { LogError("bad shader manifest %s", jsonPath.c_str()); return false; }
   StageProg sp;
   sp.valid = true; sp.stage = stage; snprintf(sp.key, sizeof sp.key, "%.12s", key.c_str()); sp.fragOutputMap = m.i("fragmentOutputMap");
+  snprintf(sp.fkey, sizeof sp.fkey, "%s", key.c_str());
+  PipelineRegisterStageKey(sp.key, sp.fkey);
   if (auto* a = m.get("cbuffers")) for (auto& c : a->arr) sp.cb.push_back({c.i("slot"), c.i("set"), c.i("binding")});
   if (auto* a = m.get("sbuffers"))
     for (auto& c : a->arr) sp.sb.push_back({c.i("slot"), c.i("set"), c.i("binding"), c.i("sbCbSlot"), c.i("sbCbOffset"), c.i("write")});
@@ -225,6 +229,11 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
     const uint32_t lx = Rd32(sd.control, 0x748), ly = Rd32(sd.control, 0x74C), lz = Rd32(sd.control, 0x750);
     if (lx && ly && lz && lx <= 1024 && ly <= 1024 && lz <= 64 && lx * ly * lz <= 1024) { SpvSetLocalSize(words, lx, ly, lz); Log("compute shader %s: local size %ux%ux%u", key.c_str(), lx, ly, lz); }
     else LogError("compute shader %s: implausible local size %u %u %u in the control section", key.c_str(), lx, ly, lz);
+  }
+  if (stage == 1 && (Rd32(sd.control, 0x718) & 1)) {   // layout(early_fragment_tests): see SpvAddEarlyFragmentTests
+    if (SpvAddEarlyFragmentTests(words)) Log("fragment shader %s: early fragment tests", key.c_str());
+    std::vector<uint8_t> mark;
+    if (!ReadFile(base + ".efz", &mark)) WriteFile(base + ".efz", "1", 1);   // the cache key hashes only the data section, so the pipeline service needs this marker
   }
   SpvAddStorageImageCaps(words);   // the translator omits StorageImageRead/WriteWithoutFormat for storage images of unknown format
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -245,7 +254,47 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   return true;
 }
 
+// Rebuilds a stage object (module, reflection, no constant buffer) from the translation cache by its full key. Used by the pipeline
+// service to compile pipelines without the game having created the program. Compute stages are not supported.
+bool LoadStageFromCacheImpl(Host* h, const std::string& key, StageProg* out) {
+  std::vector<uint8_t> spv, js;
+  const std::string base = h->cacheDir + "\\" + key;
+  if (!ReadFile(base + ".spv", &spv) || !ReadFile(base + ".json", &js)) return false;
+  J m;
+  JP jp{reinterpret_cast<const char*>(js.data()), reinterpret_cast<const char*>(js.data()) + js.size()};
+  if (!jp.parse(m)) return false;
+  StageProg sp;
+  sp.stage = m.i("stage", -1);
+  if (sp.stage < 0 || sp.stage > 4) return false;
+  sp.valid = true; snprintf(sp.key, sizeof sp.key, "%.12s", key.c_str()); snprintf(sp.fkey, sizeof sp.fkey, "%s", key.c_str());
+  sp.fragOutputMap = m.i("fragmentOutputMap");
+  if (auto* a = m.get("cbuffers")) for (auto& c : a->arr) sp.cb.push_back({c.i("slot"), c.i("set"), c.i("binding")});
+  if (auto* a = m.get("sbuffers"))
+    for (auto& c : a->arr) sp.sb.push_back({c.i("slot"), c.i("set"), c.i("binding"), c.i("sbCbSlot"), c.i("sbCbOffset"), c.i("write")});
+  auto readTex = [](const J* a, std::vector<MTex>& v) {
+    if (!a) return;
+    for (auto& c : a->arr)
+      v.push_back({c.i("set"), c.i("binding"), c.i("handleIndex"), c.i("cbufSlot", -1), c.i("type"), std::max(c.i("array", 1), 1), c.i("separate")});
+  };
+  readTex(m.get("textures"), sp.tex);
+  readTex(m.get("images"), sp.img);
+  std::vector<uint32_t> words(spv.size() / 4);
+  memcpy(words.data(), spv.data(), words.size() * 4);
+  { std::vector<uint8_t> mark; if (sp.stage == 1 && ReadFile(base + ".efz", &mark)) SpvAddEarlyFragmentTests(words); }
+  SpvAddStorageImageCaps(words);
+  VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+  ci.codeSize = words.size() * 4; ci.pCode = words.data();
+  if (vkCreateShaderModule(h->device, &ci, nullptr, &sp.mod) != VK_SUCCESS) return false;
+  if (sp.stage == 0) sp.inputMask = SpvVertexInputMask(words);
+  if (sp.stage == 1) { sp.spv = words; sp.outLocs = SpvFragmentOutputs(words); }
+  *out = std::move(sp);
+  return true;
+}
+
 }  // namespace
+
+bool LoadStageFromCache(Host* h, const std::string& fullKey, StageProg* out) { return LoadStageFromCacheImpl(h, fullKey, out); }
+const char* TranslatorVersion() { return kTranslatorSalt; }
 
 bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem, void** mapped) {
   VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -292,6 +341,7 @@ void ProgramDestroy(ProgramImpl* p) {
 // buffers stage*16 + n; set 2 = combined image samplers stage*32 + n; set 3 = storage images stage*8 + n.
 bool ProgramSetShadersImpl(ProgramImpl* p, int n, const ShaderData* sd) {
   Host* h = p->host;
+  snap_perf::Scope perfShader(snap_perf::C_SHADER); snap_perf::count(snap_perf::V_SHADERS);
   ProgramDestroy(p);
   if (n < 1 || n > 6 || !sd) return false;
   for (int i = 0; i < n; i++) {

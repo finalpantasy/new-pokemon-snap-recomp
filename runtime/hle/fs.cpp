@@ -16,6 +16,12 @@
 #include "hle.h"
 #include "hle_config.h"
 
+// Taps for the DRP entry mod loader (runtime/mods/mods.cpp installs them only when mod packs exist): it learns which archive
+// a read buffer came from. Null otherwise.
+void (*g_snap_fs_tap_open)(uint64_t id, const char* path) = nullptr;
+void (*g_snap_fs_tap_close)(uint64_t id) = nullptr;
+void (*g_snap_fs_tap_read)(uint64_t id, const void* buf, size_t n) = nullptr;
+
 namespace hle {
 namespace {
 
@@ -70,20 +76,24 @@ void fs_delete_file(Cpu* c) { ret(c, instance().delete_file(cstr(arg(c, 0)))); }
 
 void fs_open_file(Cpu* c) {  // Result OpenFile(FileHandle* out, const char* path, int mode)
   fs::FileId id = 0;
-  uint32_t rc = instance().open_file(&id, cstr(arg(c, 1)), (int)arg32(c, 2));
-  if (!rc) store<uint64_t>(ptr<void>(arg(c, 0)), id);
+  std::string path = cstr(arg(c, 1));
+  uint32_t rc = instance().open_file(&id, path, (int)arg32(c, 2));
+  if (!rc) { store<uint64_t>(ptr<void>(arg(c, 0)), id); if (g_snap_fs_tap_open) g_snap_fs_tap_open(id, path.c_str()); }
   ret(c, rc);
 }
-void fs_close_file(Cpu* c) { instance().close_file(arg(c, 0)); ret(c, 0); }  // void CloseFile(FileHandle)
+void fs_close_file(Cpu* c) { if (g_snap_fs_tap_close) g_snap_fs_tap_close(arg(c, 0)); instance().close_file(arg(c, 0)); ret(c, 0); }  // void CloseFile(FileHandle)
 
 void fs_read_file(Cpu* c) {  // Result ReadFile(FileHandle, long offset, void* buf, size_t size): strict
+  if (g_snap_fs_tap_read) g_snap_fs_tap_read(arg(c, 0), ptr<void>(arg(c, 2)), arg(c, 3));
   ret(c, instance().read_file(arg(c, 0), (int64_t)arg(c, 1), ptr<void>(arg(c, 2)), arg(c, 3), nullptr));
 }
 void fs_read_file_opt(Cpu* c) {  // Result ReadFile(FileHandle, long, void*, size_t, const ReadOption&)
+  if (g_snap_fs_tap_read) g_snap_fs_tap_read(arg(c, 0), ptr<void>(arg(c, 2)), arg(c, 3));
   ret(c, instance().read_file(arg(c, 0), (int64_t)arg(c, 1), ptr<void>(arg(c, 2)), arg(c, 3), nullptr));
 }
 void fs_read_file_out(Cpu* c) {  // Result ReadFile(size_t* out, FileHandle, long, void*, size_t)
   size_t got = 0;
+  if (g_snap_fs_tap_read) g_snap_fs_tap_read(arg(c, 1), ptr<void>(arg(c, 3)), arg(c, 4));
   uint32_t rc = instance().read_file(arg(c, 1), (int64_t)arg(c, 2), ptr<void>(arg(c, 3)), arg(c, 4), &got);
   if (!rc && arg(c, 0)) store<uint64_t>(ptr<void>(arg(c, 0)), got);
   ret(c, rc);

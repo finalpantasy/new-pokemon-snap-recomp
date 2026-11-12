@@ -13,10 +13,13 @@ void core_mix(float* dst, uint32_t frames);
 // Device or timer changed: called by the backend thread; signals the guest notification event.
 void core_notify_device_change();
 // Stats written by backends.
-void core_set_device_info(bool attached, uint32_t bufferFrames, double latencyMs, uint32_t channels, uint32_t rate);
+void core_set_device_info(bool attached, uint32_t bufferFrames, double latencyMs, uint32_t channels, uint32_t rate, int mode);
 
 // Parameters the backend opens its stream with.
-struct DeviceFormat { uint32_t rate; uint32_t channels; uint32_t bufferMs; };
+// mode = SnapAudioOutputMode. channels = core mix channels: 2 stereo, 6 or 8 speakers, 6 for the spatial bed
+// (FL FR FC LFE BL BR). A backend that has to fall back reports the new channel count and mode through
+// core_set_device_info.
+struct DeviceFormat { uint32_t rate; uint32_t channels; uint32_t bufferMs; int mode; };
 
 class Backend {
  public:
@@ -26,6 +29,8 @@ class Backend {
   virtual int kind() const = 0;                     // SnapAudioBackend
   // Channel count of the current default device mix format (2 when unknown).
   virtual uint32_t native_channels() { return 2; }
+  // 1 if the default device can render the spatial bed (probe only, nothing is started).
+  virtual int spatial_available() { return 0; }
 };
 
 Backend* make_null_backend();

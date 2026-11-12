@@ -1,0 +1,3 @@
+# fixture: post_tutorial
+# Boot probe for a save fixture: slow A taps (every 120 presents) get past the title screen and the save-load prompts.
+repeat @f300 @f30000 120 8 A

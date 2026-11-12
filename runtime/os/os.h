@@ -81,6 +81,7 @@ typedef struct OsStats {
     uint64_t lock_contended, cv_waits, core_waits, preempt_requests, preempt_yields, overflow_grants;
     uint64_t pi_boosts, fiber_switches, spin_yields;
     int max_cores_in_use;
+    uint64_t core_wake_rescues;   // core waits ended by the safety-net timeout instead of a handoff (a lost wakeup; should stay 0)
 } OsStats;
 void os_get_stats(OsStats *out);
 

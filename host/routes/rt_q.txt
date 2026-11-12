@@ -1,0 +1,8 @@
+# fixture: post_tutorial
+# Florio photo route: mash A through intro; in the yard tutorial scan the pointer with ly pulses (+ = down, net upward bias so it cycles) and lx sweeps.
+repeat @f1500 @f8000 50 12 A
+repeat @f8000 @f60000 8 3 A
+repeat @f8100 @f60000 220 60 ly=0.1
+repeat @f8160 @f60000 220 100 ly=-0.1
+repeat @f8100 @f60000 500 250 lx=-0.3
+repeat @f8350 @f60000 500 250 lx=0.3

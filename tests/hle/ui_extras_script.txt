@@ -1,0 +1,11 @@
+# F1 screenshots of the Graphics, Controller and Gallery tabs (SNAP_UI_TEST). Output analysis/ui/f1_*.bmp
+25 key F1 1
+28 expect_open 1
+29 tab Graphics
+32 shot analysis/ui/f1_graphics.bmp
+33 tab Controller
+36 shot analysis/ui/f1_controller.bmp
+37 tab Gallery
+40 shot analysis/ui/f1_gallery.bmp
+42 key F1 0
+44 quit

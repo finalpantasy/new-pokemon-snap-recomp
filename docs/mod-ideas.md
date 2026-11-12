@@ -1,0 +1,159 @@
+# Mod ideas for the personal PC recomp (research, 2026-11-11)
+
+Read-only research. Nothing here was run or built. Every row cites where it lives in our data, and every claim is tagged with the source it comes from. Where a field or function is not identified, the row says so and is marked TRACE (needs a dynamic trace or a data diff before building).
+
+## Legend
+
+- **Mechanism:** (a) loose-file DRP override, (b) host override of a lifted function by address, (c) renderer hook, (d) F1 ImGui overlay.
+- **F** = feasibility 1-5. **I** = impact to the owner 1-5. **Score** = F x I.
+- **Risk** = risk to photo scoring (S) and saves (V): none / low / med / high.
+- **Hours** = rough effort to a tested build, assuming the loose-file loader (a) exists and the game plays a course.
+- **TRACE** = a dynamic trace or a before/after data diff is needed first.
+- Addresses are module offsets in `main` (base 0), as in `analysis/enhancements/knobs.md`. String offsets are from `work/v262144-main.strings-offsets.tsv`.
+
+## Already in the game or already built (do not rebuild)
+
+| Item | Evidence |
+|---|---|
+| Camera speed, pointer speed, invert (vertical/horizontal/both, per stick), zoom Hold or Toggle, Burst Mode, Turbo Mode, Nav-Com frequency, motion-control sensitivity | `Option_UI.msbt` (en) text; strings `CursorSpeed_01..08` (e.g. `0xae8b48`), `GyroSensitivity_01..10` (`0xafb134` area) |
+| Retry menu and photo-submit skip | `RetryMenu_UI.msbt`; `PauseMenu_UI.msbt` text "You can also skip the..." (sentence is truncated in the text, so what is skipped is unconfirmed); strings `Tutorial_SkipWarning` `0xaff697`, `PhotoSubmit_SkipWarning` `0xb05484` |
+| Mouse look, sensitivity, invert, hold-or-toggle for ZL/ZR, UI scale, remapping | `host/README.md`, "Controls menu (F1)" |
+| Intro skip for tests | `host\play.ps1 -SkipIntro`, `host/skip_intro.txt` |
+| Texture dump, draw log | `NVN_TEX_DUMP`, `NVN_DRAW_LOG` (AGENTS.md, "First UI") |
+| Asset viewer and before/after texture preview | `docs/hd-assets.md`, `tools-src/asset_viewer/` |
+
+## All ideas, sorted by F x I
+
+| # | Idea | Mech | F | I | Score | Risk (S / V) | Hours | TRACE | Evidence (where it lives) | Depends on |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | Anisotropic filtering 16x | c | 5 | 4 | 20 | none / none | 2 | no | Sampler builder `0x9216d0` (aniso desc+0x34 read `0x9217a8`, set `0x9217d8`); hook `nvnHostSetAnisotropyOverride` in `runtime/nvn/nvn_host.h` (untested per AGENTS.md); game uses 1x | F1 setting **Status 2026-11-12:** DONE, default ON at 16x (`SNAP_ANISO=0` or 1 restores 1x; skips point, nearest and compare samplers). Deck planks that smear at 1x stay visible at 16x (`analysis/mods/compare/aniso_floor_zoom.png`, `aniso_deck_crop.png`); DOF-blurred ground shows little change (`aniso_ground_crop.png`); no fps cost seen (60 fps median, GPU under 1 ms). |
+| 2 | Unlock all courses and all time-of-day variants | a / save tool | 4 | 4 | 16 | none / med | 4 | no (in-game test) | 30 routes in `RouteData` (`rtd.fbs`: `route_id`, `level_pack`, `time_of_day` 1/2/3 = A/B/C). Save file 11 byte `route-1` 0/1/2 (`analysis/save/fields.md`, read side High); fixtures `build\fixtures\saves\unlock_all` and `unlock_routes` (not yet tested in game) | `scripts/snap_save.py`; a working save |
+| 3 | Sampler LOD bias for the native-res look | c | 5 | 3 | 15 | none / none | 2 | no | Bias at desc+0x30, read `0x921858`, clamp +-31.996 at `0x921874`; `runtime/nvn/nvn_internal.h:72` sampler struct has `lodBias`; no hook exists yet, only the field | #4 (use with render scale) **Status 2026-11-12:** implemented (`SNAP_LOD_BIAS=<f>|auto`, unset = auto). Auto is now the upscaler bias -log2(output/render), so 0 at native render scale: a 2x target already samples one mip finer, and the old auto (-1 at 2x) sampled two mips finer than 1080p. At 4K, -1 looks crisper in stills (`compare/lod_crop_s2.png`, `lod_full_s2.png`) but may shimmer in motion (not tested), so it is opt-in. |
+| 4 | Render scale and 4K | c | 3 | 5 | 15 | med / none | 8 | partly | `nvnHostSetRenderScale` plus scale exemptions (`nvn_host.h`); targets are fixed immediates: scene and SSAO 1920x1080 in `0x5bd940`, 960x540 chain, bloom 192x108 (`0x5c23a0`); built-in exemption for the 1920-wide Evaluation depth target (`0x5c3d38`); handheld vs docked output `0x5d4b24`, `0x5d4fe0` (host reports docked) | hooks untested; present blit (`docs/nvn-vulkan-design.md`) **Status 2026-11-12:** WORKS at 2x / 3840x2160 (`SNAP_RENDER_SCALE=2 SNAP_WINDOW_W=3840 SNAP_WINDOW_H=2160`): no device loss, 0 validation errors and 0 warnings over 4,800 presents. Two fixes: the Evaluation depth is tagged by guest call site (`main+0x5c3d3c` in the TextureInitialize frame chain) instead of the 1920-wide depth signature that also caught the main depth, and viewports/scissors are re-scaled when the render-target scale changes (foliage drew into the top-left quarter: `compare/scale2_before_viewport_fix.png`). Shots: `compare/scale_lab_full.png`, `scale_lab_tree.png`, `scale_detail_A.png`, `scale_full_A/B.png`. Perf (exclusive, busy PC, before the viewport fix): 60 fps median (16.68 ms), 47.6 avg, GPU busy median 2.91 ms vs 1.95 ms at 1x. Open: photo-score parity at 2x untested; a faint grid pattern shows in DOF-blurred backgrounds at 4K. |
+| 5 | HD texture pack (Real-ESRGAN class upscales) | a | 3 | 4 | 12 | none / none | 16 | no | 28,369 `nutexb`, no streaming (knobs.md section 3); `scripts/hd/` pipeline, `docs/hd-assets.md` phase 2; owner direction: textures only, faithful look | nutexb encoder (BC7/BC1/BC5 + mips + block-linear); loader (a) |
+| 6 | Clean-photo HUD toggle | b + d | 3 | 4 | 12 | med / none | 8 | yes | Pass `UI` is a graph node (create site `0x5c8d0c`, `render_passes_final.tsv`); execute loop `0x988fe0` runs enabled passes only; enable setters `0x5cc0a0`, `0x5cd4a0`, `0x5cd5c0`, `0x5cd6e0`. Unknown: which pass node field is the enable flag, and whether in-game UI (viewfinder, film counter) all draws in `UI` | pass object layout |
+| 7 | Per-pass toggles in F1 (film grain, chromatic aberration, monotone, DOF, SSAO, FXAA, bloom off) | b + d | 4 | 3 | 12 | med / none | 8 | partly | 37 pass nodes in `0x5bd940` incl. `FilmGrain` `0x5c7918`, `ChromaticAberration` `0x5c6ddc`, `Monotone` `0x5c7c14`, `DOF` `0x5c5914`, `SSAOCreate..Composite` `0x5bed60..0x5bf81c`, `BloomCreate/Draw`; `[ctx+0xcec]` handheld/docked variant flag | same as #6; Capture3D and Evaluation must never be toggled **Update 2026-11-11:** per-frame pass loop `0x988fe0` walks 32-byte entries at `[ctx+0x1b8..0x1c0)`, `[entry+8]` = pass object, enable byte `+0xf0` (copied to `+0xf1`, execute through vtable `+0x28` only if set); setters `0x5cc0a0/0x5cd4a0/...` write byte `+0x60` of the effect nodes. `0x5cd800` (the call after the names `FilmGrain`, `ChromaticAberration`, `DOF`) is a shader-parameter binder, not a pass factory. `SNAP_PASS_DUMP=1` / `SNAP_PASS_OFF=` in `host/mods/gamemods.cpp` identify and disable passes (see AGENTS.md). Color looks: `SNAP_LOOK=warm:0.6` in `host/mods/look.cpp`, needs the present hook in `analysis/mods/nvn_hook_requests.md`. |
+| 8 | Golden or recolored Pokemon (e.g. golden Pikachu), always-on | a | 4 | 3 | 12 | none / none | 3 | no | `CH_025.drp` holds `CH_025_00_0_A00_Body_dif.nutexb`, `..._Eye_dif`, `..._Body_par` (checked on disk); form textures `_A00.._A19` | texture loader (a); nutexb encoder (shared with #5) |
+| 9 | Shadow map size 2048/4096 | c | 3 | 3 | 9 | low / none | 6 | partly | Dynamic shadow: one 1024x1024 depth target, format id `0x144`, `0x5b8b10(w=0x400,h=0x400)` at `0x5bdd34`; static: three 1024x1024 maps `0x4d12a8` (loop `0x4d1310`). Baked: 4,578 `Shadow.nutexb` (not affected). Shadow cbuffer texel size must follow (not verified) | resolve texel-size cbuffer; scale exemption logic **Status 2026-11-12:** works (`SNAP_SHADOW_RES=2048`): the dynamic map (`main+0x5bdd38`) and the three static maps (`0x4d12c0`) are 2048² (`SNAP_SCALE_LOG`); shadows sit in the same place and character shadows show finer shapes (`compare/shadow_zoom.png`, `shadow_full.png`). GPU busy median 2.37 ms vs 1.95 ms; fps in that run was CPU-bound noise. Texel-size constants were not read; filtering looks normal. |
+| 10 | Fog and atmosphere distance (pop-in mask) | a | 3 | 3 | 9 | low-med / none | 6 | no (value layout) | ENV `levelb` keys `atmosphericStartingDistance`, `horizontalAtmosphericDistance`, `verticalAtmosphericDistance`, `fogUnevenness` stored as `crc32(name)`; their CRC32 bytes are present in 33 of 33 `LV_ENV_*.levelb` on disk (checked). Readers `0x2c8470`, `0x5d6860` (`0x5d93bc`, `0x5d9450`, `0x5d96c4`). `levelb` round-trips byte-identical (335/335) | `levelb` writer (`scripts/fb_roundtrip.py`); value-slot decode |
+| 11 | Research-level thresholds (faster or slower level-ups) | a | 5 | 2 | 10 | none / low | 2 | no | `ResearchPoint.mdrp` (`mdrp.fbs`: `route_id`, `thresholds` = 4 x u32, e.g. 0 / 40,000 / 110,000 / 200,000); level derived at read time at `0x5e0b10` (`analysis/save/fields.md`, High) | loader (a) |
+| 12 | Free camera or photo mode | b + d | 2 | 5 | 10 | high / none | 24 | yes | Camera component ctor `0x8953b0` registers `Visibility` `0x895a88`, `NearClip` `0x895c0c`, `FarClip` `0x895cc4`; camera matrices and the per-frame camera update were not located. Scoring uses the Evaluation pass, so a detached camera would score nothing meaningful | camera matrix location; pause hook |
+| 13 | Spawn randomizer (shuffle species per placement) | a | 2 | 4 | 8 | med / low | 20 | yes | `LV_MAP_*.levelb` placements hold strings `CH_nnn...`, `SK_CH_nnn_FF_0_Axx`, `%CharacterComposites%/Pokemon/NNN/CH_NNN_animaion.drl` (checked in `LC_001_A`: 101 distinct strings). Courses carry their own per-instance packs (`CH_001_Bippadam1.*` inside `LC_001_A.drp`). Unknown: whether a species pack not in the course archive can load; levelb component fields are unnamed | `levelb` writer; loader must add DRP entries |
+| 14 | NEO-ONE speed control | b | 2 | 4 | 8 | med / none | 12 | yes | No speed or rail-velocity string or field found (grep of strings and schemas). Rails are RouteData-driven but speed source unknown | trace |
+| 15 | Debug overlay: draw and pass stats, per-frame pass list | d | 4 | 2 | 8 | none / none | 6 | no | `NVN_DRAW_LOG`; pass names from `render_passes_final.tsv`; `nvnHostSetHooks` observers (`nvn_host.h`) | F1 menu exists |
+| 16 | Higher-quality SSAO (more samples, full-res) | b / c | 2 | 3 | 6 | low / none | 10 | yes | Setup `0x5a0e70`; kernel generated by an mt19937 loop `0x5a6200..0x5a6560`; sample count is a cbuffer value (not recovered); SSAO targets 1920x1080 (`0x5bed18`, `0x5bf1f4`) follow render scale automatically if not exempted | trace for sample count **Traced 2026-11-11 (Ghidra + shader source):** SimpleAO/Hemisphere/Alchemy cbuffer = {noiseScale, clipRange, `kernelSize` u32 @+16, `kernelRadius` @+20, `strength` @+24}; the loop bound is the cbuffer value, not baked in. Pass object (ctor `0x5a1cc0`): `+0x17c` kernelSize (default 0x20, immediate at `0x5a1d20`), `+0x180` radius 0.2, `+0x184` strength 1.0, `+0x174/0x178` clipRange 0.005/0.05, `+0x188` hemisphere flag; execute `0x5a5970` builds the cbuffer at `0x5a6c88`. The kernel buffer is always generated with >= 0x200 (512) entries (random scale, not index-based), so any count up to 512 is safe. HBAO (vtable `0xc875c8`, execute `0x5a7880`): cbuffer `numDirections`@0 `numSamples`@4 (+ radius, bias, strength, fade), pass `+0x174/+0x178` copied each frame from preset tables `0xb15c40` (8 directions x 32 samples) and `0xb15ca0` (8 x 32) at `0x5a79b0`; override site `0x5a7bac`. SSAO targets are already full 1920x1080 (not half-res), noise scale = target/4. Implemented: `SNAP_SSAO_QUALITY=default\|high\|ultra`, `SNAP_SSAO_SAMPLES`, `SNAP_SSAO_HBAO=dirs,samples` (`host/mods/gamemods.cpp`, hooks in `recomp/snap_gen.py`). Which variant is live per mode: see `SNAP_GM_TRACE=1`. |
+| 17 | Skip evaluation animations | b | 2 | 3 | 6 | high / low | 12 | yes | Pass `Report` `0x5c881c`, `Evaluation` `0x5c3a0c`; UI strings `Result_Illumina2..6NoSnap` (`0xafd368` area). The state machine driving the result screens is in Lua or lifted UI code that was not located | trace |
+| 18 | Skip cutscenes and dialogue | b / a | 2 | 3 | 6 | none / low | 12 | yes | `CutScene.drp` (100 `cutb`, 98 of 100 round-trip), `Skit.drp`, `SequenceData` `navb` (137 + 273 voice lines, ids are hashes, M/L confidence). Skip handler address not found | trace; cutb known gap (2 files) |
+| 19 | Photo-score breakdown overlay | d | 2 | 3 | 6 | none / none | 16 | yes | Pause-menu help text names score criteria (timing, size, direction, placement, background); strings `photoscore_s2`, `photoscore_s3` (`0xae875f` area). Score values are produced by the GPU-driven Evaluation pass (`EvaluationSphere/Aggregate/CopyDepth` in `0x635fa0`); where the result lands in memory is unknown | trace; Evaluation readback **Static dead end 2026-11-11:** `0x635fa0` is a `resource.path` loader for the evaluation resources, not the scorer; `photoscore_s2/s3` and `Evaluation_Evaluation_ScoreLow_Num` are UI animation names (`0x64f454`, `0x6e05b0`), `0x5e0b10` is a generic accessor with ~80 callers (not the score writer). Research entries' 4 x u16 are most likely best points per star rank. Needs a course run with photos: trace with `SNAP_TRACE_LOD=1 SNAP_TRACE_LOD_FN=...` (host/mods/lodanim.cpp) on the callers of the album/research writer. Not implemented. |
+| 20 | Illumina Orb any time or on any course | b / save | 2 | 3 | 6 | med / med | 12 | yes | Strings `lb_Illumina` `0xb029a7`, `Result_Illumina*NoSnap`, `NoIlluminaBoss/Flower` help text; per-course gating logic not found. Save scenario flag `9:0:0x3b58` bit meanings unknown (Medium) | trace; save diff |
+| 21 | Photo-score multiplier | b | 2 | 3 | 6 | high / med | 12 | yes | No scoring table among registries (`analysis/registries/README.md`, Unknowns). Research entries hold 4 x u16 scores per entry (`analysis/save/fields.md`), but entry ids are Low confidence | trace; save diff after a scored run |
+| 22 | More film or photo slots per run | b / a | 1 | 3 | 3 | none / med | 12 | yes | UI strings `NumberOfPhotos` `0xaeb157`, `show_num_photo`, `PhotoNumFew/Normal`; the limit constant and the album capacity were not found. Album and save size limits unknown | trace; save format check |
+| 23 | Swap Pokemon between courses | a | 2 | 3 | 6 | med / med | 16 | yes | Same as #13, plus `MissionData.route_id` and `pokemon_record_id` (`misd.fbs`, H/M) would need to follow | #13 |
+| 24 | Rare-variant or shiny spawn odds | a / b | 1 | 3 | 3 | none / none | 16 | yes | No variant or odds field identified. Forms exist (`form_index` 0..19, `A00..A19` textures); placement chooses `SK_CH_nnn_FF_0_Axx` by string. A "shiny" needs a new texture (#8) and a placement edit (#13) | #8, #13 |
+| 25 | More Pokemon per course | a | 1 | 3 | 3 | med / low | 24 | yes | Placement entities in `LV_MAP_*.levelb`; clone-an-entity feasible in principle (levelb round trip is byte-identical), but component fields are unnamed and Lua behavior wiring per instance is unknown | `levelb` writer |
+| 26 | Remove the 30 Hz distant-animation limit | b | 1 | 3 | 3 | none / none | 16 | yes | Not found statically (knobs.md): no skip-frame or update-rate strings; Lua ruled out (482 `.luo` strings have no rate/LOD/distance names); engine code. Trace tool built (2026-11-12): `SNAP_TRACE_LOD=1` even/odd-frame entry profile of every main function (`host/mods/lodanim.cpp`, frame marker `0x988fe0`); address NOT yet confirmed, no run slot was free (`SNAP_FULL_RATE_ANIM` not implemented) 2026-11-12 runs (`analysis/mods/fn_parity_boot.tsv`, `fn_parity_tut.tsv`, `fn_parity_tut2.tsv`, runs `1-20261112_034423`, `2-20261112_044540`): the frame marker `0x988fe0` runs once per present; no function shows a clean 30 Hz even/odd split in the lab yard or tutorial (the 2:1 even/odd rows at `0x877970-0x89e4a0` are bursts of a few calls per 200 frames, `0x2b75f0` has a 6-frame cycle `141222`). No distant Pokemon are on screen in any scene a route reaches (no route passes the tutorial), so the rate site is STILL UNCONFIRMED and `SNAP_FULL_RATE_ANIM` is not implemented. Needs a course run (`SNAP_TRACE_LOD_FROM` in a course, `SNAP_TRACE_LOD_SEQ=addr,..` prints per-frame entry counts). | trace |
+| 27 | Longer draw distance and model LOD bias | a / b | 1 | 3 | 3 | med / none | 16 | yes | LOD names built at `0x342700`; 2,794 mesh sets with `_LOD1/_LOD2`; switch distance and `FarClip` default not found (knobs.md items 11-12). Checked 2026-11-12: `0x342700` (sole caller `0x32e3bc`) only loads the LOD files into the mesh-set holder (`0x329f80`), it does not select; `.modelb` carries identical constants in all 308 character models (no per-model LOD distance); Pokemon bodies have `_LOD1/_LOD2` (`SK_CH_nnn_*_A00_LOD*`). Selection site and `SNAP_LOD_BIAS`/`SNAP_DRAW_DISTANCE` not implemented 2026-11-12: no LOD selection site found (no course reachable by a route, so no distant meshes were traced); `SNAP_LOD_BIAS` is the existing sampler mip bias (nvn_entry.cpp), not geometry LOD, and `SNAP_DRAW_DISTANCE` is not implemented. | trace (projection upload) |
+| 28 | Higher-precision bloom | b / c | 3 | 2 | 6 | low / none | 4 | no | Bloom RT 192x108 from float constants `0xae7e2c` (192.0) and `0xae7a0c` (108.0) in `0x5c23a0`; chain 960x540 `0x5bfde4`, `0x5c09a8`, `0x5c19ec`. Look change risk (brighter or tighter glow) | render-scale exemption rules |
+| 29 | Sharper UI fonts | c / b | 2 | 2 | 4 | none / none | 10 | yes | Glyph atlas is an R8 512x2048 pitch-linear texture the CPU rewrites (AGENTS.md "First UI"); `nn::fontll` is lifted pure software; font files obfuscated (`unpacked_formats.md`) | trace; font path **Static findings 2026-11-11:** the glyph raster size is the argument of `nn::fontll::ScalableFontEngine::SetScale` (PLT `0xa37d90`), called at `0x435658`, `0x438f70`, `0x69a63c`, `0x69a6ec` with a 16.16 fixed-point pixel size (`fcvtzs(frac*65535) \| fcvtzs(int)<<16`, constant `0xae7bc0`) in w1 and w4. The glyph cache (object `x27` in `0x4355xx`) keeps the atlas size at `+0x2188` (w) / `+0x218c` (h) (set by the store at `0x641284`), and each glyph entry stores bitmap w/h at `+0x1e/+0x20`, advance `+0x22`, bearings `+0x24..0x2a` (written at `0x435910..0x4359d8`) as integers that the quad builder (`0x438ad8` reads the atlas dims as floats) uses for both the atlas rect and the on-screen quad. A 2x raster therefore needs the entry split into atlas size vs layout size plus a 1024x4096 atlas; not done, needs a visual iteration loop. Only useful when the render scale is above 1x. |
+| 30 | Larger subtitles / UI scale | a / d | 2 | 2 | 4 | none / none | 12 | yes | UI is `lm/lmb/lme` (45 each) plus 5,110 `nutexb` in `common/UI`; format not decoded. F1 already has a UI scale for its own menu only | UI format decode |
+| 31 | Colorblind-friendly scanner highlight | a / c | 1 | 2 | 2 | low / none | 12 | yes | No scanner shader or string identified in this pass; would be a shader or UI-material swap | trace |
+| 32 | Spawn and behavior debug overlay | d | 1 | 2 | 2 | none / none | 24 | yes | Classes recovered only as 1,950 vtable candidates (`classes.tsv`); no game-object list | class recovery |
+| 33 | Texture dump on first load | d | 5 | 1 | 5 | none / none | 1 | no | `NVN_TEX_DUMP` exists; only an F1 toggle is missing | none |
+| 34 | Asset viewer link in F1 | d | 4 | 1 | 4 | none / none | 1 | no | `tools-src/asset_viewer/` localhost server | none |
+
+## Top 8, implementation sketches
+
+Ordered by score; ties go to the lower-risk idea. #12 (free camera) has the highest impact but is TRACE-gated, so it is a stretch goal rather than an overnight item.
+
+### 1. Anisotropy 16x and LOD bias (rows 1 and 3)
+
+- **Files:** `runtime/nvn/nvn_entry.cpp` (SamplerInitialize path that already applies `nvnHostSetAnisotropyOverride`), `runtime/nvn/nvn_host.h` (add `nvnHostSetSamplerLodBias(float)`), the F1 Graphics tab in `runtime/ui` or `host`.
+- **Where in the game:** all samplers come from `0x9216d0` (cache `0x3206d0`, 27 call sites). Aniso is 1 and bias about 0 today. The override applies to mipmapped, non-comparison samplers only, which matches the game's rule that aniso applies when mip mode is 2.
+- **Steps:** (1) set 16 before the game creates samplers (start-up config, restart to apply); (2) add the bias hook next to it, applied as `lodBias += setting` at SamplerInitialize; (3) F1 dropdown 1x/2x/4x/8x/16x and a bias slider; cap at the device limit.
+- **Test:** `tests/nvn` run with 16 and 0; log the created `VkSamplerCreateInfo`; boot the lab scene with `SNAP_SAVE_DIR=build\testsave`, compare a floor or wall screenshot at the same camera. Validation errors stay 0. Then a mip-bias run at render scale 2 with bias -0.5 to -1.
+
+### 2. Unlock all courses and time-of-day variants (row 2)
+
+- **Files:** `scripts/snap_save.py` (`unlock`, `unlock_routes`; existing), `build\fixtures\saves\unlock_all` and `unlock_routes`, F1 Saves tab "Import test save" (exists in `host/README.md`).
+- **Fields:** course status = save file 11, byte at `route-1`, 0 locked / 1 unlocked / 2 entered (`analysis/save/fields.md`, read side High). All 30 `RouteData` rows already cover the A/B/C time-of-day packs (`time_of_day` 1/2/3), so unlocking all 30 gives time of day on every course with no data edit.
+- **Steps:** (1) import `unlock_routes` into a new profile (no points, so the research log cannot hit an invalid entry id); (2) enter each course in game; (3) only then try `unlock_all` (level 4) and watch the research log.
+- **Test:** the map select screen shows all 30 routes, each course loads, and the save survives quit and reload (checksums verified by `snap_save.py dump`). Risk: the `+4` field and entry id 1 are Low confidence, so keep a backup profile.
+
+### 3. Render scale and 4K (row 4)
+
+- **Files:** `runtime/nvn/nvn_entry.cpp` and `nvn_host.h` (existing hooks), a config read at start-up, F1 Graphics tab.
+- **Where in the game:** fixed immediates (scene and SSAO 1920x1080 in `0x5bd940`, 960x540 chain, bloom 192x108 at `0x5c23a0`). The host scales plain render targets and keeps the guest's view of sizes, so no guest patch is needed. The built-in exemption keeps the Evaluation depth target (1920 wide, `0x5c3d38`) at 1.0.
+- **Steps:** (1) test scale 1.0 vs 1.5 and 2.0 with zero validation errors; (2) add tag-based exemptions for `Capture3D`, `CaptureCompress`, `ResizeTexture` (sizes in `0x5c7f70`, `0x5c8028`, `0x5c8ab4`) so saved photos and scoring inputs stay original; (3) pair with idea 1's LOD bias.
+- **Test:** (a) screenshot at 2.0 shows finer edges; (b) take a photo at scale 1.0 and 2.0 of the same scene and compare the saved JPEG and the score (identical expected); (c) FXAA output not blurred. Not done yet: the open question that the game reads GPU-written memory without a sync, and the 15,000 render-target-also-sampled skips per minute (AGENTS.md) that scaled targets could change.
+
+### 4. Pass toggles and clean-photo HUD (rows 6 and 7)
+
+- **Files:** `host/hooks.cpp` (add a host override for the pass enable setters or the execute loop `0x988fe0`), the F1 overlay.
+- **Where in the game:** 37 pass nodes built in `0x5bd940` (names and create sites in `analysis/maps/render_passes_final.tsv`); the loop `0x988fe0` calls the per-pass Execute (`0x982210`, slot 5) only on enabled passes; setters `0x5cc0a0`, `0x5cd4a0`, `0x5cd5c0`, `0x5cd6e0` flip enables per `[ctx+0xcec]`.
+- **TRACE first (short):** one NVN trace of a frame with draw-call tagging per pass to learn the enable flag offset in the 0xf8-byte pass object, and to confirm that the viewfinder and film counter draw in `UI`.
+- **Steps:** (1) map pass name to object; (2) skip Execute for a chosen set; (3) expose FilmGrain, ChromaticAberration, Monotone, DOF, bloom and `UI` as toggles; (4) a "photo clean" hotkey that hides `UI` only.
+- **Test:** each toggle changes the screenshot as expected; `Capture3D`, `CaptureCompress`, `Evaluation`, `Report` are not togglable; take a photo with `UI` hidden and confirm the saved photo and score match the normal path.
+
+### 5. Texture pack path: HD upscales (row 5)
+
+- **Files:** `scripts/hd/` (upscaler outputs in `build/hd/cache/`), a new nutexb encoder, the loose-file loader, a pack folder under `build/hd/` per `docs/hd-assets.md` phase 2.
+- **Where in the game:** `nutexb` is loaded whole, no streaming (wrappers `0x8f86e8`, `0x8f87e8`), so a replaced entry takes effect without engine changes. Owner direction: modest detail only, textured same-camera comparisons, no model work.
+- **Steps:** (1) encoder round trip first (decode -> re-encode -> bit compare, same format, mips, block-linear); (2) one species end to end (Pikachu `CH_025`); (3) A/B screenshot in game against the original.
+- **Test:** the encoded file decodes identical to the PNG; the game loads it; no validation errors; frame time not worse than baseline. Open item: the match for dimension changes (the engine reads mip levels from the nutexb header, so larger sizes should work, unconfirmed).
+
+### 6. Golden Pikachu and recolors (row 8)
+
+- **Files:** the same encoder and loader as #5; `CH_025_00_0_A00_Body_dif.nutexb` (and `_par`, `_Eye_dif` if needed) from `extracted\drp-v262144\nx\Pack\Characters\master\CH_025.drp\`.
+- **Steps:** (1) hue-shift the body texture only (small Python script, `-I`); (2) override the entry; (3) run the first course with Pikachu. This also serves as the first end-to-end proof for #5.
+- **Test:** Pikachu shows gold in game, other species unchanged. Zero scoring effect expected because no geometry or registry changes; check one photo of Pikachu scores like the stock texture on a fixed replay.
+
+### 7. Shadow map size (row 9)
+
+- **Files:** `runtime/nvn/nvn_entry.cpp` (texture creation hook, like render scale), config and F1.
+- **Where in the game:** dynamic shadow depth target 1024x1024, format id `0x144` (`0x5b8b10` call at `0x5bdd34`); static 3 x 1024x1024 (`0x4d12a8`, loop `0x4d1310`). Match by signature (1024x1024, depth, that format) and allocate larger, reporting the original size to the guest as the render-scale hook does.
+- **Risk to check:** the shadow cbuffer texel size must match. If the shader reads a constant texel size from the game, upscaled maps sample only part of the map unless the host also rescales the viewport (the render-scale code already scales viewports, scissors and clears). Compare with the baked 4,578 `Shadow.nutexb`, which stay as is.
+- **Test:** screenshot a character shadow edge at 1024, 2048, 4096; no light leaking; zero validation errors; scoring unchanged (the Evaluation pass uses its own targets).
+
+### 8. Fog and atmosphere distance, plus research thresholds as the cheap data mods (rows 10 and 11)
+
+- **Files:** loose-file overrides of `LV_ENV_*.levelb` (33 on disk) and `Resident.drp/ResearchPoint.mdrp`; `scripts/fb_roundtrip.py` and `scripts/fb_walk.py` as the writer.
+- **Where in the data:**
+  - ENV levelb keys (crc32 of name) for `atmosphericStartingDistance`, `horizontalAtmosphericDistance`, `verticalAtmosphericDistance`, `fogUnevenness`; CRC32 bytes found in 33 of 33 files. The matching consumer reads are at `0x5d93bc`, `0x5d9450`, `0x5d96c4` (loader compares at `0x2c8538..0x2c85a8`).
+  - `ResearchPoint.mdrp` `thresholds` (`mdrp.fbs`, M confidence for the struct meaning; threshold use at `0x5e0b10`, High).
+- **Steps:** (1) use the walker to print the value slot next to each key for one `LV_ENV`; (2) scale the start distance and see the effect; (3) for thresholds, lower the three non-zero values per route and confirm the level-up in game after one photo.
+- **Test:** re-encoded files are identical when unchanged (335/335 round trip), then edited values show in game; photo evaluation depends on what is visible, so run the same replay on stock and edited fog (S risk low-medium); thresholds do not touch saved scores (the level is derived at read time).
+
+## Dynamic traces needed (shortest list that unblocks the most rows)
+
+1. **Pass object enable flag and UI draw ownership:** unblocks rows 6, 7 (top 8 #4).
+2. **Camera matrices and projection upload:** rows 12, 27 (NearClip/FarClip values, LOD distances).
+3. **Score readback and a before/after save diff after one scored run:** rows 19, 20, 21, 22.
+4. **Placement load test:** put one `CH_nnn` string from another course into one `LV_MAP` placement and see whether it loads: rows 13, 23, 24, 25.
+5. **Frame update and animation tick trace:** rows 14, 26 (NEO-ONE speed, distant animation rate).
+
+## Notes and gaps
+
+- Nothing was claimed about the meaning of PokemonData slots 7-15 (`ref_id_0..8`, Low confidence, target table unknown). They are not used by any idea above.
+- The documented count of ENV levelb files with fog keys is 101 in `knobs.md` (all pack variants); on disk after deduplication there are 33 `LV_ENV_*.levelb`, all containing the key hashes.
+- Scoring is GPU-based (`Evaluation` pass and shaders), so any change to what the Evaluation view sees (draw distance, LOD, fog, shadow casters) needs a same-replay photo comparison against the original path.
+- Not rated: frame-rate unlock, DLSS, frame generation and save states (already planned in AGENTS.md as separate milestones).
+
+## Owner-approved queue (2026-11-11)
+
+| Item | Status |
+|---|---|
+| #1 aniso 16x, #3 LOD bias, #4 render scale | After the photo worker releases `runtime\nvn` |
+| #2 unlock-all save | In-game test queued with the route worker |
+| #5 HD textures, #8 golden Pikachu | Waiting on the nutexb encoder (HD pipeline worker) |
+| #7 pass toggles + color looks (LUT presets) | Render-trace worker |
+| #16 SSAO, #19 score overlay, #29 fonts | Render-trace worker |
+| #26 full-rate anim, #27 draw distance and LOD, FOV slider | Logic-trace worker |
+| 5.1 surround + Windows spatial audio (Sonic / Atmos for Headphones) | Audio worker |
+| Gyro aim (SDL3 sensors) + rumble | UI worker queue; no test hardware |
+| HDR10 output | After `runtime\nvn` is free |
+| Motion vectors, then DLAA, DLSS, frame gen (FSR 3 or NVIDIA) | After HDR; NVIDIA SDKs local only in `tools\nvidia\` |
+| Full-res photo export to PNG | After photo capture works |
+| Frame pacing, frame cap, low-latency mode | Perf pass 2 |
+| Unlimited stored photos (#22) + local photo gallery | Album worker (storage RE, `SNAP_ALBUM_LIMIT`, `tools-src/gallery`) |
+| Benchmark mode (`run_boot.ps1 -Bench`) | Route worker, after the Florio route works |
+| Window options (borderless, monitor, focus pause and mute, frame cap) + faster boot | Window worker |

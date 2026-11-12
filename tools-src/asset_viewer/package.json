@@ -1,0 +1,1 @@
+{"name":"local-asset-viewer","private":true,"version":"1.0.0","type":"module","scripts":{"test":"node tests/browser.mjs"},"dependencies":{"three":"0.180.0"},"devDependencies":{"playwright":"1.56.1"}}

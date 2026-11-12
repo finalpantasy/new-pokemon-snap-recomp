@@ -66,7 +66,8 @@ def _emitter():
         mod = load_module(use_map_jump_tables=_W['jt'], name=_W['module'])
         lsda = ehlsda.module_pads(mod) if _W['resume'] else {}
         e = _W['emitter'] = Emitter(mod, set(_W['starts']), lsda=lsda, resume=_W['resume'], hooks=_W['hooks'],
-                                    plt_got=_W['plt_got'], setjmp_targets=_W['setjmp'])
+                                    plt_got=_W['plt_got'], setjmp_targets=_W['setjmp'],
+                                    inline_hooks=MAIN_INLINE_HOOKS if _W['module'] == 'main' else None)
     return e
 
 
@@ -158,6 +159,15 @@ SETJMP_NAMES = ('setjmp', '_setjmp', '__setjmp', 'sigsetjmp', '__sigsetjmp')
 # setjmp, and nn::ro::detail::GetExceptionInfo (docs/runtime-boundary.md sections 2 and 3).
 SDK_HOOKS = {0x513794: 'rt_hook_unw_jumpto', 0x51d584: 'rt_hook_longjmp', 0x51d5c4: 'rt_hook_setjmp',
              0x35cc40: 'rt_hook_get_exception_info'}
+
+
+# main instructions that call a host function just before they run (runtime/mods/mods.cpp, docs/mods.md). 0x5e3a58 is in the
+# DRP entry worker (0x5e38b0): x20 = the entry's chunk in memory, x24 = its request; the hook may swap x20 for a replacement chunk.
+MAIN_INLINE_HOOKS = {BASE + 0x5e3a58: 'rt_mod_entry',
+                     # host/mods/gamemods.cpp (SSAO quality #16, pass toggles #7): all no-ops unless their env vars are set
+                     BASE + 0x5a6c94: 'rt_gm_ao_simple',    # SimpleAO/Hemisphere/Alchemy execute: x21 = pass, +0x17c kernelSize
+                     BASE + 0x5a7bac: 'rt_gm_ao_hbao',      # HBAO execute: x21 = pass, +0x174 numDirections, +0x178 numSamples
+                     BASE + 0x989048: 'rt_gm_pass'}         # per-frame pass loop: x20 = entry, [x20+8] = pass
 
 
 def sdk_plan():

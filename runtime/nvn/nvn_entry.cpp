@@ -34,6 +34,7 @@ Boolean DeviceInitialize(void* dev, const void* builder) {  // [CALL 0x90d668]: 
   auto* b = reinterpret_cast<const DeviceBuilder*>(builder);
   bool wantVal = (g_validationRequest == 1) || (b && (b->flags & 1));  // NVN_DEVICE_FLAG_DEBUG_ENABLE
   if (const char* e = getenv("NVN_VK_VALIDATION")) wantVal = wantVal || *e == '1';
+  ApplyHostEnvPolicy();
   auto* h = new Host();
   if (!h->Init(wantVal)) { h->Shutdown(); delete h; return 0; }
   g_host = h;
@@ -212,6 +213,25 @@ size_t TextureBuilderGetStorageSize(const void* b) {
 size_t TextureBuilderGetStorageAlignment(const void*) { return 0x1000; }
 void TextureBuilderSetStorage(void* b, void* pool, ptrdiff_t off) { TB(b)->pool = pool; TB(b)->poolOffset = off; }
 int TextureBuilderGetFlags(const void* b) { return reinterpret_cast<const TextureBuilder*>(b)->flags; }
+// Guest call chain of the current TextureInitialize (nvnHostSetGuestFrame): lr, then the saved lr of each frame record
+// ([fp] = caller fp, [fp+8] = return address). Guest memory is identity-mapped; each frame record is checked before the read.
+thread_local uint64_t t_guestFp = 0, t_guestLr = 0;
+static constexpr uint64_t kGuestMain = 0x7100000000ull;
+static constexpr uint64_t kEvalDepthRet = 0x5c3d3c;      // return address of the "Evaluation DepthStencil" bl 0x5b8b10 at main+0x5c3d38
+static constexpr uint32_t kTagEvalDepth = 0x45564450;    // 'EVDP', exempt by default (ScalePolicy::ScalePolicy)
+static bool GuestReadable(uint64_t p) {
+  MEMORY_BASIC_INFORMATION mbi;
+  if (p < 0x10000 || (p & 7) || !VirtualQuery((void*)p, &mbi, sizeof mbi)) return false;
+  if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
+  return p + 16 <= (uint64_t)mbi.BaseAddress + mbi.RegionSize;
+}
+static int GuestCallChain(uint64_t* out, int max) {
+  int n = 0; uint64_t fp = t_guestFp;
+  if (t_guestLr) out[n++] = t_guestLr;
+  while (n < max && GuestReadable(fp)) { const uint64_t* r = (const uint64_t*)fp; if (!r[1]) break; out[n++] = r[1]; if (r[0] <= fp) break; fp = r[0]; }
+  t_guestFp = t_guestLr = 0;
+  return n;
+}
 Boolean TextureInitialize(void* tex, const void* b) {
   auto* tb = reinterpret_cast<const TextureBuilder*>(b);
   Host* h = H(tb->device);
@@ -220,8 +240,13 @@ Boolean TextureInitialize(void* tex, const void* b) {
   t->host = h; t->b = *tb; t->fi = LookupFormat(tb->format);
   if (!t->fi) Log("TextureInitialize: format 0x%x not mapped yet", tb->format);
   {
-    const uint32_t tag = g_scale.nextTag; g_scale.nextTag = 0;
+    uint32_t tag = g_scale.nextTag; g_scale.nextTag = 0;
+    uint64_t chain[8] = {}; const int nChain = GuestCallChain(chain, 8);
+    if (!tag) for (int i = 0; i < nChain; i++) if (chain[i] == kGuestMain + kEvalDepthRet) tag = kTagEvalDepth;   // call-site tag
     t->scale = g_scale.For(*tb, tag);
+    if (g_scale.scale != 1.0f || g_scale.shadowRes) { static const bool lg = getenv("SNAP_SCALE_LOG") != nullptr; if (lg && (tb->width >= 192 || t->scale != 1.0f)) {
+      char cs[160] = ""; for (int i = 0, n = 0; i < nChain && n < (int)sizeof cs - 16; i++) n += snprintf(cs + n, sizeof cs - n, " %llx", (unsigned long long)(chain[i] - kGuestMain));
+      fprintf(stderr, "[scale] tex %dx%d fmt=0x%x flags=0x%x tgt=%d lv=%d tag=%x -> scale %.2f; main+%s\n", tb->width, tb->height, tb->format, tb->flags, tb->target, tb->levels, tag, t->scale, cs); } }
     if (t->scale != 1.0f) {
       t->hostW = (uint32_t)std::max(1.0f, std::ceil(tb->width * t->scale));
       t->hostH = (uint32_t)std::max(1.0f, std::ceil(tb->height * t->scale));
@@ -534,15 +559,24 @@ NVN_HOST_EXPORT void nvnHostSetFramePacing(double hz) { nvn::g_paceHz = hz < 0 ?
 // ---- render-scale policy and anisotropy override (docs/nvn-vulkan-design.md, "Render-target scaling") ----------------
 namespace nvn {
 ScalePolicy g_scale;
-float g_anisoOverride = 0.0f;
+// Default 16x (2026-11-12): sharper oblique surfaces with no measured cost (analysis/mods/compare/aniso_floor_zoom.png).
+// SNAP_ANISO=0 or 1, or nvnHostSetAnisotropyOverride(0), restores the game's 1x.
+float g_anisoOverride = 16.0f;
 ScalePolicy::ScalePolicy() {
-  // Placeholder default for the Evaluation depth target (guest width 1920 at 0x5c3d38): its contents are read back by the
-  // photo scoring, so it must keep the original size. Prefer tagging that one allocation (nvnHostSetNextTextureTag).
-  exempt.push_back({1920, -1, -1, true});
+  // The Evaluation depth target ("Evaluation DepthStencil", main+0x5c3d38) keeps the original size: photo scoring counts its
+  // pixels. TextureInitialize tags it from the guest call chain. (The old 1920-wide depth signature also caught the main scene
+  // depth, so scaled color met unscaled depth and the device was lost at render scale 2.)
+  exemptTags.push_back(0x45564450);   // kTagEvalDepth
 }
 static bool IsDepthFmt(int f) { return f == FMT_STENCIL8 || (f >= FMT_DEPTH16 && f <= FMT_DEPTH32F_STENCIL8); }
 float ScalePolicy::For(const TextureBuilder& b, uint32_t tag) const {
+  // The 1024x1024 depth shadow maps (dynamic shadow and the three static ones) follow SNAP_SHADOW_RES only, never the render scale.
+  if (IsDepthFmt(b.format) && (b.target == TT_2D || b.target == TT_2D_ARRAY) && b.width == 1024 && b.height == 1024 && b.samples <= 1)
+    return shadowRes > 1024 ? (float)shadowRes / 1024.0f : 1.0f;
   if (scale == 1.0f || scale <= 0.0f) return 1.0f;
+  // Window textures: the game composes UI and the final image into these, so they must scale too for a real 4K frame. The Evaluation
+  // depth target is not a window texture and keeps its exemption below.
+  if (b.flags & TF_DISPLAY) return (scaleDisplay && b.target == TT_2D && b.samples <= 1) ? scale : 1.0f;
   if (!(b.flags & TF_COMPRESSIBLE) || (b.flags & (TF_DISPLAY | TF_LINEAR | TF_LINEAR_RENDER_TARGET))) return 1.0f;   // not a plain render target
   if (b.target != TT_2D && b.target != TT_2D_ARRAY) return 1.0f;
   if (b.samples > 1) return 1.0f;
@@ -553,11 +587,33 @@ float ScalePolicy::For(const TextureBuilder& b, uint32_t tag) const {
   return scale;
 }
 }  // namespace nvn
+namespace nvn {
+float g_lodBiasExtra = 0.0f;
+bool g_lodBiasAuto = false;
+// Environment policy (all optional; unset = original behavior except that LOD bias follows the render scale when it is not 1):
+//   SNAP_ANISO=1|2|4|8|16   SNAP_LOD_BIAS=<float>|auto   SNAP_RENDER_SCALE=<float>   SNAP_SHADOW_RES=1024|2048|4096
+void ApplyHostEnvPolicy() {
+  if (const char* e = getenv("SNAP_RENDER_SCALE")) { float v = (float)atof(e); if (v >= 0.25f && v <= 8.f) g_scale.scale = v; }
+  if (const char* e = getenv("SNAP_SHADOW_RES")) { int v = atoi(e); g_scale.shadowRes = (v > 1024 && v <= 8192) ? v : 0; }
+  if (const char* e = getenv("SNAP_ANISO")) { float v = (float)atof(e); g_anisoOverride = v > 1.f ? std::min(v, 16.f) : 0.f; }
+  if (const char* e = getenv("SNAP_LOD_BIAS")) {
+    if (!_stricmp(e, "auto")) g_lodBiasAuto = true; else { g_lodBiasExtra = (float)atof(e); g_lodBiasAuto = false; }
+  } else g_lodBiasAuto = g_scale.scale != 1.0f;
+  Log("host policy: scale=%.2f shadowRes=%d aniso=%.0f lodBias=%s%.2f", g_scale.scale, g_scale.shadowRes, g_anisoOverride, g_lodBiasAuto ? "auto " : "", g_lodBiasExtra);
+}
+}  // namespace nvn
+NVN_HOST_EXPORT void nvnHostSetLodBias(float bias) { nvn::g_lodBiasExtra = bias; nvn::g_lodBiasAuto = false; }
+NVN_HOST_EXPORT void nvnHostSetLodBiasAuto(int on) { nvn::g_lodBiasAuto = on != 0; }
+NVN_HOST_EXPORT void nvnHostSetShadowResolution(int side) { nvn::g_scale.shadowRes = (side > 1024 && side <= 8192) ? side : 0; }
+NVN_HOST_EXPORT int nvnHostGetShadowResolution(void) { return nvn::g_scale.shadowRes ? nvn::g_scale.shadowRes : 1024; }
+NVN_HOST_EXPORT void nvnHostSetScaleDisplay(int on) { nvn::g_scale.scaleDisplay = on != 0; }
+NVN_HOST_EXPORT float nvnHostGetAnisotropyOverride(void) { return nvn::g_anisoOverride; }
 NVN_HOST_EXPORT void nvnHostSetRenderScale(float scale) { nvn::g_scale.scale = scale; }
 NVN_HOST_EXPORT float nvnHostGetRenderScale(void) { return nvn::g_scale.scale; }
 NVN_HOST_EXPORT void nvnHostAddScaleExemption(int w, int h, int nvnFormat, int depthOnly) { nvn::g_scale.exempt.push_back({w, h, nvnFormat, depthOnly != 0}); }
 NVN_HOST_EXPORT void nvnHostClearScaleExemptions(void) { nvn::g_scale.exempt.clear(); nvn::g_scale.exemptTags.clear(); }
 NVN_HOST_EXPORT void nvnHostSetNextTextureTag(uint32_t tag) { nvn::g_scale.nextTag = tag; }
+NVN_HOST_EXPORT void nvnHostSetGuestFrame(uint64_t fp, uint64_t lr) { nvn::t_guestFp = fp; nvn::t_guestLr = lr; }
 NVN_HOST_EXPORT void nvnHostAddScaleExemptionTag(uint32_t tag) { nvn::g_scale.exemptTags.push_back(tag); }
 NVN_HOST_EXPORT int nvnHostGetTextureHostSize(const void* guestTexture, int* w, int* h) {
   auto* t = nvn::Impl<nvn::TextureImpl>(guestTexture, nvn::MAGIC_TEXTURE);

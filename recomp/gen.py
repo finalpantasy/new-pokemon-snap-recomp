@@ -211,11 +211,12 @@ class Emitter:
     """C for the functions of one module. starts is the set of every function start of the module."""
 
     def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None,
-                 lsda=None, resume=False, setjmp_targets=(), hooks=None, plt_got=None):
+                 lsda=None, resume=False, setjmp_targets=(), hooks=None, plt_got=None, inline_hooks=None):
         self.lsda = lsda or {}                      # recomp/ehlsda.module_pads: {function: (range, [(site, len, pad, action)])}
         self.resume = resume                        # emit the exception/longjmp resume checks after every call
         self.setjmp_targets = frozenset(setjmp_targets)   # call targets that are setjmp (resume point after the call)
         self.hooks = hooks or {}                    # {function address: host symbol}: body replaced by a call to it
+        self.inline_hooks = inline_hooks or {}      # {instruction address: host symbol}: `sym(c)` runs just before that instruction (it sees only the Cpu: callee-saved registers and memory)
         self.plt_got = plt_got or {}                # {PLT stub address: GOT slot address}: body is a load and dispatch
         self._pads = {}
         self.mod = mod
@@ -522,6 +523,8 @@ class Emitter:
             if a in labels:
                 emit(None, f'L_{a:x}:;')
             k = ins.kind
+            if a in self.inline_hooks:
+                emit(i, f'    {spill if self.inline_hooks[a].startswith("rt_gm_") else ""}{{ void {self.inline_hooks[a]}(Cpu *c); {self.inline_hooks[a]}(c); }}')   # rt_gm_* hooks (host/mods/gamemods.cpp) read registers: make the Cpu current first
             if a in self.patched:
                 emit(i, patch(i, ins, a))
             elif k == 'op':

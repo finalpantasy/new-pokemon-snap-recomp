@@ -99,6 +99,7 @@ for n, (rk, ks, rt, ps) in sigs.items():
     else: body = f'c->x[0] = (u64){call};'
     fp = f'static {rty}(*F)({ptys}) = ({rty}(*)({ptys}))nvnBootstrapLoader("nvn{n}"); '
     if n != 'DeviceGetProcAddress': body = fp + body
+    if n == 'TextureInitialize': body = 'nvnHostSetGuestFrame(c->x[29], c->x[30]); ' + body   # call-site scale exemptions (nvn_host.h)
     L.append(f'static void br_{n}(Cpu *c) {{ {body} }}   // {rt}({", ".join(ps)})')
 L.append('')
 L.append('struct E { const char *name; GuestFn fn; };')

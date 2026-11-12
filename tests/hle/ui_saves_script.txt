@@ -1,0 +1,10 @@
+# Scripted test for the Saves and Graphics tabs (tests\hle\run_profiles_test.ps1 -Mode saves). Times are seconds after the first present.
+25 key F1 1
+28 expect_open 1
+29 tab Saves
+34 shot build/testconfig_prof/saves_tab.bmp
+36 tab Graphics
+40 shot build/testconfig_prof/graphics_tab.bmp
+42 key F1 0
+44 expect_open 0
+45 quit

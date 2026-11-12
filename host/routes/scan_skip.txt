@@ -1,0 +1,10 @@
+# fixture: tut_cand_new4
+# Probe: post-tutorial candidate; A taps through the lab dialogue, then Plus ("+ Skip") on the scan tutorial and Left/Up + A for "Yes".
+repeat @f300 @f8600 120 8 A
+@f9000 10 Plus
+@f9300 10 A
+@f9800 10 Plus
+@f10100 10 Left
+@f10200 10 Up
+@f10300 10 A
+repeat @f11000 @f60000 120 8 A

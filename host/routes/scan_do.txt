@@ -1,0 +1,4 @@
+# fixture: tut_cand_new4
+# Probe: post-tutorial candidate; A taps through the lab dialogue, then X taps for the yard scan tutorial ("Press X to run a scan").
+repeat @f300 @f60000 120 8 A
+repeat @f8600 @f60000 90 8 X

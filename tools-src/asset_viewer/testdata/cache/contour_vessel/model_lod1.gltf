@@ -1,0 +1,171 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Asset Viewer procedural fixture exporter"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0,
+      "name": "Procedural calibration vessel"
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 0
+        },
+        {
+          "attributes": {
+            "POSITION": 4,
+            "NORMAL": 5,
+            "TEXCOORD_0": 6
+          },
+          "indices": 7,
+          "material": 1
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "ceramic"
+    },
+    {
+      "name": "cutout",
+      "doubleSided": true
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "model_lod1.bin",
+      "byteLength": 11832
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 2652
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 2652,
+      "byteLength": 2652
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 5304,
+      "byteLength": 1768
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 7072,
+      "byteLength": 4608
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 11680,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 11728,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 11776,
+      "byteLength": 32
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 11808,
+      "byteLength": 24
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 221,
+      "type": "VEC3",
+      "min": [
+        -0.9730191198537798,
+        -1.25,
+        -0.9730191198537798
+      ],
+      "max": [
+        0.9730191198537798,
+        1.25,
+        0.9730191198537798
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 221,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 221,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5125,
+      "count": 1152,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3",
+      "min": [
+        -0.34,
+        -0.42,
+        1.03
+      ],
+      "max": [
+        0.34,
+        0.42,
+        1.03
+      ]
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 6,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 7,
+      "componentType": 5125,
+      "count": 6,
+      "type": "SCALAR"
+    }
+  ]
+}

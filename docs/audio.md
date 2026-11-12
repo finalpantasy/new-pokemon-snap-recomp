@@ -90,14 +90,135 @@ uses for exact comparison.
 
 ### Volume
 
-- `snap_audio_set_volume(SNAP_VOL_MASTER, v)` is applied (ramped per block to avoid clicks) and multiplied by the
-  per-device volume set through `SetAudioDeviceOutputVolume`.
-- BGM, SE and VOICE volumes are stored (`SNAP_VOL_BGM/SE/VOICE`) but **not applied**: the mix is already summed
-  inside Wwise before it reaches `nn::audio`. The game's strings show the category events/parameters
-  (`Set_volume_bgm_`, `Set_volume_se_`, `Set_volume_voice_`, line 11342, 10779, 13648 of
-  `work/v262144-main.strings.txt`), but the actual Wwise bus names live in the soundbank (`Init.bnk`), which this task
-  did not parse. Wiring categories means calling `AK::SoundEngine::SetRTPCValue` or `SetBusVolume` from the settings
-  menu through the lifted symbols; the API above is ready to carry the values.
+Findings (names and IDs only; the soundbank data stays local). `Init.bnk` (Wwise bank version 134, 40 buses) has this
+bus tree; IDs are the FNV-1 32-bit hash of the lower-case name and the three category names were confirmed by hash:
+
+| Bus | ID | Parent |
+|---|---|---|
+| `Master Audio Bus` | 3803692087 | none |
+| (unnamed mixer under master) | 508372457 | 3803692087 |
+| `bgm` | 412724365 | 508372457 (6 child buses) |
+| `se` | 1584861537 | 508372457 (about 25 child buses) |
+| `voice` | 3170124113 | 508372457 (4 child buses) |
+| (second root, unnamed) | 985987111 | none |
+
+`Init.bnk` has no game parameters bound to bus volume, so there is no RTPC to set. The game does it with events: its
+own options menu has BGM/SE/voice levels 0..10, and `BANK_MAIN.bnk` holds 33 events `Set_volume_bgm_NN`,
+`Set_volume_se_NN`, `Set_volume_voice_NN` (NN = 00..10, e.g. `Set_volume_bgm_00` = 129505574, `_10` = 146283161,
+`Set_volume_se_00` = 1152448242, `Set_volume_voice_00` = 2616401070) that set the matching bus volume.
+We do not call `AK::SoundEngine` (stripped, no symbol) and do not add our own events; we drive the game's setter.
+
+How the calls are made:
+
+- Game setter: `main+0x67c610(AudioManager* this, int cat, uint8 level)`, `cat` 0 = bgm, 1 = se, 2 = voice. It builds
+  `Set_volume_<cat>_<2-digit level>` and posts it by name (`this->[8]` vtable +0x78). Its callers are the game's startup
+  apply (`0x444498`) and the options-menu setter (`0x737090`).
+- Guest objects: audio manager pointer at `main+0x12fef28`; the game's saved levels are bytes `+0x6f` (bgm), `+0x70` (se),
+  `+0x71` (voice) of the settings object whose address sits in GOT slot `main+0xcfab68`; manager `+0x128` = 2 forces
+  voice to 0.
+- `host/abi_audio.cpp` `apply_category_volumes()` runs from the `GetReleasedAudioOutBuffer` bridge, so it executes on
+  the Wwise sink thread (a guest thread with its own `Cpu`) and uses `loader::call_guest_nested`. Level posted =
+  `round(gameLevel * userVolume)`, so 1.0 is exactly the original mix. It re-posts when the user volume changes, when the
+  game writes its own level (that post would override ours), and once a second while a volume is below 1.0. A category never
+  moved off 1.0 is never touched.
+- Resolution is the game's 11 steps (0.1 each); a user volume of 0 is silence for that bus. Master is applied in the host
+  mixer (continuous, ramped per block) times the per-device volume.
+
+Debug aids: `SNAP_AUDIO_LEVELS=1` prints `[audio-level] t=Ns rms= peak=` of the final mix each second;
+`SNAP_AUDIO_DUMP=<file>` writes the final mix as raw s16 (device rate and channels); `SNAP_AUDIO_TRACE=1` logs the
+game levels and each category post.
+
+### Volume API for UI
+
+```c
+#include "audio/audio_out.h"
+enum { SNAP_VOL_MASTER = 0, SNAP_VOL_BGM = 1, SNAP_VOL_SE = 2, SNAP_VOL_VOICE = 3 };
+void  snap_audio_set_volume(int category, float v);  // v clamped to 0..1; applies live and persists
+float snap_audio_get_volume(int category);           // current value, 1.0 default
+```
+
+- Callable from any thread, at any time (before or after boot). Setting is lock-free for the audio path; persisting
+  writes a small file, so call it when a slider is released (or at most a few times per second), not per frame.
+- Persistence: `audio.json` (`{"master":..,"bgm":..,"se":..,"voice":..}`) in `%SNAP_CONFIG_DIR%`, else
+  `%APPDATA%\SnapRecomp`. Loaded when the audio layer starts; defaults to 1.0 everywhere (original mix). It is a
+  separate file, not `hle.json`, so the UI needs no config plumbing: just call `snap_audio_set_volume`.
+- Env overrides, not persisted (tests/scripts): `SNAP_VOL_MASTER`, `SNAP_VOL_BGM`, `SNAP_VOL_SE`, `SNAP_VOL_VOICE`.
+- BGM/SE/VOICE take effect within about a second at most, in 0.1 steps, and only once the game's audio manager exists.
+  The game's own BGM/SE/voice options still work; the user volume scales them.
+
+## Surround and spatial output
+
+**The switch.** Wwise's Switch sink asks `nn::audio::GetActiveAudioDeviceChannelCountForOutput` (callers `0x1232e0`,
+`0x123480`, `0x123510`) and opens `AudioOut` with 2 or 6 channels (`0x124780`). The host answers with the "game
+channels" value below, so the game itself switches Wwise to 5.1 (no patching). `SNAP_AUDIO_TRACE=1` logs the query and the
+Open (`[audio-trace] ...`). The game never reads `nn::settings` or `nn::oe` for audio.
+
+**Guest layout:** 48 kHz s16 interleaved, 6 channels in the Switch and Wwise order FL FR FC LFE BL BR (the downmix and
+mapping are in `runtime/audio/audio_mix.h`, tested by `tests/audio/mix_test.cpp`; whether the lab and course scenes
+really put content in the rear and center channels is in the evidence section below).
+
+**Output modes** (env `SNAP_AUDIO_OUTPUT`, or `audio.json` key `output`; restart required, the game opens its sink once):
+
+| Mode | Device stream | Notes |
+|---|---|---|
+| `stereo` (default) | 2 ch float | 5.1 is downmixed `L = (FL + .707 FC + .707 BL) / 1.707`, LFE dropped. Game channels default to 2. |
+| `speakers` | WASAPI 5.1 (mask 0x3F) or 7.1 (0x63F) | `speakers` key / `SNAP_AUDIO_SPEAKERS` = 6, 8, or 0 = 8 if the device mix format has 8 or more channels, else 6. On 7.1 the surrounds feed the SIDE speakers, the back pair stays empty. Windows converts if the device has fewer. |
+| `spatial` | `ISpatialAudioClient`, 6 static bed objects | FL FR FC LFE and the surrounds on SideLeft/SideRight, rendered by Windows Sonic, Dolby Atmos for Headphones or DTS. Needs the spatial format enabled on the default device. If not available it logs why and falls back to 5.1 speakers, then stereo. |
+
+Game channels: env `SNAP_AUDIO_CHANNELS` (2 or 6) > `audio.json` `channels` (0 = auto) > auto (6 for speakers and spatial, 2 for
+stereo). Debug and tests: `SNAP_AUDIO_CAPTURE=<dir>` writes `guest_<n>ch.wav` (what Wwise produced) and
+`device_<mode>_<n>ch.wav` (final mix) starting at the first non-silent frame, `SNAP_AUDIO_CAPTURE_SECS` (default 30), and
+logs `[audio-ch] guest|device ... rms: FL=.. FR=..` every 5 s.
+
+`audio.json` keys: `"output": "stereo"|"speakers"|"spatial"`, `"channels": 0|2|6`, `"speakers": 0|6|8`, next to the
+volume keys (the volume writer preserves them).
+
+### Output API for the UI
+
+```c
+void snap_audio_set_output(int mode /*0 stereo,1 speakers,2 spatial; -1 keep*/, int gameChannels /*0,2,6; -1 keep*/,
+                           int speakerChannels /*0,6,8; -1 keep*/);   // persists to audio.json; applies on next start
+int  snap_audio_get_output_mode(void);      // configured (env wins)
+int  snap_audio_active_output_mode(void);   // running, after fallbacks (also SnapAudioStats.outputModeActive)
+int  snap_audio_spatial_available(void);    // 1 if the default device can render the bed (probe, starts nothing)
+```
+
+The UI should say "restart required" next to the control, and may grey out Spatial when
+`snap_audio_spatial_available()` is 0 (tell the user to enable Windows Sonic or Dolby Atmos for Headphones in Sound settings).
+
+### Resampler
+
+There is none: the stream is opened at 48 kHz float with `AUTOCONVERTPCM | SRC_DEFAULT_QUALITY`, so Windows resamples
+when the device runs at 44.1 or 96 kHz (spatial streams are 48 kHz and Windows handles the device side). Not replaced:
+it is a quality choice only and nothing measured is wrong.
+
+### Getting real 5.1 out of Wwise (2026-11-12)
+
+Three things stack, all needed:
+
+1. **Settings word:** the game builds its `AkOutputSettings` in `main+0x67ffa0` with channel config `0x3102` (stereo). `host/abi_audio.cpp`
+   rewrites it to `0x60f106` (5.1) at the `ListAudioDeviceName` call (`main+0x680270`) and again at the sink Open
+   (`main+0x1247d8`), when the host wants 6 channels. The sink then opens 6 channels.
+2. **Bank:** `Init.bnk` fixes the mixer bus under the Master Audio Bus (id 508372457, parent of bgm/se/voice) at stereo
+   (channel config field `0x3102`; the other 39 buses are 0 = inherit). Without a change Wwise mixes stereo no matter what the
+   sink is. `python -I scriptsudio_make_surround_pack.py` writes the local mod pack `surround-bus` (config 0 = same as
+   parent) to `%APPDATA%\SnapRecomp\mods`; with it the sink buffers carry a real 5.1 mix. Stereo output is unaffected (the
+   bus follows the 2-channel device). Never commit the pack (it is game data).
+3. **Upmixer:** the game's content is stereo-authored, so even on a 5.1 bus FC, LFE and the surrounds stay near 0 (RMS
+   0.0000 to 0.0001 for 130 s of the lab). The host upmixer (`Upmixer` in `audio_mix.h`) fills them from FL/FR when a block
+   has no real surround content: center 0.354 (L+R), LFE 0.5 x lowpass 120 Hz (L+R), surrounds (7.1: sides) 0.4 x the fronts
+   delayed 15 ms. FL/FR are unchanged. `SNAP_AUDIO_UPMIX=0` turns it off.
+
+Lab capture (`florio_photos`, 130 s, speakers, per-channel RMS FL FR FC LFE BL BR): game mix
+0.021 0.021 0.0000 0.0000 0.0001 0.0001; device mix after the upmixer 0.021 0.021 0.014 0.009 0.008 0.008.
+
+## Listening checklist (owner; the output could not be heard while building this)
+
+1. `stereo` mode, play a course: sound is unchanged from before, no new hiss or clipping in busy scenes (the 5.1 downmix only runs if you force 6 channels).
+2. `speakers` on 5.1 speakers: each speaker works; in a course, turning the camera or a Pokemon flying past moves effects between front and rear; voices and menu sounds sit in the center speaker; the subwoofer carries bass hits only.
+3. `speakers` on 7.1: the rear (back) pair is silent by design, the sides carry the surrounds.
+4. `spatial` with Windows Sonic or Dolby Atmos for Headphones on headphones: the sound is outside the head and wider than stereo; the log says `spatial audio stream: 6 static bed objects`. If it says "unavailable" it fell back to 5.1 speakers.
+5. Volume sliders (master, BGM, SE, voice) still work in every mode, and unplugging or switching the default device recovers without a freeze.
 
 ## Threading
 
@@ -130,9 +251,16 @@ the test raises its own thread to HIGHEST (the process stays BelowNormal). The r
 2. **Device switching is untested** (no second endpoint here). The rebuild path is straightforward but unproven.
 3. **Wwise sink thread priority/cadence**: if lifted `nn::os` thread priorities map low, 85 ms of queue is thin.
    Raising `numBuffers` is a one-line settings change (`AkPlatformInitSettings+0xac`) if needed.
-4. **No category volumes** until a Wwise-level hook exists.
+4. **Category volumes** use the game's 11-step events (no finer than 0.1) and are posted from the sink thread.
 5. **Device-name semantics** (which of the 4 names selects which game behavior) unverified; the host reports
    `AudioTvOutput` and 2 channels by default (`cfg.channelMode` can report 5.1 or follow the device mix format).
 6. **Release timing:** buffers are released when consumed by the device thread, not when heard (up to one WASAPI
    period early), which only makes the game's queue accounting slightly optimistic.
 7. **Mixed-rate AudioOuts** are rejected (only 48000 is used by the game).
+
+### Volume verification (hidden run, `-SaveFixture post_tutorial`, 100 s, `SNAP_AUDIO_LEVELS=<file>`)
+
+Mean final-mix RMS over seconds 20..90 (71 one-second samples): normal run 0.0139, `SNAP_VOL_BGM=0` run 0.0072
+(about 48% lower; peak 0.756 -> 0.595). The trace shows the setter posting level 0 for category 0 (BGM) with the game's
+own level at 10; SE and voice stayed untouched. Only one run of each, and the two runs are not frame-aligned, so the
+ratio is indicative, not exact. Not yet checked: SE and voice at 0, and live changes from the UI.

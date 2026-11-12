@@ -14,6 +14,12 @@
 #include "ui/ui_present.h"   // controls overlay hook (runtime/ui); the stub below keeps nvn-only builds linking
 extern "C" void snap_ui_present_none(const SnapUiFrame*) {}
 #pragma comment(linker, "/alternatename:snap_ui_present=snap_ui_present_none")
+extern "C" void snap_look_present(const SnapUiFrame*);   // host/mods/look.cpp (hook request 1)
+extern "C" void snap_look_present_none(const SnapUiFrame*) {}
+#pragma comment(linker, "/alternatename:snap_look_present=snap_look_present_none")
+extern "C" int snap_window_frame_cap();   // host/window_opts.cpp (hook request 3)
+extern "C" int snap_window_frame_cap_none() { return 0; }
+#pragma comment(linker, "/alternatename:snap_window_frame_cap=snap_window_frame_cap_none")
 
 namespace nvn {
 
@@ -604,10 +610,34 @@ void SyncPoolRange(PoolImpl* p, uint64_t off, uint64_t size) {
     pos = next;
   }
 }
+uint64_t g_replayEpoch = 1;
+void SyncPoolRangeOnce(PoolImpl* p, uint64_t off, uint64_t size) {
+  if (!p || off >= p->size) return;
+  const uint64_t end = std::min<uint64_t>(off + size, p->size);
+  {
+    std::lock_guard<std::mutex> lk(p->gpuMutex);
+    if (p->syncEpoch != g_replayEpoch) { p->synced.clear(); p->syncEpoch = g_replayEpoch; }
+    for (auto& r : p->synced) if (r.first <= off && end <= r.second) return;
+  }
+  SyncPoolRange(p, off, size);
+  std::lock_guard<std::mutex> lk(p->gpuMutex);
+  if (p->syncEpoch != g_replayEpoch) { p->synced.clear(); p->syncEpoch = g_replayEpoch; }
+  if (p->synced.size() >= 64) p->synced.clear();
+  uint64_t b = off, e = end;
+  for (size_t i = 0; i < p->synced.size();) {   // absorb overlapping or touching ranges
+    auto& r = p->synced[i];
+    if (r.first <= e && b <= r.second) { b = std::min(b, r.first); e = std::max(e, r.second); p->synced[i] = p->synced.back(); p->synced.pop_back(); }
+    else i++;
+  }
+  p->synced.push_back({b, e});
+}
 void MarkGpuWritten(PoolImpl* p, uint64_t off, uint64_t size) {
   if (!p || !size || off >= p->size) return;
   const uint64_t end = std::min<uint64_t>(off + size, p->size);
+  static const bool xl = getenv("NVN_XFER_LOG") != nullptr;
+  if (xl && p->Cpu()) { static int n = 0; if (n++ < 400) fprintf(stderr, "[xfer] GPU writes CPU pool %p (size 0x%llx) off=0x%llx size=0x%llx\n", (void*)p, (unsigned long long)p->size, (unsigned long long)off, (unsigned long long)(end - off)); }
   std::lock_guard<std::mutex> lk(p->gpuMutex);
+  p->synced.clear();
   for (auto& r : p->gpuRanges) if (r.first <= off && end <= r.second) return;   // already covered
   p->gpuRanges.push_back({off, end});
   // merge overlapping ranges so the list stays short
@@ -800,6 +830,25 @@ static float RtScale(const ReplayCtx& cx) {
   for (int i = 0; i < 9; i++) if (cx.rt[i]) return cx.rt[i]->scale;
   return 1.0f;
 }
+// Viewport / scissor in guest pixels -> Vulkan, scaled for the bound render targets (render scale, nvn_host.h)
+static void EmitViewport(ReplayCtx& cx, int i) {
+  const float* v = cx.vpGuest[i];
+  if (v[2] <= 0 || v[3] <= 0) return;
+  cx.vpScale = RtScale(cx);
+  VkViewport vp = MakeNvnViewport(cx.h->originMode, v[0], v[1], v[2], v[3], cx.vpScale);
+  vkCmdSetViewport(cx.cb, (uint32_t)i, 1, &vp);
+}
+static void EmitScissor(ReplayCtx& cx, int i) {
+  int x = cx.scGuest[i][0], y = cx.scGuest[i][1], w = cx.scGuest[i][2], ht = cx.scGuest[i][3];
+  if (x < 0) { w += x; x = 0; }
+  if (y < 0) { ht += y; y = 0; }
+  if (w < 0) w = 0;
+  if (ht < 0) ht = 0;
+  const float sc = cx.scScale = RtScale(cx);
+  if (sc != 1.0f) { x = (int)std::floor(x * sc); y = (int)std::floor(y * sc); w = (int)std::ceil(w * sc); ht = (int)std::ceil(ht * sc); }
+  VkRect2D r{{x, y}, {(uint32_t)w, (uint32_t)ht}};
+  vkCmdSetScissor(cx.cb, (uint32_t)i, 1, &r);
+}
 
 static void Replay(ReplayCtx& cx, const CmdList& list) {
   Host* h = cx.h;
@@ -819,6 +868,9 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
           if (rt[k] && c.blob.size() >= o + 1 + sizeof(TexView) && c.blob[o]) { memcpy(&cx.rtView[k], &c.blob[o + 1], sizeof(TexView)); cx.rtHasView[k] = true; }
         }
         if (DebugDrawLogActive()) DebugDrawLog("SetRenderTargets rt0=%p(%dx%d f%x) depth=%p\n", (void*)rt[0], rt[0] ? rt[0]->b.width : 0, rt[0] ? rt[0]->b.height : 0, rt[0] ? rt[0]->b.format : 0, (void*)rt[8]);
+        // render scale changed: viewports / scissors set for the previous targets are re-applied at the new scale
+        if (cx.vpHave && RtScale(cx) != cx.vpScale) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i);
+        if (cx.scHave && RtScale(cx) != cx.scScale) for (int i = 0; i < 4; i++) if (cx.scHave & (1u << i)) EmitScissor(cx, i);
         break;
       case Op::ClearColor: {
         EndRendering(cx);
@@ -858,6 +910,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         float x = c.f[0], y = c.f[1], w = c.f[2], ht = c.f[3];
         if (DebugDrawLogActive()) DebugDrawLog("SetViewport %d: %g %g %g %g (rt0 %p)\n", c.i[0], x, y, w, ht, (void*)rt[0]);
         if (w <= 0 || ht <= 0) break;
+        if (c.i[0] < 4) { memcpy(cx.vpGuest[c.i[0]], c.f, sizeof cx.vpGuest[0]); cx.vpHave |= (uint8_t)(1u << c.i[0]); EmitViewport(cx, c.i[0]); break; }
         VkViewport vp = MakeNvnViewport(h->originMode, x, y, w, ht, RtScale(cx));
         vkCmdSetViewport(cb, (uint32_t)c.i[0], 1, &vp);
         break;
@@ -865,6 +918,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
       case Op::SetScissors: {
         cx.scSet = true;
         if (c.i[0] > 0 && h->props.limits.maxViewports <= 1) break;
+        if (c.i[0] < 4) { for (int j = 0; j < 4; j++) cx.scGuest[c.i[0]][j] = c.i[1 + j]; cx.scHave |= (uint8_t)(1u << c.i[0]); EmitScissor(cx, c.i[0]); break; }
         int x = c.i[1], y = c.i[2], w = c.i[3], ht = c.i[4];
         if (x < 0) { w += x; x = 0; }
         if (y < 0) { ht += y; y = 0; }
@@ -898,6 +952,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
 void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
   Host* h = q->host;
   std::lock_guard<std::mutex> lk(h->queueMutex);
+  g_replayEpoch++;
   q->Reap(false);
   std::vector<VkCommandBufferSubmitInfo> infos;
   std::vector<Retired> pending;
@@ -922,6 +977,14 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
     std::vector<Readback> rbs;
     cx.readbacks = &rbs;
     { snap_perf::Scope perfScope(snap_perf::C_REPLAY); snap_perf::count(snap_perf::V_CMDS, l->cmds.size()); Replay(cx, *l); }
+    for (auto& rb : rbs) if (rb.kind == 3) {   // fragment-shader SSBO results are read by the host (FlushReadbacks) after the timeline value
+      VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+      mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+      mb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; mb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+      VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+      vkCmdPipelineBarrier2(cb, &di);
+      break;
+    }
     if (perfSlot >= 0) PerfGpuEnd(h, cb, perfSlot);
     vkEndCommandBuffer(cb);
     VkCommandBufferSubmitInfo ci{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -942,7 +1005,11 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
   for (auto& r : pending) { r.value = v; q->inflight.push_back(r); }
   if (!readbacksOut.empty()) {
     std::lock_guard<std::mutex> rl(h->rbMutex);
-    for (auto& rb : readbacksOut) { rb.sem = q->timeline; rb.value = v; h->readbacks.push_back(rb); }
+    for (auto& rb : readbacksOut) {
+      rb.sem = q->timeline; rb.value = v;
+      if (rb.kind == 3) rb.pool->wbPending.fetch_add(1, std::memory_order_relaxed);
+      h->readbacks.push_back(std::move(rb));
+    }
   }
 }
 
@@ -1029,7 +1096,7 @@ bool WindowImpl::Recreate() {
   ci.imageColorSpace = pick.colorSpace;
   ci.imageExtent = ext;
   ci.imageArrayLayers = 1;
-  ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);   // color attachment: overlay
+  ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (caps.supportedUsageFlags & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));   // color attachment: overlay
   ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   ci.preTransform = caps.currentTransform;
   ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -1078,10 +1145,13 @@ void DestroyWindow(WindowImpl* w) {
 static void Pace(WindowImpl* w) {
   if (g_paceHz <= 0 || w->presentInterval <= 0) { w->nextPresentNs = 0; return; }
   using namespace std::chrono;
-  const int64_t period = (int64_t)(1e9 * w->presentInterval / g_paceHz);
+  int64_t period = (int64_t)(1e9 * w->presentInterval / g_paceHz);
+  if (const int cap = snap_window_frame_cap(); cap > 0) period = std::max(period, (int64_t)(1e9 / cap));   // hook request 3
   const int64_t now = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
-  if (w->nextPresentNs == 0 || now - w->nextPresentNs > period) w->nextPresentNs = now;   // first frame or fell behind
-  w->nextPresentNs += period;
+  // Absolute schedule. A frame that already ran more than one period late is released at once and the schedule restarts from now
+  // (the old code restarted from now and then still waited a full period, so every slow frame cost work + one period).
+  if (w->nextPresentNs == 0 || now - w->nextPresentNs > period) w->nextPresentNs = now;
+  else w->nextPresentNs += period;
   static HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
   int64_t left = w->nextPresentNs - now;
   if (left > 2000000 && timer) {   // sleep all but ~1.5 ms
@@ -1092,12 +1162,14 @@ static void Pace(WindowImpl* w) {
   while (duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count() < w->nextPresentNs) YieldProcessor();
 }
 
-bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
+int g_fdBurst = 0;
+static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   Host* h = q->host;
   if (slot < 0 || slot >= (int)w->tex.size()) { LogError("present of invalid slot %d", slot); return false; }
   TextureImpl* src = w->tex[slot];
   if (!src->EnsureImage()) return false;
-  Pace(w);
+  struct PerfFrame { QueueImpl* q; ~PerfFrame() { if (snap_perf::on) PerfFrameMark(q, (uint64_t)g_presentCount); } } perfFrame{q};   // one CSV row per present (SNAP_PERF)
+  { snap_perf::Scope perfScope(snap_perf::C_PACE); Pace(w); }
   std::lock_guard<std::mutex> lk(h->queueMutex);
   q->Reap(false);
   g_presentCount++;
@@ -1110,11 +1182,13 @@ bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
   if (w->acquireValue[ak]) {
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wi.semaphoreCount = 1; wi.pSemaphores = &q->timeline; wi.pValues = &w->acquireValue[ak];
+    snap_perf::Scope perfScope(snap_perf::C_ACQSEM);
     vkWaitSemaphores(h->device, &wi, UINT64_MAX);
   }
   for (int attempt = 0; attempt < 3; attempt++) {
     if (w->needRecreate && !w->Recreate()) return false;
-    VkResult r = vkAcquireNextImageKHR(h->device, w->swapchain, UINT64_MAX, w->acquireSems[ak], VK_NULL_HANDLE, &idx);
+    VkResult r;
+    { snap_perf::Scope perfScope(snap_perf::C_ACQUIRE); r = vkAcquireNextImageKHR(h->device, w->swapchain, UINT64_MAX, w->acquireSems[ak], VK_NULL_HANDLE, &idx); }
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) { if (r == VK_SUBOPTIMAL_KHR) w->needRecreate = true; break; }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) { w->needRecreate = true; if (attempt == 2) return false; continue; }
     LogError("vkAcquireNextImageKHR failed: %d", (int)r);
@@ -1125,6 +1199,7 @@ bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cb, &bi);
+  const int perfSlot = snap_perf::on ? PerfGpuBegin(h, cb) : -1;
 
   VkImage dst = w->scImages[idx];
   auto imgBarrier = [&](VkImage img, VkImageAspectFlags asp, VkImageLayout from, VkImageLayout to) {
@@ -1140,6 +1215,43 @@ bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
     vkCmdPipelineBarrier2(cb, &di);
   };
   Transition(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  // Debug frame dump (NVN_FRAME_DUMP=<dir> [NVN_FRAME_DUMP_FROM=<sec> _TO=<sec> _EVERY=<sec> _MAX=<n>]): copies the game's window texture (no overlay) into a host buffer
+  // and writes a half-size BMP after the submit. Used for screenshots when the desktop capture is unavailable (hidden desktop).
+  static const char* fdDir = getenv("NVN_FRAME_DUMP");
+  static const double fdFrom = getenv("NVN_FRAME_DUMP_FROM") ? atof(getenv("NVN_FRAME_DUMP_FROM")) : 0.0;
+  static const double fdTo = getenv("NVN_FRAME_DUMP_TO") ? atof(getenv("NVN_FRAME_DUMP_TO")) : 1e9;
+  static const double fdEvery = getenv("NVN_FRAME_DUMP_EVERY") ? atof(getenv("NVN_FRAME_DUMP_EVERY")) : 1.0;
+  static const int fdMax = getenv("NVN_FRAME_DUMP_MAX") ? atoi(getenv("NVN_FRAME_DUMP_MAX")) : 60;
+  static const auto fdT0 = std::chrono::steady_clock::now();
+  static double fdNext = 0; static int fdCount = 0;
+  VkBuffer fdBuf = VK_NULL_HANDLE; VkDeviceMemory fdMem = VK_NULL_HANDLE; void* fdMap = nullptr; char fdName[512] = {};
+  // NVN_FRAME_DUMP_FULL=1: full-size BMP (default half size, point sampled); NVN_FRAME_DUMP_POST=1: dump the swapchain image after the
+  // present blit, SNAP_LOOK and the UI overlay instead of the game's window texture (comparison shots of host post effects)
+  static const bool fdFull = getenv("NVN_FRAME_DUMP_FULL") != nullptr, fdPost = getenv("NVN_FRAME_DUMP_POST") != nullptr;
+  uint32_t fdW = src->HW(), fdH = src->HH(); bool fdBgra = src->fi && (src->fi->vk == VK_FORMAT_B8G8R8A8_UNORM || src->fi->vk == VK_FORMAT_B8G8R8A8_SRGB);
+  if (fdPost) { fdW = w->scExtent.width; fdH = w->scExtent.height; fdBgra = w->scFormat == VK_FORMAT_B8G8R8A8_UNORM || w->scFormat == VK_FORMAT_B8G8R8A8_SRGB; }
+  const bool fdBurstNow = g_fdBurst > 0 && (g_fdBurst-- % 4) == 0;   // NVN_THUMB_LOG: a photo-thumbnail draw requests a short burst of frames
+  if (fdDir && *fdDir && fdCount < fdMax && src->fi && src->fi->bytes == 4 && src->fi->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
+    const double nowS = std::chrono::duration<double>(std::chrono::steady_clock::now() - fdT0).count();
+    // NVN_FRAME_DUMP_AT=<p1,p2,...>: dump at those present counts instead of by time (frame-exact comparisons between runs)
+    static std::vector<int> fdAt = [] { std::vector<int> v; if (const char* e = getenv("NVN_FRAME_DUMP_AT")) for (const char* c = e; *c;) { v.push_back(atoi(c)); while (*c && *c != ',') c++; if (*c == ',') c++; } return v; }();
+    static size_t fdAtIdx = 0;
+    bool fdAtNow = false;
+    if (!fdAt.empty()) { if (fdAtIdx < fdAt.size() && g_presentCount >= fdAt[fdAtIdx]) { fdAtNow = true; fdAtIdx++; } }
+    if (fdBurstNow || fdAtNow || (fdAt.empty() && nowS >= fdFrom && nowS <= fdTo && nowS >= fdNext)) {
+      fdNext = nowS + fdEvery;
+      if (CreateHostBuffer(h, (uint64_t)fdW * fdH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &fdBuf, &fdMem, &fdMap)) {
+        VkBufferImageCopy bc{}; bc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; bc.imageExtent = {src->HW(), src->HH(), 1};
+        if (!fdPost) vkCmdCopyImageToBuffer(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, fdBuf, 1, &bc);
+        VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT; mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; mb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cb, &di);
+        snprintf(fdName, sizeof fdName, "%s/f%04d_p%d_t%.1f.bmp", fdDir, fdCount++, g_presentCount, nowS);
+      } else { fdBuf = VK_NULL_HANDLE; }
+    }
+  }
   imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
   VkClearColorValue black{};
   VkImageSubresourceRange rg{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -1147,10 +1259,13 @@ bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
   imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
   // source rectangle: crop if set, else the whole texture
-  int sx = 0, sy = 0, sw = src->b.width, sh = src->b.height;
-  if (w->crop[2] > 0 && w->crop[3] > 0) { sx = w->crop[0]; sy = w->crop[1]; sw = w->crop[2]; sh = w->crop[3]; }
-  sx = std::clamp(sx, 0, src->b.width - 1); sy = std::clamp(sy, 0, src->b.height - 1);
-  sw = std::clamp(sw, 1, src->b.width - sx); sh = std::clamp(sh, 1, src->b.height - sy);
+  // render scale: the window texture may be larger than the guest-visible size (crop is in guest pixels)
+  const int srcW = (int)src->HW(), srcH = (int)src->HH();
+  const double rsx = (double)srcW / src->b.width, rsy = (double)srcH / src->b.height;
+  int sx = 0, sy = 0, sw = srcW, sh = srcH;
+  if (w->crop[2] > 0 && w->crop[3] > 0) { sx = (int)(w->crop[0] * rsx + 0.5); sy = (int)(w->crop[1] * rsy + 0.5); sw = (int)(w->crop[2] * rsx + 0.5); sh = (int)(w->crop[3] * rsy + 0.5); }
+  sx = std::clamp(sx, 0, srcW - 1); sy = std::clamp(sy, 0, srcH - 1);
+  sw = std::clamp(sw, 1, srcW - sx); sh = std::clamp(sh, 1, srcH - sy);
   // destination rectangle: aspect-preserving fit
   const double sa = (double)sw / sh, da = (double)w->scExtent.width / w->scExtent.height;
   int dw = w->scExtent.width, dh = w->scExtent.height;
@@ -1164,8 +1279,20 @@ bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
   const bool same = (sw == dw && sh == dh);
   vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                  same ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
-  { SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, dst, w->scFormat, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd}; snap_ui_present(&uf); }   // overlay: image stays TRANSFER_DST
+  { SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, dst, w->scFormat, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd}; snap_look_present(&uf); snap_ui_present(&uf); }
+  if (fdBuf && fdPost) {   // NVN_FRAME_DUMP_POST: copy the finished swapchain image (TRANSFER_DST after the overlay)
+    imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy bc{}; bc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; bc.imageExtent = {fdW, fdH, 1};
+    vkCmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, fdBuf, 1, &bc);
+    VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    mb.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT; mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    mb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; mb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+    vkCmdPipelineBarrier2(cb, &di);
+    imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  }   // overlay: image stays TRANSFER_DST
   imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+  if (perfSlot >= 0) PerfGpuEnd(h, cb, perfSlot);
   vkEndCommandBuffer(cb);
 
   uint64_t v = ++q->value;
@@ -1180,19 +1307,50 @@ bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
   si.waitSemaphoreInfoCount = 1; si.pWaitSemaphoreInfos = &wait;
   si.commandBufferInfoCount = 1; si.pCommandBufferInfos = &cbi;
   si.signalSemaphoreInfoCount = 2; si.pSignalSemaphoreInfos = sig;
-  VKCHK(vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE));
+  { snap_perf::Scope perfScope(snap_perf::C_QSUBMIT); VKCHK(vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE)); }
+  PerfGpuSubmitted(perfSlot, v);
   q->inflight.push_back({v, cb, nullptr});
+  if (fdBuf) {   // debug frame dump: wait for the copy, write a half-size BMP
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1; wi.pSemaphores = &q->timeline; wi.pValues = &v;
+    vkWaitSemaphores(h->device, &wi, UINT64_MAX);
+    const int ds = fdFull ? 1 : 2, W = (int)fdW / ds, H = (int)fdH / ds;
+    const bool bgra = fdBgra;
+    std::vector<uint8_t> out((size_t)W * H * 3 + 54, 0);
+    uint8_t* o = out.data();
+    auto le32 = [&](int off, uint32_t x) { memcpy(o + off, &x, 4); };
+    o[0] = 'B'; o[1] = 'M'; le32(2, (uint32_t)out.size()); le32(10, 54); le32(14, 40); le32(18, (uint32_t)W); le32(22, (uint32_t)(-H)); o[26] = 1; o[28] = 24;
+    le32(34, (uint32_t)((size_t)W * H * 3));
+    const uint8_t* in = static_cast<const uint8_t*>(fdMap);
+    uint8_t* px = o + 54;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+      const uint8_t* sp = in + ((size_t)(y * ds) * fdW + x * ds) * 4;
+      px[0] = bgra ? sp[0] : sp[2]; px[1] = sp[1]; px[2] = bgra ? sp[2] : sp[0]; px += 3;
+    }
+    if (FILE* f = fopen(fdName, "wb")) { fwrite(out.data(), 1, out.size(), f); fclose(f); }
+    vkDestroyBuffer(h->device, fdBuf, nullptr); vkFreeMemory(h->device, fdMem, nullptr);
+  }
 
   VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &w->renderDone[idx];
   pi.swapchainCount = 1; pi.pSwapchains = &w->swapchain; pi.pImageIndices = &idx;
-  VkResult pr = vkQueuePresentKHR(h->queue, &pi);
+  VkResult pr;
+  { snap_perf::Scope perfScope(snap_perf::C_PRESENT); pr = vkQueuePresentKHR(h->queue, &pi); }
   if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) w->needRecreate = true;
   else if (pr < 0) LogError("vkQueuePresentKHR failed: %d", (int)pr);
   w->acquireValue[ak] = v;
   w->slotSem[slot] = q->timeline;
   w->slotValue[slot] = v;
   return true;
+}
+
+bool PipelineHoldGame();   // nvn_pipeline.cpp: "compile shaders now" is running
+bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
+  bool r = PresentWindowOnce(q, w, slot);
+  // "Compile shaders now": the game thread stays on its present loop (same frame, UI overlay drawn by the present hook, paced by Pace)
+  // until the precompile run finishes or is cancelled.
+  while (PipelineHoldGame()) { Sleep(8); r = PresentWindowOnce(q, w, slot); }
+  return r;
 }
 
 }  // namespace nvn

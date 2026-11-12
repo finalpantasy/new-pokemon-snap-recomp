@@ -8,8 +8,17 @@
 
 #include "hle.h"
 #include "json_lite.h"
+#include "profiles.h"
+#include "settings.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 namespace hle {
+
+static bool g_save_explicit = false;
 
 static Config g_cfg;
 static bool g_cfg_init = false;
@@ -114,9 +123,37 @@ bool load_config(const std::string& path_in) {
   if (const char* e = std::getenv("SNAP_SAVE_ROOT")) if (*e) c.save_root = e;
   if (const char* e = std::getenv("SNAP_SAVE_DIR")) if (*e) c.save_root = e;   // wins over SNAP_SAVE_ROOT; default %APPDATA%\SnapRecomp\save
   if (const char* e = std::getenv("SNAP_HLE_HEADLESS")) if (*e && *e != '0') c.headless = true;
+  g_save_explicit = !c.save_root.empty();
   g_cfg_init = false;
   apply_defaults();
   return ok;
+}
+
+// Picker window (runtime/ui/ui_picker.cpp); the stub keeps builds without it (unit tests) linking.
+extern "C" int snap_ui_pick_profile(const profiles::PickItem* items, int count);
+extern "C" int snap_ui_pick_profile_none(const profiles::PickItem*, int) { return -1; }
+#pragma comment(linker, "/alternatename:snap_ui_pick_profile=snap_ui_pick_profile_none")
+
+void activate_profiles() {
+  Config& c = config();
+  const char* pd = std::getenv("SNAP_PROFILES_DIR");
+  bool has_pd = pd && *pd;
+  if (g_save_explicit && !has_pd) return;   // SNAP_SAVE_DIR / save_root override everything (test runs)
+  std::string root = has_pd ? std::string(pd) : join(c.data_root, "profiles");
+  std::string legacy = has_pd ? std::string() : join(c.data_root, "save");
+  if (const char* e = std::getenv("SNAP_LEGACY_SAVE_DIR")) legacy = e;
+  const char* want = std::getenv("SNAP_PROFILE");
+  const char* pk = std::getenv("SNAP_PROFILE_PICKER");
+  bool no_picker = c.headless || (pk && *pk == '0');
+  bool force = (pk && *pk == '1');
+#ifdef _WIN32
+  if (GetAsyncKeyState(VK_SHIFT) & 0x8000) force = true;   // hold Shift while starting to pick a profile even with only one
+#endif
+  profiles::Active a = profiles::startup(root, legacy, want ? want : "", no_picker ? nullptr : snap_ui_pick_profile, force);
+  if (!a.save_dir.empty()) c.save_root = a.save_dir;
+  profiles::set_active(a);
+  log("profiles: %s%s%s -> %s", a.on ? "profile " : "profiles off", a.on ? a.name.c_str() : "", a.note.empty() ? "" : " (note)", c.save_root.c_str());
+  settings::load();   // this profile's settings.cfg: live controller options, and env vars for the look / SSAO mods (read later, at their first use)
 }
 
 }  // namespace hle

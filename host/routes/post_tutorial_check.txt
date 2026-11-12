@@ -1,0 +1,4 @@
+# fixture: post_tutorial
+# Check for the post_tutorial fixture: slow A taps get past the title and the lab hub "Research" entry, then stop on the Lental Map
+# (course select). Run: powershell -File host\run_boot.ps1 -Route post_tutorial_check -Timeout 120 -ShotAt 20 -ShotEvery 20
+repeat @f300 @f2200 120 8 A

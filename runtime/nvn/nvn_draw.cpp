@@ -18,10 +18,15 @@
 
 #include <algorithm>
 #include <cstring>
+#include <chrono>
 #include <deque>
+#include <set>
+#include <string>
 #include <fstream>
 
 #include "nvn_internal.h"
+#include "nvn_pipeline.h"
+#include "os/perf.h"   // SNAP_PERF instrumentation
 #include "nvn_clear_spv.h"
 #include "nvn_state.h"
 
@@ -237,27 +242,41 @@ void ImgBarrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayo
 // ---- pipelines ----------------------------------------------------------------------------------------------------------
 struct RtInfo { VkFormat color[8]; int nColor; VkFormat depth; VkFormat stencil; int samples; };
 
-VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, const RtInfo& rt) {
-  Host* h = cx.h;
+// Normalised description of the pipeline a draw needs (stable across runs: stage cache keys, not program ids).
+static void MakePipeDesc(PipeDesc& pd, DrawState& d, VkPrimitiveTopology topo, const RtInfo& rt) {
   ProgramImpl* p = d.prog;
-  std::string key;
-  Put(key, p->id); Put(key, (int)topo);
-  Put(key, d.nattr);
-  for (int i = 0; i < d.nattr; i++) Put(key, d.attr[i].v);
-  Put(key, d.nstream);
-  for (int i = 0; i < d.nstream; i++) Put(key, d.stream[i]);
-  for (int i = 0; i < rt.nColor; i++) { Put(key, d.blend[i]); Put(key, rt.color[i]); }
-  Put(key, rt.nColor); Put(key, d.color.blendEn); Put(key, d.chmask.mask);
+  memset(&pd, 0, sizeof pd);
+  for (int s = 0; s < 5; s++) if (p->st[s].valid) snprintf(pd.stage[s], sizeof pd.stage[s], "%s", p->st[s].key);
+  pd.topo = (int)topo;
+  pd.nattr = std::clamp(d.nattr, 0, 16);
+  for (int i = 0; i < pd.nattr; i++) pd.attr[i] = d.attr[i];
+  pd.nstream = std::clamp(d.nstream, 0, 16);
+  for (int i = 0; i < pd.nstream; i++) pd.stream[i] = d.stream[i];
+  pd.nColor = rt.nColor;
+  for (int i = 0; i < rt.nColor; i++) {
+    BlendSt b = d.blend[i]; b.target = 0; b.pad = 0;
+    pd.blend[i] = b; pd.colorFmt[i] = (int32_t)rt.color[i];
+  }
+  pd.blendEn = d.color.blendEn; pd.chmask = d.chmask.mask;
   const int af = d.color.alphaFunc;
   const bool alpha = af >= 1 && af <= 7 && !p->st[1].spv.empty() && p->st[1].valid;
-  Put(key, alpha ? af : 0); if (alpha && af != 1) Put(key, d.alphaRef);
-  if (topo == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) Put(key, d.patchSize);
-  Put(key, d.ms); Put(key, d.poly); Put(key, d.ds.bits); Put(key, rt.depth); Put(key, rt.stencil); Put(key, rt.samples);
-  {
-    std::lock_guard<std::mutex> lk(h->pipeMutex);
-    auto it = h->pipelines.find(key);
-    if (it != h->pipelines.end()) return it->second;
-  }
+  pd.alphaFunc = alpha ? af : 0;
+  pd.alphaRef = (alpha && af != 1) ? d.alphaRef : 0.0f;
+  pd.patchSize = topo == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ? d.patchSize : 0;
+  pd.ms.samples = d.ms.samples; pd.ms.a2c = d.ms.a2c;
+  pd.poly = d.poly; pd.dsBits = d.ds.bits;
+  pd.depthFmt = (int32_t)rt.depth; pd.stencilFmt = (int32_t)rt.stencil; pd.samples = rt.samples;
+  // the effective multisample count (render target samples win over the multisample state), as the pipeline uses it
+  if (!(rt.samples > 1)) pd.samples = d.ms.samples > 1 ? d.ms.samples : 1;
+}
+
+// Builds the Vulkan graphics pipeline for `pd` from stage objects st[0..4] and `layout`. Safe to call from any thread.
+VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout) {
+  static std::mutex fragMu;   // StageProg::fragMods is shared by every pipeline built from the same fragment stage
+  auto valid = [&](int s) { return st[s] && st[s]->valid; };
+  const VkPrimitiveTopology topo = (VkPrimitiveTopology)pd.topo;
+  const int af = pd.alphaFunc;
+  const bool alpha = af != 0;
 
   // Dual-source blending: attachment 0 uses a SRC1 factor and the fragment shader has a second color output to feed it. The
   // translator knows nothing about it, so the two lowest outputs are re-decorated as Location L Index 0/1 (PatchFragmentOutputs).
@@ -266,21 +285,22 @@ VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, co
     for (int f : {b.srcRgb, b.dstRgb, b.srcA, b.dstA}) if (f >= BF_SRC1_COLOR && f <= BF_ONE_MINUS_SRC1_ALPHA) return true;
     return false;
   };
-  const bool dual = rt.nColor > 0 && ((d.color.blendEn >> 0) & 1) && usesSrc1(d.blend[0]) && h->features.dualSrcBlend &&
-                    h->props.limits.maxFragmentDualSrcAttachments >= 1 && p->st[1].valid && p->st[1].outLocs.size() >= 2;
+  const bool dual = pd.nColor > 0 && ((pd.blendEn >> 0) & 1) && usesSrc1(pd.blend[0]) && h->features.dualSrcBlend &&
+                    h->props.limits.maxFragmentDualSrcAttachments >= 1 && valid(1) && st[1]->outLocs.size() >= 2;
   std::vector<VkPipelineShaderStageCreateInfo> stages;
-  float alphaRefVal = d.alphaRef;
+  float alphaRefVal = pd.alphaRef;
   VkSpecializationMapEntry alphaMap{0, 0, 4};
   VkSpecializationInfo alphaSpec{};
   for (int s : {0, 3, 4, 2, 1}) {
-    if (!p->st[s].valid) continue;
+    if (!valid(s)) continue;
     VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     static const VkShaderStageFlagBits bits[6] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_GEOMETRY_BIT,
                                                   VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, VK_SHADER_STAGE_COMPUTE_BIT};
-    si.stage = bits[s]; si.module = p->st[s].mod; si.pName = "main";
+    si.stage = bits[s]; si.module = st[s]->mod; si.pName = "main";
     if (s == 1) {
-      StageProg& fp = p->st[1];
-      const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)rt.nColor << 4) | (dual ? 0x100u : 0u);
+      StageProg& fp = *st[1];
+      const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u);
+      std::lock_guard<std::mutex> fl(fragMu);
       auto it = fp.fragMods.find(vkey);
       if (it == fp.fragMods.end()) {
         std::vector<uint32_t> cur = fp.spv, tmp;
@@ -290,7 +310,7 @@ VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, co
           else LogError("alpha test (func %d): fragment shader has no float vec4 output at location 0, test ignored", af);
         }
         VkShaderModule m = fp.mod;
-        if (PatchFragmentOutputs(cur, rt.nColor, dual, tmp)) cur = tmp, m = VK_NULL_HANDLE;
+        if (PatchFragmentOutputs(cur, pd.nColor, dual, tmp)) cur = tmp, m = VK_NULL_HANDLE;
         else if (alphaOk) m = VK_NULL_HANDLE;
         if (!m) {
           VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -312,20 +332,20 @@ VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, co
   std::vector<VkVertexInputBindingDescription> binds;
   std::vector<VkVertexInputAttributeDescription> attrs;
   bool have[16] = {};
-  for (int i = 0; i < d.nstream; i++) {
-    binds.push_back({(uint32_t)i, d.stream[i].stride, d.stream[i].divisor ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX});
+  for (int i = 0; i < pd.nstream; i++) {
+    binds.push_back({(uint32_t)i, pd.stream[i].stride, pd.stream[i].divisor ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX});
     have[i] = true;
-    if (d.stream[i].divisor > 1) Log("vertex stream %d divisor %u: only 0/1 supported, using per-instance", i, d.stream[i].divisor);
+    if (pd.stream[i].divisor > 1) Log("vertex stream %d divisor %u: only 0/1 supported, using per-instance", i, pd.stream[i].divisor);
   }
-  for (int i = 0; i < d.nattr; i++) {
-    uint32_t f = VaFmt(d.attr[i]);
+  for (int i = 0; i < pd.nattr; i++) {
+    uint32_t f = VaFmt(pd.attr[i]);
     if (!f) continue;
-    if (i < 32 && !((p->st[0].inputMask >> i) & 1)) continue;   // the vertex shader does not read this location
+    if (i < 32 && valid(0) && !((st[0]->inputMask >> i) & 1)) continue;   // the vertex shader does not read this location
     const FormatInfo* fi = LookupFormat((int)f);
     if (!fi) { LogError("vertex attribute %d: format 0x%x not mapped", i, f); continue; }
-    uint32_t st = VaStream(d.attr[i]);
-    if (!have[st]) { binds.push_back({st, 0, VK_VERTEX_INPUT_RATE_VERTEX}); have[st] = true; }
-    attrs.push_back({(uint32_t)i, st, fi->vk, VaOffset(d.attr[i])});
+    uint32_t sidx = VaStream(pd.attr[i]);
+    if (!have[sidx]) { binds.push_back({sidx, 0, VK_VERTEX_INPUT_RATE_VERTEX}); have[sidx] = true; }
+    attrs.push_back({(uint32_t)i, sidx, fi->vk, VaOffset(pd.attr[i])});
   }
   VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   vi.vertexBindingDescriptionCount = (uint32_t)binds.size(); vi.pVertexBindingDescriptions = binds.data();
@@ -333,31 +353,31 @@ VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, co
   VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
   ia.topology = topo;
   VkPipelineTessellationStateCreateInfo ts{VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO};
-  ts.patchControlPoints = (uint32_t)std::clamp(d.patchSize, 1, 32);
+  ts.patchControlPoints = (uint32_t)std::clamp(pd.patchSize, 1, 32);
   VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
   vp.viewportCount = 1; vp.scissorCount = 1;
   VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-  rs.polygonMode = d.poly.mode == POLY_LINE ? VK_POLYGON_MODE_LINE : d.poly.mode == POLY_POINT ? VK_POLYGON_MODE_POINT : VK_POLYGON_MODE_FILL;
-  rs.cullMode = (VkCullModeFlags)d.poly.cull;   // NVNface NONE/FRONT/BACK/BOTH == the Vulkan bit values 0/1/2/3
+  rs.polygonMode = pd.poly.mode == POLY_LINE ? VK_POLYGON_MODE_LINE : pd.poly.mode == POLY_POINT ? VK_POLYGON_MODE_POINT : VK_POLYGON_MODE_FILL;
+  rs.cullMode = (VkCullModeFlags)pd.poly.cull;   // NVNface NONE/FRONT/BACK/BOTH == the Vulkan bit values 0/1/2/3
   // NVN CCW/CW map 1:1 to Vulkan: with window origin upper-left both APIs define winding in y-down window space.
-  rs.frontFace = d.poly.front == FRONT_CW ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  const int offBit = d.poly.mode == POLY_POINT ? 1 : d.poly.mode == POLY_LINE ? 2 : 4;
-  rs.depthBiasEnable = (d.poly.offsetEn & offBit) ? VK_TRUE : VK_FALSE;
+  rs.frontFace = pd.poly.front == FRONT_CW ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  const int offBit = pd.poly.mode == POLY_POINT ? 1 : pd.poly.mode == POLY_LINE ? 2 : 4;
+  rs.depthBiasEnable = (pd.poly.offsetEn & offBit) ? VK_TRUE : VK_FALSE;
   rs.lineWidth = 1.0f;
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-  int samples = rt.samples > 1 ? rt.samples : (d.ms.samples > 1 ? d.ms.samples : 1);
-  ms.rasterizationSamples = (VkSampleCountFlagBits)samples;
-  ms.alphaToCoverageEnable = d.ms.a2c ? VK_TRUE : VK_FALSE;
+  ms.rasterizationSamples = (VkSampleCountFlagBits)std::max(pd.samples, 1);
+  ms.alphaToCoverageEnable = pd.ms.a2c ? VK_TRUE : VK_FALSE;
+  DsSt dsv; dsv.bits = pd.dsBits;
   VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-  dss.depthTestEnable = DsGet(d.ds, DS_DT, 1); dss.depthWriteEnable = DsGet(d.ds, DS_DW, 1);
-  dss.depthCompareOp = Cmp(DsGet(d.ds, DS_DF, 4));
-  dss.stencilTestEnable = DsGet(d.ds, DS_ST, 1);
-  dss.front = {SOp(DsGet(d.ds, DS_FAIL_F, 4)), SOp(DsGet(d.ds, DS_ZPASS_F, 4)), SOp(DsGet(d.ds, DS_ZFAIL_F, 4)), Cmp(DsGet(d.ds, DS_SF_F, 4)), 0, 0, 0};
-  dss.back = {SOp(DsGet(d.ds, DS_FAIL_B, 4)), SOp(DsGet(d.ds, DS_ZPASS_B, 4)), SOp(DsGet(d.ds, DS_ZFAIL_B, 4)), Cmp(DsGet(d.ds, DS_SF_B, 4)), 0, 0, 0};
-  std::vector<VkPipelineColorBlendAttachmentState> cba(rt.nColor);
-  for (int i = 0; i < rt.nColor; i++) {
-    const BlendSt& b = d.blend[i];
-    cba[i].blendEnable = (d.color.blendEn >> i) & 1;
+  dss.depthTestEnable = DsGet(dsv, DS_DT, 1); dss.depthWriteEnable = DsGet(dsv, DS_DW, 1);
+  dss.depthCompareOp = Cmp(DsGet(dsv, DS_DF, 4));
+  dss.stencilTestEnable = DsGet(dsv, DS_ST, 1);
+  dss.front = {SOp(DsGet(dsv, DS_FAIL_F, 4)), SOp(DsGet(dsv, DS_ZPASS_F, 4)), SOp(DsGet(dsv, DS_ZFAIL_F, 4)), Cmp(DsGet(dsv, DS_SF_F, 4)), 0, 0, 0};
+  dss.back = {SOp(DsGet(dsv, DS_FAIL_B, 4)), SOp(DsGet(dsv, DS_ZPASS_B, 4)), SOp(DsGet(dsv, DS_ZFAIL_B, 4)), Cmp(DsGet(dsv, DS_SF_B, 4)), 0, 0, 0};
+  std::vector<VkPipelineColorBlendAttachmentState> cba(pd.nColor);
+  for (int i = 0; i < pd.nColor; i++) {
+    const BlendSt& b = pd.blend[i];
+    cba[i].blendEnable = (pd.blendEn >> i) & 1;
     const bool src1Ok = dual && i == 0;
     auto bf = [&](int f) {   // SRC1 factors only where the second source exists; elsewhere they read as the matching SRC factor
       if (!src1Ok && f >= BF_SRC1_COLOR && f <= BF_ONE_MINUS_SRC1_ALPHA) f = f - BF_SRC1_COLOR + BF_SRC_COLOR;
@@ -366,7 +386,7 @@ VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, co
     cba[i].srcColorBlendFactor = bf(b.srcRgb); cba[i].dstColorBlendFactor = bf(b.dstRgb);
     cba[i].srcAlphaBlendFactor = bf(b.srcA); cba[i].dstAlphaBlendFactor = bf(b.dstA);
     cba[i].colorBlendOp = BlendOp(b.eqRgb); cba[i].alphaBlendOp = BlendOp(b.eqA);
-    cba[i].colorWriteMask = (d.chmask.mask >> (4 * i)) & 0xF;   // r,g,b,a bits 0..3 == VK_COLOR_COMPONENT_R..A_BIT
+    cba[i].colorWriteMask = (pd.chmask >> (4 * i)) & 0xF;   // r,g,b,a bits 0..3 == VK_COLOR_COMPONENT_R..A_BIT
   }
   VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
   cb.attachmentCount = (uint32_t)cba.size(); cb.pAttachments = cba.data();
@@ -375,23 +395,49 @@ VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, co
                                 VK_DYNAMIC_STATE_BLEND_CONSTANTS};
   VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   ds.dynamicStateCount = (uint32_t)(sizeof dyn / sizeof *dyn); ds.pDynamicStates = dyn;
+  VkFormat colorFmts[8];
+  for (int i = 0; i < 8; i++) colorFmts[i] = (VkFormat)pd.colorFmt[i];
   VkPipelineRenderingCreateInfo ri{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-  ri.colorAttachmentCount = (uint32_t)rt.nColor; ri.pColorAttachmentFormats = rt.color;
-  ri.depthAttachmentFormat = rt.depth; ri.stencilAttachmentFormat = rt.stencil;
+  ri.colorAttachmentCount = (uint32_t)pd.nColor; ri.pColorAttachmentFormats = colorFmts;
+  ri.depthAttachmentFormat = (VkFormat)pd.depthFmt; ri.stencilAttachmentFormat = (VkFormat)pd.stencilFmt;
   VkGraphicsPipelineCreateInfo gi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
   gi.pNext = &ri;
   gi.stageCount = (uint32_t)stages.size(); gi.pStages = stages.data();
   gi.pVertexInputState = &vi; gi.pInputAssemblyState = &ia;
   gi.pTessellationState = topo == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ? &ts : nullptr;
   gi.pViewportState = &vp; gi.pRasterizationState = &rs; gi.pMultisampleState = &ms; gi.pDepthStencilState = &dss;
-  gi.pColorBlendState = &cb; gi.pDynamicState = &ds; gi.layout = p->layout;
+  gi.pColorBlendState = &cb; gi.pDynamicState = &ds; gi.layout = layout;
   VkPipeline pipe = VK_NULL_HANDLE;
+  const uint64_t perfT0 = snap_perf::on ? snap_perf::now_ns() : 0;
   if (vkCreateGraphicsPipelines(h->device, h->pipelineCache, 1, &gi, nullptr, &pipe) != VK_SUCCESS) {
     LogError("vkCreateGraphicsPipelines failed");
     return VK_NULL_HANDLE;
   }
-  std::lock_guard<std::mutex> lk(h->pipeMutex);
-  h->pipelines[key] = pipe;
+  if (snap_perf::on) {
+    const uint64_t dt = snap_perf::now_ns() - perfT0;
+    snap_perf::add(snap_perf::C_PIPE, dt); snap_perf::count(snap_perf::V_PIPES_CREATED);
+    char det[128]; snprintf(det, sizeof det, "gfx vs=%s fs=%s", pd.stage[0], pd.stage[1]);
+    snap_perf::event("pipeline", (double)dt / 1e6, det);
+  }
+  return pipe;
+}
+
+VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, const RtInfo& rt) {
+  Host* h = cx.h;
+  snap_perf::Scope perfGet(snap_perf::C_GETPIPE);
+  PipeDesc pd;
+  MakePipeDesc(pd, d, topo, rt);
+  bool pending = false;
+  // A draw into a target that is not rendered every frame (photo thumbnail, evaluation/capture targets, one-shot passes) cannot be skipped
+  // while its pipeline compiles: nothing redraws it, so the result would stay empty. Only per-frame targets (3+ consecutive frames) may skip.
+  bool mustHave = true;
+  if (TextureImpl* rt0 = cx.rt[0] ? cx.rt[0] : cx.rt[8]) {
+    const int now = g_presentCount;
+    if (rt0->lastDrawPresent != now) { rt0->drawStreak = rt0->lastDrawPresent == now - 1 ? rt0->drawStreak + 1 : 1; rt0->lastDrawPresent = now; }
+    mustHave = rt0->drawStreak < 3;
+  }
+  VkPipeline pipe = PipelineAcquire(h, pd, d.prog, &pending, mustHave);   // nvn_pipeline.cpp: ready map, inline or background compile, key recording
+  if (!pipe && pending) snap_perf::count(snap_perf::V_PIPES_SKIPPED);
   return pipe;
 }
 
@@ -517,7 +563,10 @@ BufBind ResolveBuf(Host* h, uint64_t addr, uint64_t size, uint64_t cap) {
   if (!h->ResolveAddress(addr, &pool, &off)) { LogError("buffer address 0x%llx is not in any memory pool", (unsigned long long)addr); return b; }
   if (!pool->buffer && !EnsureBacking(pool)) return b;
   uint64_t n = std::min<uint64_t>(size ? size : pool->size - off, pool->size - off);
-  SyncPoolRange(pool, off, n);
+  // A fragment-shader write-back into this pool is still in flight (photo evaluation counts): land it in guest memory first, or the
+  // sync below would copy the stale guest bytes over the GPU's result before the game has read it.
+  if (pool->wbPending.load(std::memory_order_relaxed) > 0) FlushReadbacks(h, true);
+  SyncPoolRangeOnce(pool, off, n);
   b.buf = pool->buffer; b.off = off; b.range = cap ? std::min(n, cap) : n; b.pool = pool;
   return b;
 }
@@ -577,8 +626,23 @@ VkImageView DummyView(const Dummies* dm, int shaderType) {
   }
 }
 
+// NVN storage-buffer index of a shader's storage buffer. The translator numbers them in the order the shader uses them ("slot"), but the
+// SASS loads each address from the driver constant buffer c0, and that offset is the real binding: Ryujinx GlobalMemory puts the
+// per-stage tables at word 0x44 + 64 * {VS 0, TCS 1, TES 2, GS 3, FS 4} (compute: like TES) with 4 words per index. Example:
+// EvaluationAggregatePS (GLSL binding = 1) has slot 0 at word 328 = 324 + 4, i.e. index 1; with the ordinal it read unbound slot 0
+// and its atomics went into the dummy buffer. Offsets outside the table keep the ordinal.
+int SsboIndex(int stage, const MSb& sb) {
+  static const int base[6] = {0x44, 0x44 + 4 * 64, 0x44 + 3 * 64, 0x44 + 64, 0x44 + 2 * 64, 0x44 + 2 * 64};   // NVN stage order: VS FS GS TCS TES CS
+  if (sb.sbCbSlot == 0 && stage >= 0 && stage < 6) {
+    const int w = sb.sbCbOffset - base[stage];
+    if (w >= 0 && (w & 3) == 0 && w / 4 < 16) return w / 4;
+  }
+  return sb.slot;
+}
+
 bool WriteDescriptors(ReplayCtx& cx, DrawState& d, ProgramImpl* p, const std::vector<TexWrite>& texWrites, VkPipelineBindPoint bind) {
   Host* h = cx.h;
+  snap_perf::Scope perfDesc(snap_perf::C_DESC);
   // descriptors
   Dummies* dm = h->dummies;
   std::deque<VkDescriptorBufferInfo> bufInfos;
@@ -606,9 +670,27 @@ bool WriteDescriptors(ReplayCtx& cx, DrawState& d, ProgramImpl* p, const std::ve
     }
     for (auto& sb : sp.sb) {
       BufBind b = {dm->zero, 0, 4096};
-      if (sb.slot >= 0 && sb.slot < 16 && d.ssbo[s][sb.slot].buf) b = d.ssbo[s][sb.slot];   // ordinal == NVN index (unverified)
+      const int sbIdx = SsboIndex(s, sb);
+      if (sbIdx >= 0 && sbIdx < 16 && d.ssbo[s][sbIdx].buf) b = d.ssbo[s][sbIdx];
       if (sb.write && b.pool && DebugDrawLogActive()) DebugDrawLog("  SSBO write stage %d slot %d pool %p off 0x%llx size 0x%llx poolsize 0x%llx\n", s, sb.slot, (void*)b.pool, (unsigned long long)b.off, (unsigned long long)b.range, (unsigned long long)b.pool->size);
-      if (sb.write && b.pool) MarkGpuWritten(b.pool, b.off, b.range);   // later CPU->GPU syncs must not clobber what the shader writes
+      if (s == 1 && sb.write) {   // debug (NVN_XFER_LOG): fragment-shader stores (photo evaluation, photo editing)
+        static const bool xl = getenv("NVN_XFER_LOG") != nullptr;
+        static int n = 0;
+        if (xl && n++ < 300) {
+          fprintf(stderr, "[xfer] p%d fragment SSBO write prog=%d fs=%s slot=%d pool=%p cpu=%d off=0x%llx range=0x%llx bound:", g_presentCount, (int)p->id, sp.key, sb.slot, (void*)b.pool, b.pool ? (int)b.pool->Cpu() : -1, (unsigned long long)b.off, (unsigned long long)b.range);
+          for (int k = 0; k < 16; k++) if (d.ssbo[1][k].buf) fprintf(stderr, " [%d]=%p+0x%llx", k, (void*)d.ssbo[1][k].pool, (unsigned long long)d.ssbo[1][k].off);
+          fprintf(stderr, "\n");
+        }
+      }
+      if (sb.write && b.pool) {
+        // Fragment-shader stores into a CPU pool are results the game reads back (EvaluationAggregatePS counts the visible pixels of each
+        // Pokemon with atomicAdd; the photo score comes from them). They are copied back into guest memory once the submit completes.
+        // Everything else (skinning compute output, megabytes per frame) stays GPU-owned: never read by the CPU, and reading it back
+        // from BAR memory would be slow.
+        static const bool noWb = getenv("NVN_NO_SHADER_WB") != nullptr;   // A/B switch: the old behavior (GPU-owned, never copied back)
+        if (!noWb && s == 1 && b.pool->Cpu() && b.pool->storage && b.pool->mapped && b.range <= (1u << 20)) QueueShaderWriteback(cx, b.pool, b.off, b.range);
+        else MarkGpuWritten(b.pool, b.off, b.range);   // later CPU->GPU syncs must not clobber what the shader writes
+      }
       if (sets[sb.set]) wBuf(sb.set, sb.binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b);
     }
   }
@@ -649,6 +731,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
   Host* h = cx.h;
   DrawState& d = *cx.ds;
   ProgramImpl* p = d.prog;
+  snap_perf::count(snap_perf::V_DRAWS);
   const bool indexed = c.op == Op::DrawIndexed;
   if (!p || !p->layout || !p->st[0].valid) { LogError("draw without a usable graphics program"); return; }
   VkPrimitiveTopology topo;
@@ -713,6 +796,25 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
 
   std::vector<TexWrite> texWrites;
   if (!PrepareTextures(cx, d, p, texWrites, true)) return;
+  if (const char* sigPath = getenv("NVN_DRAW_SIG")) {   // debug: one line per distinct (render targets, program, sampled textures) combination, the first time it is drawn
+    static FILE* sf = fopen(sigPath, "w");
+    static std::set<std::string> seen;
+    static const auto t0 = std::chrono::steady_clock::now();
+    char buf[1024]; int n = snprintf(buf, sizeof buf, "rt0=%p(%dx%d f%x) rt8=%p prog=%d vs=%s fs=%s:", (void*)cx.rt[0], cx.rt[0] ? cx.rt[0]->b.width : 0, cx.rt[0] ? cx.rt[0]->b.height : 0, cx.rt[0] ? cx.rt[0]->b.format : 0, (void*)cx.rt[8], (int)p->id, p->st[0].key, p->st[1].key);
+    for (auto& w : texWrites) if (w.r.t && n < 900) n += snprintf(buf + n, sizeof buf - n, " [b%d t=%p f%x %dx%d fl%x pool=%d up=%d]", w.binding, (void*)w.r.t, w.r.t->b.format, w.r.t->b.width, w.r.t->b.height, w.r.t->b.flags, w.r.t->b.pool != nullptr, (int)w.r.t->uploaded);
+    if (sf && seen.insert(buf).second) fprintf(sf, "[%.2f p%d] %s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), g_presentCount, buf), fflush(sf);
+  }
+  if (getenv("NVN_RT_DUMP")) {   // debug: dump the 360x240 photo thumbnail textures and the display texture they are made from
+    static std::set<uintptr_t> dumped;
+    const bool smallRt = cx.rt[0] && cx.rt[0]->b.width == 360 && cx.rt[0]->b.height == 240;
+    for (auto& w : texWrites) if (w.r.t && !w.r.feedback) {
+      const bool thumb = w.r.t->b.width == 360 && w.r.t->b.height == 240, disp = smallRt && w.r.t->b.width == 1920;
+      if (!(thumb || disp)) continue;
+      if (!dumped.insert((uintptr_t)w.r.t * 31u + (uintptr_t)p->id).second) continue;
+      char tag[64]; snprintf(tag, sizeof tag, "p%d_prog%d", g_presentCount, (int)p->id);
+      DebugDumpSampledTexture(cx, w.r.t, tag);
+    }
+  }
   if (DebugDrawLogActive()) {
     DebugDrawLog("draw prog=%d prim=%d n=%d rt0=%p(%dx%d f%x) vp=%d:", (int)p->id, c.i[0], c.i[2], (void*)cx.rt[0], cx.rt[0] ? cx.rt[0]->b.width : 0, cx.rt[0] ? cx.rt[0]->b.height : 0, cx.rt[0] ? cx.rt[0]->b.format : 0, cx.vpSet);
     for (auto& w : texWrites) if (w.r.t) DebugDrawLog(" [b%d t=%p f%x %dx%d fl%x pool=%d]", w.binding, (void*)w.r.t, w.r.t->b.format, w.r.t->b.width, w.r.t->b.height, w.r.t->b.flags, w.r.t->b.pool != nullptr);
@@ -748,10 +850,17 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     for (int i = 0; i < 16; i++) if (d.ssbo[0][i].buf) DebugDrawLog(" v%d(%llu)", i, (unsigned long long)d.ssbo[0][i].range);
     DebugDrawLog("\n");
   }
+  static const bool thumbLog = getenv("NVN_THUMB_LOG") != nullptr;
+  const bool thumbDraw = thumbLog && cx.rt[0] && cx.rt[0]->b.width == 360 && cx.rt[0]->b.height == 240;
+  if (thumbDraw) {
+    fprintf(stderr, "[thumb] p%d draw prog=%d prim=%d n=%d idx=%d rt0=%p f%x cull=%d vpSet=%d scSet=%d rendering=%d ntex=%zu:", g_presentCount, (int)p->id, c.i[0], c.i[2], (int)indexed, (void*)cx.rt[0], cx.rt[0]->b.format, (int)d.poly.cull, (int)cx.vpSet, (int)cx.scSet, (int)cx.rendering, texWrites.size());
+    for (auto& w : texWrites) fprintf(stderr, " [b%d t=%p view=%p fb=%d]", w.binding, (void*)w.r.t, (void*)w.r.view, (int)w.r.feedback);
+    fprintf(stderr, "\n");
+  }
   if (!cx.rendering) BeginRendering(cx, rt);
 
   VkPipeline pipe = GetPipeline(cx, d, topo, rt);
-  if (!pipe) return;
+  if (!pipe) { if (thumbDraw) fprintf(stderr, "[thumb] NO PIPELINE\n"); return; }
   vkCmdBindPipeline(cx.cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 
   // dynamic state that lives outside the pipeline
@@ -765,7 +874,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
   const float bc[4] = {0, 0, 0, 0};
   vkCmdSetBlendConstants(cx.cb, bc);
 
-  if (!WriteDescriptors(cx, d, p, texWrites, VK_PIPELINE_BIND_POINT_GRAPHICS)) return;
+  if (!WriteDescriptors(cx, d, p, texWrites, VK_PIPELINE_BIND_POINT_GRAPHICS)) { if (thumbDraw) fprintf(stderr, "[thumb] WriteDescriptors FAILED\n"); return; }
 
   Dummies* dm = h->dummies;
   // vertex buffers (one binding per referenced stream; an unbound stream reads zeros)
@@ -787,11 +896,16 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     if (!h->ResolveAddress(c.a[0], &pool, &off)) { LogError("index buffer address 0x%llx is not in any memory pool", (unsigned long long)c.a[0]); return; }
     const uint64_t isz = c.i[1] == IDX_U32 ? 4 : 2;
     if (!pool->buffer && !EnsureBacking(pool)) return;
-    SyncPoolRange(pool, off, isz * (uint64_t)std::max(c.i[2], 0));
+    SyncPoolRangeOnce(pool, off, isz * (uint64_t)std::max(c.i[2], 0));
     vkCmdBindIndexBuffer(cx.cb, pool->buffer, off, c.i[1] == IDX_U32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
     vkCmdDrawIndexed(cx.cb, (uint32_t)c.i[2], (uint32_t)std::max(c.i[5], 1), 0, c.i[3], (uint32_t)c.i[4]);
   } else {
     vkCmdDraw(cx.cb, (uint32_t)c.i[2], (uint32_t)std::max(c.i[4], 1), (uint32_t)c.i[1], (uint32_t)c.i[3]);
+  }
+  if (thumbDraw) {
+    fprintf(stderr, "[thumb] recorded\n");
+    if (g_fdBurst <= 0) g_fdBurst = 60;   // request a burst of NVN_FRAME_DUMP frames
+    if (getenv("NVN_RT_DUMP")) { char tag[64]; snprintf(tag, sizeof tag, "p%d_out_prog%d", g_presentCount, (int)p->id); DebugDumpSampledTexture(cx, cx.rt[0], tag); }
   }
 }
 
@@ -880,11 +994,13 @@ void DoCopyBufferToTexture(ReplayCtx& cx, const Cmd& c) {
     bc.imageSubresource.baseArrayLayer = 0; bc.imageSubresource.layerCount = 1;
     bc.imageOffset = {r.x, r.y, r.z}; bc.imageExtent = {(uint32_t)r.w, (uint32_t)std::max(r.h, 1), (uint32_t)std::max(r.d, 1)};
   }
-  SyncPoolRange(pool, off, (uint64_t)bc.imageExtent.width * bc.imageExtent.height * std::max<uint64_t>(bc.imageExtent.depth, bc.imageSubresource.layerCount) * t->fi->bytes / (t->fi->bw * t->fi->bh) + 16);
+  SyncPoolRangeOnce(pool, off, (uint64_t)bc.imageExtent.width * bc.imageExtent.height * std::max<uint64_t>(bc.imageExtent.depth, bc.imageSubresource.layerCount) * t->fi->bytes / (t->fi->bw * t->fi->bh) + 16);
   vkCmdCopyBufferToImage(cx.cb, pool->buffer, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bc);
 }
 
 }  // namespace
+
+VkPipeline CreateGraphicsPipeline(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout) { return CreateGraphicsPipelineImpl(h, pd, st, layout); }
 
 // ---- exported to nvn_vk.cpp -------------------------------------------------------------------------------------------------
 void EndRendering(ReplayCtx& c) {
@@ -1114,34 +1230,13 @@ VkDescriptorPool AcquireDescriptorPool(QueueImpl* q) {
 }
 
 // ---- pipeline cache persistence + shutdown ----------------------------------------------------------------------------------
-void LoadPipelineCache(Host* h) {
-  std::ifstream f(h->cacheDir + "\\pipeline_cache.bin", std::ios::binary);
-  if (!f) return;
-  std::vector<char> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  if (data.empty()) return;
-  VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-  ci.initialDataSize = data.size(); ci.pInitialData = data.data();
-  VkPipelineCache pc = VK_NULL_HANDLE;
-  if (vkCreatePipelineCache(h->device, &ci, nullptr, &pc) == VK_SUCCESS) {
-    if (h->pipelineCache) vkDestroyPipelineCache(h->device, h->pipelineCache, nullptr);
-    h->pipelineCache = pc;
-    Log("pipeline cache loaded (%zu bytes)", data.size());
-  }
-}
+// The pipeline cache, the recorded pipeline keys and the background compile pool live in nvn_pipeline.cpp (versioned files in the shader
+// cache directory, saved periodically, not only at teardown).
+void LoadPipelineCache(Host* h) { PipelineServiceInit(h); }
 
 void DestroyHostExtras(Host* h) {
   DestroyQueryPools(h);
-  if (h->pipelineCache) {
-    size_t n = 0;
-    if (vkGetPipelineCacheData(h->device, h->pipelineCache, &n, nullptr) == VK_SUCCESS && n) {
-      std::vector<char> data(n);
-      if (vkGetPipelineCacheData(h->device, h->pipelineCache, &n, data.data()) == VK_SUCCESS) {
-        std::ofstream f(h->cacheDir + "\\pipeline_cache.bin", std::ios::binary | std::ios::trunc);
-        f.write(data.data(), (std::streamsize)n);
-        Log("pipeline cache saved (%zu bytes)", n);
-      }
-    }
-  }
+  PipelineServiceShutdown(h);   // joins the compile workers, saves the pipeline cache, destroys the graphics pipelines
   for (auto& kv : h->pipelines) vkDestroyPipeline(h->device, kv.second, nullptr);
   h->pipelines.clear();
   for (VkShaderModule m : h->variantMods) vkDestroyShaderModule(h->device, m, nullptr);

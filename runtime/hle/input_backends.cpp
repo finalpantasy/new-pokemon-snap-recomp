@@ -55,6 +55,7 @@ void merge_pad(RawInput& dst, const RawInput& src) {
   auto big = [](float& d, float s) { if (std::fabs(s) > std::fabs(d)) d = s; };
   big(dst.lx, src.lx); big(dst.ly, src.ly); big(dst.rx, src.rx); big(dst.ry, src.ry);
   dst.lt = std::max(dst.lt, src.lt); dst.rt = std::max(dst.rt, src.rt);
+  if (src.gyro_present) { dst.gyro_present = true; dst.gyro_x = src.gyro_x; dst.gyro_y = src.gyro_y; dst.gyro_z = src.gyro_z; }
 }
 
 #ifdef HLE_WITH_SDL3
@@ -118,7 +119,11 @@ struct SdlPads {
         SDL_free(map);
       }
       if (!is_pad) continue;
-      if (SDL_Gamepad* g = SDL_OpenGamepad(id)) { pads.push_back(g); say("sdl gamepad opened: '%s'", SDL_GetGamepadName(g)); }
+      if (SDL_Gamepad* g = SDL_OpenGamepad(id)) {
+        pads.push_back(g);
+        say("sdl gamepad opened: '%s' gyro=%s rumble=%s", SDL_GetGamepadName(g), SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) ? "yes" : "no",
+            SDL_GetBooleanProperty(SDL_GetGamepadProperties(g), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) ? "yes" : "no");
+      }
       else say("sdl gamepad open failed (id %u): %s", (unsigned)id, SDL_GetError());
     }
     // forget ids that disappeared so a re-plug is reported again
@@ -148,9 +153,28 @@ struct SdlPads {
       r.lx = ax(SDL_GAMEPAD_AXIS_LEFTX); r.ly = -ax(SDL_GAMEPAD_AXIS_LEFTY);  // SDL y is down positive
       r.rx = ax(SDL_GAMEPAD_AXIS_RIGHTX); r.ry = -ax(SDL_GAMEPAD_AXIS_RIGHTY);
       r.lt = std::max(0.0f, ax(SDL_GAMEPAD_AXIS_LEFT_TRIGGER)); r.rt = std::max(0.0f, ax(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
+      if (pad_fx().gyro_on.load() && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO)) {
+        if (!SDL_GamepadSensorEnabled(pad, SDL_SENSOR_GYRO)) SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
+        float g[3] = {0, 0, 0};
+        if (SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3)) {   // rad/s
+          constexpr float kDeg = 57.29578f;
+          r.gyro_present = true;
+          r.gyro_x = g[0] * kDeg; r.gyro_y = g[1] * kDeg; r.gyro_z = g[2] * kDeg;
+        }
+      }
       merge_pad(out, r);
     }
     return !pads.empty();
+  }
+  // Rumble on every open pad that supports it (DualSense, Xbox, Switch Pro ...). True when at least one pad accepted it.
+  bool rumble(float low, float high) {
+    bool any = false;
+    const Uint16 lo = (Uint16)(std::clamp(low, 0.0f, 1.0f) * 65535), hi = (Uint16)(std::clamp(high, 0.0f, 1.0f) * 65535);
+    for (SDL_Gamepad* pad : pads) {
+      if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) continue;
+      if (SDL_RumbleGamepad(pad, lo, hi, (lo || hi) ? 500 : 0)) any = true;   // 500 ms: the game repeats while it wants rumble
+    }
+    return any;
   }
 };
 #endif
@@ -260,6 +284,9 @@ class Win32Backend final : public Backend {
   }
 
   void rumble(float low, float high) override {
+#ifdef HLE_WITH_SDL3
+    if (sdl_.rumble(low, high)) { if (set_ && rumbling_) { XVibration z{0, 0}; set_(pad_index_, &z); rumbling_ = false; } return; }   // SDL drives it; no double rumble through XInput
+#endif
     if (!set_ || !out_connected()) return;
     XVibration v{(WORD)(std::clamp(low, 0.0f, 1.0f) * 65535), (WORD)(std::clamp(high, 0.0f, 1.0f) * 65535)};
     set_(pad_index_, &v);

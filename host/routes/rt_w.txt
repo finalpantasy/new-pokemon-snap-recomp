@@ -1,0 +1,7 @@
+# fixture: post_tutorial
+# Yard tutorial: lx sweeps swing the view past Pikachu; one short pointer-down pulse (ly +) puts the pointer at Pikachu's height; A mash shoots.
+repeat @f1500 @f8000 50 12 A
+repeat @f8000 @f60000 8 3 A
+@f8100 80 ly=0.1
+repeat @f8100 @f60000 600 300 lx=-0.3
+repeat @f8400 @f60000 600 300 lx=0.3

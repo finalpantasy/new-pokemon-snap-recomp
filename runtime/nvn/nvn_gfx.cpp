@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "nvn_internal.h"
@@ -181,9 +182,20 @@ Boolean SamplerInitialize(void* samp, const void* builder) {
   const bool mips = mn >= 2;
   ci.mipmapMode = (mn == 4 || mn == 5) ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
   ci.addressModeU = Wrap(b->wrap[0]); ci.addressModeV = Wrap(b->wrap[1]); ci.addressModeW = Wrap(b->wrap[2]);
-  ci.mipLodBias = b->lodBias;
+  // Host overrides (SNAP_ANISO, SNAP_LOD_BIAS): only mipmapped, non-comparison samplers. Aniso also needs linear min and mag
+  // filtering, so point/nearest samplers and shadow-compare samplers keep the game's values.
+  float bias = b->lodBias;
+  if (mips && b->compareMode == 0) {
+    float extra = g_lodBiasExtra;
+    // auto: -log2(output / render), the upscaler mip bias. A higher render scale already picks finer mips by itself, so native
+    // scaling (window textures scaled too) gives 0, and supersampling (scaleDisplay off) is clamped to 0.
+    if (g_lodBiasAuto) { const float out = g_scale.scaleDisplay ? g_scale.scale : 1.f; extra = g_scale.scale > 0.f ? std::min(0.f, -std::log2(out / g_scale.scale)) : 0.f; }
+    bias = std::clamp(bias + extra, -15.99f, 15.99f);
+  }
+  ci.mipLodBias = bias;
   float aniso = b->aniso;
-  if (g_anisoOverride > 1.f && mips && b->compareMode == 0) aniso = std::max(aniso, g_anisoOverride);
+  const bool linearMinMag = (mn == 1 || mn == 3 || mn == 5) && b->magFilter == 1;
+  if (g_anisoOverride > 1.f && mips && b->compareMode == 0 && linearMinMag) aniso = std::max(aniso, g_anisoOverride);
   if (aniso > 1.f && h->props.limits.maxSamplerAnisotropy > 1.f) {
     VkPhysicalDeviceFeatures f; vkGetPhysicalDeviceFeatures(h->phys, &f);
     if (f.samplerAnisotropy) { ci.anisotropyEnable = VK_TRUE; ci.maxAnisotropy = std::min(aniso, h->props.limits.maxSamplerAnisotropy); }

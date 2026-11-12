@@ -149,11 +149,20 @@ struct PoolImpl {
   // Byte ranges the GPU writes (storage-buffer outputs, e.g. skinning compute). SyncPoolRange skips them: the CPU copy is stale there.
   std::mutex gpuMutex;
   std::vector<std::pair<uint64_t, uint64_t>> gpuRanges;   // [begin, end)
+  // Ranges already copied into the mirror during the current SubmitLists (SyncPoolRangeOnce); valid while syncEpoch == g_replayEpoch.
+  uint64_t syncEpoch = 0;
+  std::vector<std::pair<uint64_t, uint64_t>> synced;
+  // Fragment-shader SSBO writes into this CPU pool that are submitted but not yet copied back to guest memory (Readback kind 3).
+  std::atomic<int> wbPending{0};
   bool Cpu() const { return !(flags & MP_CPU_NO_ACCESS); }
 };
 bool EnsureBacking(PoolImpl* p);
 // Copy [off, off+size) of the guest storage into the Vulkan mirror (call before the GPU reads that range).
 void SyncPoolRange(PoolImpl* p, uint64_t off, uint64_t size);
+// Replay-time variant: copies a range at most once per SubmitLists (the guest is blocked inside the submit, so the CPU bytes cannot change
+// between two draws of the same list). Draws that bind the same big buffer range repeatedly used to copy it every time.
+void SyncPoolRangeOnce(PoolImpl* p, uint64_t off, uint64_t size);
+extern uint64_t g_replayEpoch;
 void MarkGpuWritten(PoolImpl* p, uint64_t off, uint64_t size);   // the GPU writes this range from now on
 
 struct BufferImpl { PoolImpl* pool = nullptr; int64_t offset = 0; uint64_t size = 0; };
@@ -163,6 +172,7 @@ struct TexPoolImpl { Host* host = nullptr; std::unordered_map<int, TexSlot> slot
 struct SampPoolImpl { Host* host = nullptr; std::unordered_map<int, SamplerImpl*> slots; };
 
 struct TextureImpl {
+  int lastDrawPresent = -10; int drawStreak = 0;   // GetPipeline: consecutive presented frames this texture was drawn to (a pending pipeline may only be skipped for per-frame targets)
   Host* host = nullptr;
   TextureBuilder b{};
   const FormatInfo* fi = nullptr;
@@ -206,6 +216,7 @@ struct MTex { int set, binding, handleIndex, cbufSlot, type, array, separate; };
 struct StageProg {
   bool valid = false;
   char key[16] = {};                   // first 12 hex digits of the translation cache key (draw log)
+  char fkey[72] = {};                  // the full translation cache key (nvn_pipeline.cpp reloads the stage from the cache by it)
   int stage = 0;                       // NVN stage: 0 VS 1 FS 2 GS 3 TCS 4 TES 5 CS
   VkShaderModule mod = VK_NULL_HANDLE;
   std::vector<MCb> cb;
@@ -233,6 +244,7 @@ struct ProgramImpl {
 };
 bool PatchAlphaTest(const std::vector<uint32_t>& in, int func, std::vector<uint32_t>& out);   // nvn_alpha.cpp
 bool SpvSetLocalSize(std::vector<uint32_t>& spv, uint32_t x, uint32_t y, uint32_t z);   // compute workgroup size from the NVN control section
+bool SpvAddEarlyFragmentTests(std::vector<uint32_t>& spv);              // nvn_alpha.cpp: layout(early_fragment_tests) from control+0x718 bit 0
 bool SpvAddStorageImageCaps(std::vector<uint32_t>& spv);                  // nvn_alpha.cpp: SPIR-V fixes for the translated modules
 uint32_t SpvVertexInputMask(const std::vector<uint32_t>& in);
 std::vector<int> SpvFragmentOutputs(const std::vector<uint32_t>& in);
@@ -253,7 +265,11 @@ struct Readback {
   ScratchBuf sb; uint8_t* map = nullptr;
   uint8_t* dst = nullptr; uint64_t size = 0;
   int kind = 0;           // 0 raw copy, 1 counter report: map = [timestamp ticks][n occlusion results], dst = {counter, timestamp ns}
+                          // 3 shader write-back: map = the pool's mapped mirror (no scratch), expect = guest bytes when the GPU took them
   int counterType = 0; uint32_t nOcc = 0;
+  struct PoolImpl* pool = nullptr; uint64_t poolOff = 0;   // kind 3
+  std::vector<uint8_t> expect;                            // kind 3: the CPU changed the range since the submit if the guest bytes differ
+  std::string dumpPath;   // kind 2: debug dump of a texture to this file (NVN_RT_DUMP)
 };
 struct ReplayCtx {
   Host* h = nullptr;
@@ -268,6 +284,9 @@ struct ReplayCtx {
   bool rtHasView[9] = {};
   bool rendering = false;
   bool vpSet = false, scSet = false;
+  // guest (unscaled) viewport / scissor 0..3 as last set, re-applied when SetRenderTargets changes the render scale (the game
+  // often sets them before binding targets, so a value scaled for the previous target would land in a corner of a scaled one)
+  float vpGuest[4][4] = {}; int scGuest[4][4] = {}; uint8_t vpHave = 0, scHave = 0; float vpScale = 1.0f, scScale = 1.0f;
   DrawState* ds = nullptr;
 };
 
@@ -382,10 +401,15 @@ struct ScalePolicy {
   std::vector<Exempt> exempt;
   std::vector<uint32_t> exemptTags;
   uint32_t nextTag = 0;                               // consumed by the next TextureInitialize
+  int shadowRes = 0;                                  // 0 = original; else side of the 1024x1024 depth shadow maps
+  bool scaleDisplay = true;                           // window (DISPLAY) textures follow the scale too, else the output stays 1080p
   ScalePolicy();
   float For(const TextureBuilder& b, uint32_t tag) const;   // 1.0 when the texture is not scaled
 };
 extern ScalePolicy g_scale;
+extern float g_lodBiasExtra;    // SNAP_LOD_BIAS: added to the game's bias on mipmapped, non-compare samplers
+extern bool g_lodBiasAuto;      // SNAP_LOD_BIAS=auto: -log2(render scale)
+extern void ApplyHostEnvPolicy();   // SNAP_ANISO, SNAP_LOD_BIAS, SNAP_RENDER_SCALE, SNAP_SHADOW_RES (called from DeviceInitialize)
 extern float g_anisoOverride;   // 0 = off; else forced max anisotropy for mipmapped, non-compare samplers
 extern double g_paceHz;          // rate of present interval 1; 0 = display-paced only
 
@@ -435,9 +459,11 @@ extern uint64_t g_replaySeq;           // incremented once per replayed command 
 void RefreshDynamicTexture(ReplayCtx& cx, TextureImpl* t);   // re-uploads a CPU-written pool texture whose guest bytes changed
 // nvn_xfer.cpp: replay of the GPU->guest transfer commands and the readback queue
 void DoCopyTextureToBuffer(ReplayCtx& cx, const struct Cmd& c);
+void DebugDumpSampledTexture(ReplayCtx& cx, TextureImpl* t, const char* tag);   // nvn_xfer.cpp: NVN_RT_DUMP=<dir>
 void DoCopyTextureToTexture(ReplayCtx& cx, const struct Cmd& c);
 void DoReportCounter(ReplayCtx& cx, const struct Cmd& c);
 void DoMaskedClear(ReplayCtx& cx, TextureImpl* t, const TexView* tv, int mask, const float* color);   // nvn_draw.cpp
+void QueueShaderWriteback(ReplayCtx& cx, PoolImpl* pool, uint64_t off, uint64_t size);   // nvn_draw.cpp: fragment SSBO copy-back (Readback kind 3)
 void FlushReadbacks(Host* h, bool wait);   // applies completed readbacks to guest memory (in submission order)
 void DestroyQueryPools(Host* h);
 VkDescriptorPool AcquireDescriptorPool(QueueImpl* q);                    // nvn_draw.cpp
@@ -446,5 +472,6 @@ void DestroyWindow(WindowImpl* w);
 SyncWaitResult WaitSync(const SyncImpl* s, uint64_t timeoutNs);
 // Host-visible, coherent buffer (mapped persistently); used for constant data, dummy UBOs and the support buffer.
 bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem, void** mapped);
+extern int g_fdBurst;   // NVN_FRAME_DUMP burst counter (set by the photo-thumbnail debug log)
 
 }  // namespace nvn

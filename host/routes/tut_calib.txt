@@ -1,0 +1,29 @@
+# fixture: new_game
+# Calibration in the yard tutorial: right-stick yaw pulses, pitch pulses, then left-stick pointer pulses; dwell between, A taps.
+repeat @f1500 @f9000 50 12 A
+repeat @f9000 @f80000 30 4 A
+@f15000 3 rx=-0.3
+@f15100 3 rx=-0.3
+@f15200 3 rx=-0.3
+@f15300 3 rx=-0.3
+@f15400 3 rx=-0.3
+@f15500 3 rx=-0.3
+@f15600 3 ry=-0.3
+@f15700 3 ry=-0.3
+@f15800 3 ry=-0.3
+@f15900 3 ry=-0.3
+@f16000 3 ry=-0.3
+@f16100 3 ry=-0.3
+@f16200 3 lx=-0.3
+@f16300 3 lx=-0.3
+@f16400 3 lx=-0.3
+@f16500 3 lx=-0.3
+@f16600 3 lx=-0.3
+@f16700 3 lx=-0.3
+@f16800 3 ly=-0.3
+@f16900 3 ly=-0.3
+@f17000 3 ly=-0.3
+@f17100 3 ly=-0.3
+@f17200 3 ly=-0.3
+@f17300 3 ly=-0.3
+# end f17400

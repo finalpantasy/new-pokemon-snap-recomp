@@ -1,0 +1,22 @@
+{
+  "browser": "Headless installed Edge via Playwright",
+  "viewport": "1440 × 1000; 390 × 844",
+  "checks": [
+    "manifest, list, and local module loading",
+    "both model variants, normal maps, and alpha test",
+    "shared orbit camera and keyboard-accessible split divider",
+    "LOD geometry changes and wireframe",
+    "alternate model A/B against the original with triangle and vertex counts",
+    "texture A/B with mismatched sizes shares one UV region; native 1:1 toggle; nearest at 4x",
+    "texture sizes, 1–16x zoom, RGB/R/G/B/A, synced pan, and divider",
+    "search, category filter, and texture-only assets",
+    "390px layout without horizontal overflow",
+    "traversal and private app file rejection",
+    "server alt-model merge (id, then case-insensitive name), read-only /external/",
+    "missing alt_models.json and empty cache handled with the build command message",
+    "partial variant fallback with a visible notice",
+    "rendered missing-cache message and pipeline command",
+    "zero browser console errors and page exceptions"
+  ],
+  "errors": []
+}

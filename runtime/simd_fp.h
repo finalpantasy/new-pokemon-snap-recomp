@@ -268,11 +268,17 @@ SI VT FN(vfz)(Cpu *c, VT a) { return c->fpcr & FPCR_FZ ? FN(vflush)(a) : a; }
 // under DAZ read a denormal operand as a zero of its sign, as ARM compares do under FZ.
 SI uint64_t FN(cmp)(Cpu *c, T a, T b) { // FCMP NZCV
     (void)c;
+    // Opaque copies: with MXCSR.DAZ set (FPCR.FZ) the host compare reads a denormal as zero, but LLVM folds a compare
+    // of a bitcast integer with 0.0 into an integer test that does not. The asm keeps it a host FP compare.
+    __asm__("" : "+x"(a));
+    __asm__("" : "+x"(b));
     return a == b ? 0x60000000ull : a < b ? 0x80000000ull : a > b ? 0x20000000ull : 0x30000000ull;
 }
 // FCMEQ/FCMGE/FCMGT/FACGE/FACGT (op 0..4)
 SI VTU FN(vcmp)(Cpu *c, int op, VT a, VT b) {
     (void)c;
+    __asm__("" : "+x"(a));  // see FN(cmp): keep the compare on the host FP unit under DAZ
+    __asm__("" : "+x"(b));
     if (op >= 3) a = __builtin_elementwise_abs(a), b = __builtin_elementwise_abs(b);
     switch (op) {
     case 0: return (VTU)(a == b);

@@ -62,7 +62,23 @@ struct RawInput {
   uint8_t mouse_buttons = 0;           // MouseBtn bits: left, right, middle, x1, x2, wheel up and down (a short pulse per notch)
   float mouse_dx = 0, mouse_dy = 0;    // pixels moved since the previous backend poll
   float mouse_vx = 0, mouse_vy = 0;    // pixels per second, filled by the Hub from mouse_dx/dy (used by mouse-look); y down positive
+  bool gyro_present = false;           // a connected pad reports a gyroscope (SDL3 sensor API)
+  float gyro_x = 0, gyro_y = 0, gyro_z = 0;   // angular rate in deg/s, SDL axes: x = pitch (positive tips the front up), y = yaw (positive turns left), z = roll
 };
+
+// Controller extras, set from the profile settings (runtime/hle/settings.cpp) and read on every poll.
+struct PadFx {
+  std::atomic<bool> gyro_on{false};              // gyro drives the right (camera) stick, added to the stick and mouse-look
+  std::atomic<float> gyro_sens{1.0f};            // 1 = full stick deflection at kGyroFullDegPerSec
+  std::atomic<bool> gyro_invert_x{false}, gyro_invert_y{false};
+  std::atomic<bool> rumble_on{true};
+  std::atomic<float> rumble_strength{1.0f};      // 0..1.5 scale on both motors
+};
+PadFx& pad_fx();
+constexpr float kGyroFullDegPerSec = 90.0f;     // turn rate that gives full stick deflection at sensitivity 1
+constexpr float kGyroDeadDegPerSec = 1.5f;      // below this the sensor noise is ignored
+// Gyro rate to camera stick (-1..1, y up positive). Pure; used by map_pad and the tests.
+void gyro_to_stick(float yaw_rate_left_pos_dps, float pitch_rate_up_pos_dps, float sens, bool inv_x, bool inv_y, float* sx, float* sy);
 
 class Backend {
  public:

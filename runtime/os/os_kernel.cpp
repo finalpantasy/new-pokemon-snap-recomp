@@ -360,7 +360,19 @@ static void note_cores_in_use() {
     int m = g_stats.max_cores_in_use.load();
     if (n > m) g_stats.max_cores_in_use = n;
 }
-static void take_core(Thread *t, int c) {
+// Core handoff invariant (under G): for every free core, its best waiter has been notified since the last change to the
+// free cores, the wait list, or a waiter's priority or mask. A waiter takes a core only if it is that core's best waiter,
+// so a best waiter left asleep blocks the core for every other waiter (intro hang 2026-11-12: three pinned threads slept
+// in acquire_core with all cores free). Call this after any such change.
+static void kick_free_cores() {
+    for (int i = 0; i < ncores(); i++)
+        if (!g_cores[i])
+            if (Thread *w = best_waiter_for(i)) {
+                w->core_kicked = true;
+                w->cv.notify_one();
+            }
+}
+static void take_core(Thread *t, int c) {   // t has already left g_core_wait
     t->core = c;
     if (c < ncores()) {
         g_cores[c] = t;
@@ -369,9 +381,11 @@ static void take_core(Thread *t, int c) {
     t->core_since = now_us();
     t->preempt = 0;
     note_cores_in_use();
-    for (int i = 0; i < ncores(); i++)   // two cores may have been freed for one best waiter
-        if (!g_cores[i])
-            if (Thread *w = best_waiter_for(i)) w->cv.notify_one();
+    kick_free_cores();   // two cores may have been freed for one best waiter: pass the other one on
+}
+static void leave_core_wait(Thread *t) {
+    g_core_wait.erase(std::find(g_core_wait.begin(), g_core_wait.end(), t));
+    t->waiting_core = false;
 }
 
 void acquire_core(Thread *t, Lock &lk) {
@@ -380,7 +394,7 @@ void acquire_core(Thread *t, Lock &lk) {
     t->waiting_core = true;
     g_core_wait.push_back(t);
     uint64_t deadline = 0;
-    bool counted = false;
+    bool counted = false, rescue_wait = false;
     const uint64_t slice = g_cfg.rr_slice_us, over = g_cfg.overcommit_us;
     for (;;) {
         int cand[8], nc = 0;
@@ -394,9 +408,16 @@ void acquire_core(Thread *t, Lock &lk) {
         for (int c = 0; c < ncores() && pick < 0; c++)
             if (!g_cores[c] && can_use(t, c) && best_waiter_for(c) == t) pick = c;
         if (pick >= 0) {
+            if (rescue_wait) {
+                g_stats.core_wake_rescues++;
+                log("os: lost core wakeup: thread %#x prio %d found core %d free after %u ms", t->handle, t->eff_prio, pick,
+                    g_cfg.core_rescue_ms);
+            }
+            leave_core_wait(t);   // before take_core, so its kick cannot pick t again for another free core
             take_core(t, pick);
-            break;
+            return;
         }
+        rescue_wait = false;
         if (!counted) {
             g_stats.core_waits++;
             counted = true;
@@ -419,6 +440,7 @@ void acquire_core(Thread *t, Lock &lk) {
                 if (!victim->preempt.exchange(1)) g_stats.preempt_requests++;
                 if (!deadline) deadline = now + over;
                 if (now >= deadline) {   // the holder does not poll: run on an overflow core
+                    leave_core_wait(t);
                     take_core(t, ncores());
                     g_overflow++;
                     g_stats.overflow_grants++;
@@ -426,18 +448,21 @@ void acquire_core(Thread *t, Lock &lk) {
                     if (g_cfg.trace)
                         log("overflow core for thread %#x prio %d (holder %#x prio %d did not yield)", t->handle,
                             t->eff_prio, victim->handle, victim->eff_prio);
-                    break;
+                    return;
                 }
                 wait_us = (int64_t)(deadline - now);
             } else if (rr) {
                 wait_us = (int64_t)(victim->core_since + slice - now);
             }
         }
-        if (wait_us < 0) t->cv.wait(lk);
-        else t->cv.wait_for(lk, std::chrono::microseconds(wait_us + 50));
+        if (wait_us < 0) {   // nothing to time: wait for a handoff, with a safety-net recheck that counts a missed one
+            t->core_kicked = false;
+            bool timed_out = t->cv.wait_for(lk, std::chrono::milliseconds(g_cfg.core_rescue_ms)) == std::cv_status::timeout;
+            rescue_wait = timed_out && !t->core_kicked;   // a handoff that raced the timeout is not a lost one
+        } else {
+            t->cv.wait_for(lk, std::chrono::microseconds(wait_us + 50));
+        }
     }
-    g_core_wait.erase(std::find(g_core_wait.begin(), g_core_wait.end(), t));
-    t->waiting_core = false;
 }
 
 void release_core(Thread *t) {
@@ -447,7 +472,7 @@ void release_core(Thread *t) {
     t->preempt = 0;
     if (c < ncores()) {
         g_cores[c] = nullptr;
-        if (Thread *w = best_waiter_for(c)) w->cv.notify_one();
+        kick_free_cores();
     } else {
         g_overflow--;
     }
@@ -470,7 +495,10 @@ void recompute_priority(Thread *t) {
         if (p == t->eff_prio) break;
         if (p < t->eff_prio) g_stats.pi_boosts++;
         t->eff_prio = p;
-        if (t->waiting_core) t->cv.notify_one();
+        if (t->waiting_core) {   // t re-evaluates its victim; a free core may now have a different best waiter
+            t->cv.notify_one();
+            kick_free_cores();
+        }
         t = t->wkind == W_LOCK ? t->lock_owner : nullptr;
     }
 }
@@ -793,7 +821,10 @@ void set_core_mask(Thread *t, int ideal, uint64_t mask) {
     t->ideal = ideal;   // -1: IdealCoreDontCare
     t->mask = mask;
     if (t->core >= 0 && t->core < ncores() && !can_use(t, t->core)) t->preempt = 1;   // migrate at the next poll
-    if (t->waiting_core) t->cv.notify_one();
+    if (t->waiting_core) {
+        t->cv.notify_one();
+        kick_free_cores();   // t may no longer be the best waiter of a free core
+    }
 }
 
 void change_priority(Thread *t, int prio) {
@@ -808,7 +839,10 @@ void change_priority(Thread *t, int prio) {
     if (t->eff_prio > old && t->core >= 0 && t->core < ncores())
         for (Thread *w : g_core_wait)
             if (can_use(w, t->core) && w->eff_prio < t->eff_prio) t->preempt = 1;
-    if (t->waiting_core) t->cv.notify_one();
+    if (t->waiting_core) {
+        t->cv.notify_one();
+        kick_free_cores();   // t may no longer be the best waiter of a free core
+    }
 }
 
 }  // namespace osk
@@ -816,9 +850,20 @@ void change_priority(Thread *t, int prio) {
 using namespace osk;
 
 // ---- C interface
+// Guest time freeze (host/window_opts.cpp pauses the game when the window loses focus): while paused, GetSystemTick stands still and the
+// paused span is subtracted afterwards, so the game's frame delta does not jump on resume.
+static std::mutex g_pause_mu;   // one lock so a tick read never sees the pause flag and the total out of step (time must not go backwards)
+static int64_t g_paused_total = 0, g_pause_start = 0;
+extern "C" void os_time_pause(int on) {
+    LARGE_INTEGER n; QueryPerformanceCounter(&n);
+    std::lock_guard<std::mutex> lk(g_pause_mu);
+    if (on) { if (!g_pause_start) g_pause_start = n.QuadPart; }
+    else if (g_pause_start) { g_paused_total += n.QuadPart - g_pause_start; g_pause_start = 0; }
+}
 extern "C" uint64_t os_ticks(void) {
     LARGE_INTEGER n;
     QueryPerformanceCounter(&n);
+    { std::lock_guard<std::mutex> lk(g_pause_mu); if (g_pause_start) n.QuadPart = g_pause_start; n.QuadPart -= g_paused_total; }
     uint64_t d = (uint64_t)(n.QuadPart - qpc_start());
     uint64_t f = (uint64_t)qpc_freq();   // split so no 128-bit division (__udivti3) is needed; (d % f) * 19.2e6 < 2^63
     return g_cfg.tick_base + d / f * OS_TICK_FREQUENCY + d % f * OS_TICK_FREQUENCY / f;
@@ -912,6 +957,17 @@ extern "C" void os_dump_threads(void (*emit)(void *ud, uint64_t tt, uint64_t id,
         emit(ud, t->tt, t->id | ((uint64_t)(t->waiting_core ? 1 : 0) << 62) | ((t->mask & 0xff) << 48) | ((uint64_t)((t->ideal + 4) & 0xf) << 56), t->wkind, t->wkey, t->waddr, t->core, t->eff_prio, t->cur ? t->cur : t->cpu);
     }
     for (int c = 0; c < g_cfg.num_cores; c++) emit(ud, 0xC0DE, (uint64_t)c, 99, 0, 0, c, g_cores[c] ? g_cores[c]->eff_prio : -1, nullptr);   // core occupancy: id = core, prio = holder prio
+    {   // the core handoff state: who waits for a core, and which waiter each free core is reserved for
+        char buf[768];
+        int n = snprintf(buf, sizeof buf, "dump: G %s, overflow %d, rescues %llu, core waiters:", locked ? "locked" : "BUSY (unlocked read)", g_overflow,
+                         (unsigned long long)g_stats.core_wake_rescues.load());
+        for (Thread *w : g_core_wait)
+            if (n < (int)sizeof buf - 40) n += snprintf(buf + n, sizeof buf - n, " id%llu/p%d/m%#llx", (unsigned long long)w->id, w->eff_prio, (unsigned long long)w->mask);
+        for (int c = 0; c < g_cfg.num_cores; c++)
+            if (!g_cores[c] && n < (int)sizeof buf - 40)
+                if (Thread *b = best_waiter_for(c)) n += snprintf(buf + n, sizeof buf - n, " | free core %d -> id%llu", c, (unsigned long long)b->id);
+        log("%s", buf);
+    }
     if (locked) G.unlock();
 }
 
@@ -949,6 +1005,7 @@ extern "C" void os_get_stats(OsStats *o) {
     o->fiber_switches = g_stats.fiber_switches;
     o->spin_yields = g_stats.spin_yields;
     o->max_cores_in_use = g_stats.max_cores_in_use;
+    o->core_wake_rescues = g_stats.core_wake_rescues;
 }
 
 // ---- SVC helpers for the logging backstop: the thread and arbitration SVCs that lifted sdk code can reach.

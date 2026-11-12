@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // GPU-side half of the SNAP_PERF instrumentation (runtime/os/perf.h): a ring of timestamp pairs around every command buffer the
 // layer submits. Slots are collected at the next present once the queue's timeline has passed them. Only active with SNAP_PERF set.
-// All entry points are called with Host::queueMutex held (SubmitLists / PresentWindow).
+// All entry points except PerfFrameMark are called with Host::queueMutex held (SubmitLists / PresentWindow); it takes the lock itself.
 #include <algorithm>
 
 #include "nvn_internal.h"
@@ -50,6 +50,7 @@ void PerfGpuSubmitted(int slot, uint64_t value) {
 
 void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
   if (!snap_perf::on) return;
+  std::lock_guard<std::mutex> lk(q->host->queueMutex);
   double busy = -1, span = -1; int cbs = 0;
   if (g_pool) {
     uint64_t done = 0;

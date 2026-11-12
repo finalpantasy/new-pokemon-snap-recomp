@@ -4,6 +4,7 @@
 // Run from the project root (the default ELF paths are relative to it). Output goes to stderr.
 #include <windows.h>
 #include <tlhelp32.h>
+#include <shobjidl.h>
 #include <dbghelp.h>
 
 #include <algorithm>
@@ -23,6 +24,7 @@
 #include "hle/input_core.h"
 #include "audio/audio_out.h"
 #include "nvn/nvn_host.h"
+#include "window_opts.h"
 
 void snap_memlog_find(uint64_t addr);
 int snap_bind_audio();     // host/abi_audio.cpp
@@ -363,6 +365,7 @@ static void bind_codec_stubs() {
 // Frame counters from the NVN hooks (presented frames and submitted command lists), traced every 30 presents.
 static std::atomic<uint64_t> g_presents{0}, g_submits{0};
 static void hook_present(void *, int slot, int w, int h) {
+    snap_window_on_present();   // blocks here while the window is paused (focus lost)
     uint64_t n = ++g_presents;
     if (n <= 3 || n % 30 == 0) trace("nvn: present #%llu slot %d %dx%d (submits %llu)", (unsigned long long)n, slot, w, h, (unsigned long long)g_submits.load());
 }
@@ -401,6 +404,7 @@ static void snap_capture_window(HWND h) {
 }
 
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    { LRESULT wr = 0; if (snap_window_proc(h, m, w, l, &wr)) return wr; }   // host/window_opts.cpp: F11, focus, mute, remembered placement
     if (m == WM_CLOSE || m == WM_DESTROY) { fflush(stderr); ExitProcess(0); }
     if (m == WM_TIMER) { snap_capture_window(h); return 0; }
     return DefWindowProcW(h, m, w, l);
@@ -409,11 +413,17 @@ static DWORD WINAPI game_window_thread(LPVOID ev) {
     WNDCLASSW wc = {};
     wc.lpfnWndProc = game_wndproc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"SnapRecompWindow";
     wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.hIcon = (HICON)LoadImageW(wc.hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+    HICON icon_sm = (HICON)LoadImageW(wc.hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
     RegisterClassW(&wc);
-    RECT r = {0, 0, 1280, 720};
-    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    g_game_hwnd = CreateWindowW(wc.lpszClassName, L"New Pokemon Snap (native recompilation)", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, r.right - r.left, r.bottom - r.top,
+    DWORD wstyle = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+    RECT r = {100, 100, 100 + 1296, 100 + 759};
+    snap_window_initial(&wstyle, &r);   // window.json / SNAP_WINDOW_*: style, size, position, monitor
+    g_game_hwnd = CreateWindowW(wc.lpszClassName, L"New Pokemon Snap (native recompilation)", wstyle, r.left, r.top, r.right - r.left, r.bottom - r.top,
                                 nullptr, nullptr, wc.hInstance, nullptr);
+    snap_window_attach(g_game_hwnd);
+    if (wc.hIcon) SendMessageW(g_game_hwnd, WM_SETICON, ICON_BIG, (LPARAM)wc.hIcon);
+    if (icon_sm) SendMessageW(g_game_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)icon_sm);
     SetTimer(g_game_hwnd, 1, 1000, nullptr);
     SetEvent((HANDLE)ev);
     MSG msg;
@@ -425,6 +435,7 @@ static void vi_get_native_window_host(Cpu *c) {
     c->x[0] = 0;
 }
 static void bind_window() {
+    SetCurrentProcessExplicitAppUserModelID(L"SnapRecomp.NewPokemonSnap");   // taskbar grouping/icon follows the exe
     SetProcessDPIAware();   // physical pixels: the 1280x720 client really is 1280x720 (screen captures, window size)
     HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     CreateThread(nullptr, 0, game_window_thread, ev, 0, nullptr);
@@ -435,6 +446,7 @@ static void bind_window() {
 static void bind_host_layers() {
     hle::init_trace_from_env();
     hle::load_config("");
+    hle::activate_profiles();   // save profile picker / selection (runtime/hle/profiles.h); before the save mounts
     hle::bind_all(hle_bind_one, nullptr);
     int na = snap_bind_audio();
     snap_bind_nvn();

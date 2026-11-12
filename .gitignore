@@ -54,3 +54,7 @@ bin/
 .vs/
 *.ico
 *.res
+
+# local run outputs and per-user settings
+/.out
+/audio.json

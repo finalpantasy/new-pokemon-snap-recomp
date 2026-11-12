@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Scripted end-to-end test of the controls menu inside the real game window: SNAP_UI_TEST=<file>.
 // One command per line, '#' starts a comment, times are seconds after the first present:
-//   <t> key F1                      post a real F1 key press to the game window (goes through the window procedure)
+//   <t> key F1 [0|1]                post a real F1 key press to the game window (goes through the window procedure)
 //   <t> tab <Bindings|Mouse|Controller|Accessibility|Test_input>
 //   <t> rebind <A|B|...|Down> <kb|mouse|pad> <slot>     what a click on that slot does (starts the capture)
 //   <t> press <key:P|pad:east|mouse:left|...> <seconds> hold a source down through the input hub
@@ -14,6 +14,7 @@
 // Every check logs "ui-test: ... PASS|FAIL"; the summary line is "ui-test: SUMMARY n checks, m failed".
 #include <windows.h>
 
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -23,8 +24,10 @@
 #include <thread>
 #include <vector>
 
+#include "audio/audio_out.h"
 #include "hle/hle.h"
 #include "hle/input_core.h"
+#include "hle/profiles.h"
 #include "ui_internal.h"
 
 namespace snap::ui {
@@ -47,6 +50,7 @@ std::vector<Release> g_rel;
 bool g_loaded = false, g_active = false;
 double g_t0 = 0;
 int g_checks = 0, g_failed = 0;
+std::string g_last_import;
 
 void out(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void out(const char* fmt, ...) {
@@ -118,9 +122,11 @@ void run(const std::string& line, double t) {
   is >> cmd;
   if (cmd == "key") {
     std::string k;
-    is >> k;
+    int want = -1;   // optional: only press when the menu is not already in the wanted state (real input may interfere)
+    is >> k >> want;
     HWND h = static_cast<HWND>(overlay_hwnd());
-    if (k == "F1" && h) {
+    if (want >= 0 && overlay_open() == (want != 0)) { out("t=%.1f menu already in wanted state, F1 skipped", t); }
+    else if (k == "F1" && h) {
       PostMessageW(h, WM_KEYDOWN, VK_F1, 0x003b0001);
       PostMessageW(h, WM_KEYUP, VK_F1, (LPARAM)0xC03b0001);
       out("t=%.1f posted F1 to the game window", t);
@@ -154,6 +160,13 @@ void run(const std::string& line, double t) {
     PadSample p = cmd == "expect_button" ? hub().pad() : hub().preview();
     bool down = b >= 0 && ((p.buttons >> b) & 1);
     check(b >= 0 && down == (want != 0), cmd + " " + n + " == " + std::to_string(want) + " (buttons=" + std::to_string((unsigned long long)p.buttons) + ")");
+  } else if (cmd == "vol" || cmd == "expect_vol") {   // vol <master|bgm|se|voice> <percent> ; expect_vol checks snap_audio_get_volume
+    std::string c;
+    float pct = 0;
+    is >> c >> pct;
+    int cat = c == "master" ? SNAP_VOL_MASTER : c == "bgm" ? SNAP_VOL_BGM : c == "se" ? SNAP_VOL_SE : SNAP_VOL_VOICE;
+    if (cmd == "vol") { snap_audio_set_volume(cat, pct / 100.0f); out("t=%.1f set volume %s = %.0f%%", t, c.c_str(), pct); }
+    else check(std::fabs(snap_audio_get_volume(cat) - pct / 100.0f) < 0.006f, "volume " + c + " == " + std::to_string((int)pct) + "% (got " + std::to_string((int)std::lround(snap_audio_get_volume(cat) * 100.0f)) + "%)");
   } else if (cmd == "expect_open") {
     int want = 1;
     is >> want;
@@ -171,6 +184,21 @@ void run(const std::string& line, double t) {
     bool ok = act >= 0 && parse_dev(d, &dev);
     Source got = ok ? slot_get(action_sources(hub().mapping(), act), dev, slot) : Source{};
     check(ok && got == parse_src(src), "binding " + a + " " + d + " " + std::to_string(slot) + " == " + src + " (is '" + source_to_string(got) + "')");
+  } else if (cmd == "saves_import") {   // saves_import <fixture folder name>: what "Import test save" does; remembers the new profile name
+    std::string fx, err;
+    is >> fx;
+    static std::string last_import;
+    check(saves_test_import(fx, &last_import, &err), "import test save " + fx);
+    if (!err.empty()) out("  (%s)", err.c_str());
+    g_last_import = last_import;
+  } else if (cmd == "saves_switch") {    // saves_switch: "Switch to this profile" on the profile that was just imported; relaunches the game
+    out("t=%.1f switching to profile \"%s\" (the game restarts)", t, g_last_import.c_str());
+    std::fflush(stderr);
+    saves_test_switch(g_last_import);
+  } else if (cmd == "expect_profile") {   // expect_profile <name>: the running game's profile
+    std::string n;
+    std::getline(is >> std::ws, n);
+    check(hle::profiles::active().on && hle::profiles::active().name == n, "profile is " + n);
   } else if (cmd == "save") {
     std::string err;
     check(hub().save(&err), "save " + err);

@@ -61,6 +61,7 @@ struct Thread {
     int block_depth = 0;
     std::atomic<int> preempt{0};
     bool waiting_core = false;
+    bool core_kicked = false;        // a core handoff notify arrived since the waiter last checked (rescue accounting)
     // current wait (under G)
     std::condition_variable cv;
     int wkind = W_NONE;
@@ -92,6 +93,7 @@ struct Fiber {
 struct Config {
     int num_cores = 3, default_core = 0, main_priority = 16;
     uint32_t overcommit_us = 2000, rr_slice_us = 10000;
+    uint32_t core_rescue_ms = 20;   // an untimed core wait rechecks this often (safety net; counted in core_wake_rescues)
     size_t host_stack = 256ull << 20, fiber_host_stack = 64ull << 20;
     uint64_t tp_init_var = 0, tp_destroy_var = 0, tick_base = OS_TICK_FREQUENCY * 10;
     int trace = 0;
@@ -100,7 +102,8 @@ extern Config g_cfg;
 
 struct Stats {
     std::atomic<uint64_t> threads_started{0}, threads_exited{0}, lock_contended{0}, cv_waits{0}, core_waits{0},
-        preempt_requests{0}, preempt_yields{0}, overflow_grants{0}, pi_boosts{0}, fiber_switches{0}, spin_yields{0};
+        preempt_requests{0}, preempt_yields{0}, overflow_grants{0}, pi_boosts{0}, fiber_switches{0}, spin_yields{0},
+        core_wake_rescues{0};   // a core waiter found a free core on its safety-net timeout: a missed handoff (should stay 0)
     std::atomic<int> max_cores_in_use{0};
 };
 extern Stats g_stats;

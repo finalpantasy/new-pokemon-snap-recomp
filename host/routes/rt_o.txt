@@ -1,0 +1,7 @@
+# fixture: post_tutorial
+repeat @f1500 @f8000 50 12 A
+repeat @f8000 @f60000 8 3 A
+repeat @f8100 @f60000 400 200 ly=0.08
+repeat @f8300 @f60000 400 200 ly=-0.08
+repeat @f8100 @f60000 600 300 lx=-0.3
+repeat @f8400 @f60000 600 300 lx=0.3

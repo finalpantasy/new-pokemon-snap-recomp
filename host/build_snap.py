@@ -57,9 +57,10 @@ def main():
         cov.write_bytes(bak)   # the coverage table is the HLE owner's; only the stub file is ours
     shutil.copyfile(ROOT / 'generated' / 'hle_unimplemented.cpp', ROOT / 'generated' / 'unimplemented.cpp')
 
-    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp')]
+    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp')]
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'os').glob('*.cpp'))]
-    for d in ('hle', 'audio', 'nvn'):
+    srcs += [(p, 20) for p in sorted((ROOT / 'host' / 'mods').glob('*.cpp'))]   # draw-distance mods 26 and 27 (host/mods/lodanim.cpp)
+    for d in ('hle', 'audio', 'nvn', 'mods'):
         srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / d).glob('*.cpp'))]
     # in-game controls overlay (runtime/ui): our files plus the vendored Dear ImGui core and its Vulkan / Win32 backends
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'ui').glob('*.cpp'))]
@@ -102,11 +103,16 @@ def main():
         print(f'{fail} compile failures')
         return 1
     exe = out / f'{args.name}.exe'
+    # exe icon (resource ID 1): game icon from local extracted data, else the original fallback; generated, never committed
+    res = []
+    if subprocess.run([sys.executable, '-I', str(ROOT / 'host' / 'make_icon.py'), '--out', str(ROOT / 'build')]).returncode == 0:
+        if subprocess.run([str(LLVM / 'llvm-rc.exe'), '/FO', str(ROOT / 'build' / 'snap_icon.res'), str(ROOT / 'build' / 'snap_icon.rc')], cwd=str(ROOT / 'build')).returncode == 0:
+            res = [str(ROOT / 'build' / 'snap_icon.res')]
     libs = [args.main_lib, args.sdk_lib, str(VK / 'Lib' / 'vulkan-1.lib'), '-luser32', '-lgdi32', '-lbcrypt', '-lole32', '-lavrt', '-lshell32', '-ladvapi32', '-lwinmm', '-loleaut32', '-ldbghelp', '-ldwmapi']
     if sdl_ok:
         libs.append(str(sdl / 'lib' / 'x64' / 'SDL3.lib'))
         shutil.copyfile(sdl / 'lib' / 'x64' / 'SDL3.dll', out / 'SDL3.dll')
-    r = subprocess.run([str(LLVM / 'clang++.exe'), '-fuse-ld=lld', '-g', '-Wl,/map:' + str(out / (args.name + '.map')), '-Wl,/debug', '-o', str(exe)] + [str(o) for o in objs] + libs,
+    r = subprocess.run([str(LLVM / 'clang++.exe'), '-fuse-ld=lld', '-g', '-Wl,/map:' + str(out / (args.name + '.map')), '-Wl,/debug', '-o', str(exe)] + [str(o) for o in objs] + res + libs,
                        env=env, creationflags=BELOW_NORMAL)
     if r.returncode:
         return 1

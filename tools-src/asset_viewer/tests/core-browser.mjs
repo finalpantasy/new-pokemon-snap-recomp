@@ -1,0 +1,64 @@
+﻿import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const port=18769, base=`http://127.0.0.1:${port}`;
+const server=spawn('python',['-B','-E','-P','serve.py','--cache','testdata/cache','--port',String(port)],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
+server.stderr.on('data',()=>{});
+let browser, timer;
+const errors=[],checks=[];
+try {
+ await Promise.race([once(server.stdout,'data'),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Server startup timed out')),10000);})]); clearTimeout(timer);
+ browser=await chromium.launch({channel:'msedge',headless:true});
+ const context=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:1});
+ await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
+ const page=await context.newPage();
+ page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
+ await page.goto(base);
+ await page.waitForFunction(()=>document.querySelector('#viewport').dataset.ready==='true');
+ const initial=await page.evaluate(()=>viewerDiagnostics());
+ assert.equal(await page.locator('.asset-row').count(),2);
+ assert.equal(initial.modelCount,2);
+ for (const materials of initial.materials) {assert(materials.every(m=>m.map));assert(materials.some(m=>m.normal));assert(materials.some(m=>m.alphaTest===.5));}
+ assert(initial.materials[0].some(m=>m.width===64));assert(initial.materials[1].some(m=>m.width===256));
+ checks.push('contract v1, asset list, both texture variants, normal maps, alpha test');
+ await page.screenshot({path:root+'docs/core-3d-ab.png'});
+ await page.locator('#modelDivider').focus();await page.keyboard.press('ArrowRight');assert((await page.evaluate(()=>viewerDiagnostics().split))>.5);
+ await page.locator('#split').uncheck();assert(await page.locator('#modelDivider').isHidden());await page.locator('#split').check();
+ await page.locator('#wireframe').check();assert((await page.evaluate(()=>viewerDiagnostics().materials)).flat().every(m=>m.wireframe));await page.locator('#wireframe').uncheck();
+ await page.locator('#lod').selectOption('1');await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('LOD 1'));
+ checks.push('single/split mode, accessible divider, wireframe, LOD selector');
+ const viewport=await page.locator('#viewport').boundingBox();
+ await page.mouse.move(viewport.x+150,viewport.y+150);await page.mouse.down();await page.mouse.move(viewport.x+240,viewport.y+170,{steps:6});await page.mouse.up();
+ await page.waitForFunction(old=>JSON.stringify(viewerDiagnostics().camera)!==JSON.stringify(old),initial.camera);
+ const beforeZoom=await page.evaluate(()=>viewerDiagnostics().camera);await page.mouse.wheel(0,160);await page.waitForFunction(old=>JSON.stringify(viewerDiagnostics().camera)!==JSON.stringify(old),beforeZoom);
+ const beforePan=await page.evaluate(()=>viewerDiagnostics().target);await page.mouse.down({button:'right'});await page.mouse.move(viewport.x+280,viewport.y+200,{steps:6});await page.mouse.up({button:'right'});await page.waitForFunction(old=>JSON.stringify(viewerDiagnostics().target)!==JSON.stringify(old),beforePan);
+ checks.push('orbit, wheel zoom, and right-drag pan');
+ await page.locator('#modelTab').focus();await page.keyboard.press('a');assert.equal(await page.locator('#variantA').inputValue(),'x4_detail');await page.keyboard.press('b');assert.equal(await page.locator('#variantA').inputValue(),'orig');
+ await page.keyboard.press('3');assert.equal(await page.locator('#variantB').inputValue(),'x4_warm');await page.keyboard.press('2');assert.equal(await page.locator('#variantB').inputValue(),'x4_detail');
+ await page.locator('#background').click();assert.match(await page.locator('#background').textContent(),/light/);
+ checks.push('A/B swap, number shortcuts, and background selection');
+ await page.locator('#textureTab').click();assert.equal(await page.locator('.texture-card').count(),3);await page.locator('.texture-card').first().click();
+ await page.waitForFunction(()=>document.querySelector('#textureViewport').dataset.ready==='true');
+ assert.match(await page.locator('#textureSizes').textContent(),/64 × 64.*256 × 256/);
+ await page.locator('#zoom').selectOption('8');await page.screenshot({path:root+'docs/core-texture-slider.png'});
+ for(const channel of ['R','G','B','A','RGB']) {await page.locator(`[data-channel="${channel}"]`).click();assert.equal(await page.evaluate(()=>viewerDiagnostics().channel),channel);}
+ const canvas=await page.locator('#textureCanvas').boundingBox();await page.mouse.move(canvas.x+80,canvas.y+100);await page.mouse.down();await page.mouse.move(canvas.x+120,canvas.y+120);await page.mouse.up();assert.equal(await page.evaluate(()=>viewerDiagnostics().pan.x),40);
+ for(const zoom of ['1','2','4','8','16']) {await page.locator('#zoom').selectOption(zoom);assert.equal(await page.evaluate(()=>viewerDiagnostics().zoom),Number(zoom));}
+ await page.locator('#textureDivider').focus();await page.keyboard.press('ArrowLeft');assert.equal(await page.locator('#textureDivider').getAttribute('aria-valuenow'),'48');
+ checks.push('texture grid metadata, sizes, RGB/R/G/B/A, all zoom levels, synced pan and slider');
+ await page.locator('#search').fill('no match');assert.equal(await page.locator('.asset-row').count(),0);await page.locator('#search').fill('');
+ await page.locator('#category').selectOption('ui');assert.equal(await page.locator('.asset-row').count(),1);await page.locator('.asset-row').click();await page.waitForFunction(()=>document.querySelector('#modelMessage').textContent.includes('No model'));
+ await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));checks.push('search, category, texture-only asset, and 390px layout');
+ const manifest=await (await fetch(base+'/api/manifest')).json(),partial=structuredClone(manifest);partial.assets=[partial.assets[0]];delete partial.assets[0].textures[0].variants.x4_detail;
+ await page.route('**/api/manifest',route=>route.fulfill({json:partial}));await page.setViewportSize({width:1440,height:1000});await page.locator('#reload').click();
+ await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('using original'));assert((await page.evaluate(()=>viewerDiagnostics().materials[1])).some(m=>m.name==='ceramic'&&m.width===64));
+ checks.push('sparse variant falls back to original with a visible notice');
+ await page.unroute('**/api/manifest');await page.route('**/api/manifest',route=>route.fulfill({json:{version:1,assets:[],variants:[],message:'Cache unavailable: missing synthetic cache'}}));await page.locator('#reload').click();await page.locator('#empty').waitFor({state:'visible'});assert.match(await page.locator('#empty code').textContent(),/python -E -P scripts\\hd\\build_cache.py/);checks.push('missing-cache message and build command');
+ assert.equal((await fetch(base+'/cache/%2e%2e%2fserve.py')).status,403);assert.equal((await fetch(base+'/serve.py')).status,404);checks.push('path traversal and private file rejection');
+ assert.deepEqual(errors,[]);checks.push('zero console errors or page exceptions; nonlocal requests blocked');
+ const report={browser:'Installed Edge, headless Playwright',checks,errors};await writeFile(root+'docs/core-verification.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
+} finally {clearTimeout(timer);await browser?.close();server.kill();if(server.exitCode===null)await once(server,'exit');}

@@ -1,0 +1,4 @@
+# Scripted screenshots of the shader screens (tests\hle\run_profiles_test.ps1 -Mode prompt | progress).
+6 shot build/testconfig_prof/shader_screen.bmp
+8 shot build/testconfig_prof/shader_screen2.bmp
+10 quit

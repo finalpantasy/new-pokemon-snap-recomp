@@ -302,4 +302,27 @@ bool SpvSetLocalSize(std::vector<uint32_t>& spv, uint32_t x, uint32_t y, uint32_
   return false;
 }
 
+// GLSL layout(early_fragment_tests) is not visible in the SASS: on Maxwell the driver sets the EarlyZForce register from the program's
+// control section (+0x718 bit 0; of the 3,149 fragment programs only EvaluationAggregatePS sets it). Without the execution mode Vulkan runs
+// the depth/stencil test after a shader with side effects, so the photo-evaluation atomics would count hidden pixels too.
+bool SpvAddEarlyFragmentTests(std::vector<uint32_t>& spv) {
+  if (spv.size() < 6 || spv[0] != 0x07230203) return false;
+  uint32_t entry = 0;
+  size_t insertAt = 0;   // after the last OpEntryPoint / OpExecutionMode (the logical layout keeps them together)
+  for (size_t i = 5; i < spv.size();) {
+    const uint32_t wc = spv[i] >> 16, op = spv[i] & 0xFFFF;
+    if (!wc || i + wc > spv.size()) return false;
+    if (op == OpEntryPoint && wc >= 3) { if (spv[i + 1] == 4 /*Fragment*/) entry = spv[i + 2]; insertAt = i + wc; }
+    else if (op == OpExecutionMode || op == 331 /*OpExecutionModeId*/) {
+      if (op == OpExecutionMode && wc >= 3 && spv[i + 1] == entry && spv[i + 2] == 9 /*EarlyFragmentTests*/) return true;
+      insertAt = i + wc;
+    } else if (insertAt) break;
+    i += wc;
+  }
+  if (!entry || !insertAt) return false;
+  const uint32_t ins[3] = {(3u << 16) | OpExecutionMode, entry, 9};
+  spv.insert(spv.begin() + insertAt, ins, ins + 3);
+  return true;
+}
+
 }  // namespace nvn

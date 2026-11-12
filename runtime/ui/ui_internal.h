@@ -25,9 +25,38 @@ void menu_select_tab(const char* name);   // scripted test: Bindings, Mouse, Con
 bool menu_begin_rebind(int action, hle::input::Device dev, int slot);
 bool menu_rebinding();
 
+// ---- saves tab (ui_saves.cpp): save profiles
+void tab_saves();
+void saves_tab_opened();
+bool saves_test_import(const std::string& fixture, std::string* name_out, std::string* err);   // scripted test
+void saves_test_switch(const std::string& name);
+
+// ---- game-style drawing helpers (ui_style.cpp)
+void style_shadow(ImDrawList* dl, ImVec2 pos, ImVec2 size, float round);
+float style_prompt(const char* glyph, const char* label);   // "A"/"B" make the orange chevron, longer text ("LB") a grey pill; stays on the line
+void style_footer_prompts(bool tabs, bool back);
+
+// ---- audio tab (ui_audio.cpp)
+void tab_audio();
+
+// ---- shader precompile UI (ui_shaders.cpp)
+bool shader_screen_active(double now);   // first-launch prompt or the progress screen is wanted this frame
+void draw_shader_screen(ImVec2 size);
+void shader_screen_closed();
+void tab_graphics();
+// shared helpers (ui_saves.cpp)
+bool hold_confirm(const char* label, float secs, const ImVec4& color);   // true once when held long enough (mouse, Enter or gamepad)
+void restart_game();                                                      // relaunch with the same arguments and the active profile
+
+// ---- extras (ui_extras.cpp): profile settings (look, SSAO, gyro, rumble) and the photo gallery
+void extras_graphics();     // appended to the Graphics tab
+void extras_controller();   // appended to the Controller tab
+void tab_gallery();
+
 // ---- overlay core (ui_overlay.cpp)
 bool overlay_open();
 void overlay_set_open(bool open);
+void overlay_set_modal(bool on);   // the shader prompt / progress screen: input goes to ImGui and the game reads idle
 void* overlay_hwnd();
 
 // ---- scripted test (ui_test.cpp), enabled by SNAP_UI_TEST=<file>

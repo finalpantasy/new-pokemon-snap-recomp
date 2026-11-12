@@ -1,0 +1,8 @@
+# fixture: post_tutorial
+# Photo worker probe: tutorial_pass inputs plus a slow pitch sweep (short ry pulses, ry+ = camera up; one short pulse per yaw turn) so the centered pointer
+# eventually crosses Pikachu during the yaw drift. Dumps catch the photo-select and evaluation screens.
+repeat @f1500 @f8000 50 12 A
+repeat @f8000 @f60000 8 3 A
+@f8100 100000 lx=-0.22
+@f8100 100000 rx=-0.22
+repeat @f8200 @f60000 1200 2 ry=0.35

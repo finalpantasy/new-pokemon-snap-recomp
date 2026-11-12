@@ -61,16 +61,23 @@ SNAP_AUDIO_API const SnapAudioOverride* snap_audio_overrides(int* count);
 
 // ---- Host controls -------------------------------------------------------------------------------------------------
 enum SnapAudioBackend { SNAP_AUDIO_BACKEND_AUTO = 0, SNAP_AUDIO_BACKEND_WASAPI = 1, SNAP_AUDIO_BACKEND_NULL = 2 };
+// channelMode = how many channels the GAME is told to produce (GetActiveAudioDeviceChannelCountForOutput). AUTO (the
+// default) means 6 when the output mode is speakers or spatial and 2 for stereo.
 enum SnapAudioChannelMode { SNAP_AUDIO_CH_STEREO = 0, SNAP_AUDIO_CH_AUTO = 1, SNAP_AUDIO_CH_SURROUND51 = 2 };
+// Host output: stereo (downmix if the game outputs 6), speakers (WASAPI 5.1 or 7.1), spatial (ISpatialAudioClient bed
+// for Windows Sonic or Dolby Atmos for Headphones; falls back to speakers, then stereo).
+enum SnapAudioOutputMode { SNAP_AUDIO_OUT_STEREO = 0, SNAP_AUDIO_OUT_SPEAKERS = 1, SNAP_AUDIO_OUT_SPATIAL = 2 };
 struct SnapAudioConfig {
   int backend;             // SnapAudioBackend; env SNAP_AUDIO_BACKEND=wasapi|null overrides AUTO
   int channelMode;         // what GetActiveAudioDeviceChannelCountForOutput reports (and the device stream uses)
   uint32_t sampleRate;     // device stream rate, 48000
   uint32_t deviceBufferMs; // requested WASAPI buffer (0 = engine default period)
   int enableTap;           // capture the final mix into a ring (tests)
+  int outputMode;          // SnapAudioOutputMode; -1 = unset (env SNAP_AUDIO_OUTPUT, then audio.json "output", then stereo)
+  int speakerChannels;     // speakers mode: 6, 8 or 0 = 8 if the device mix format has 8+ channels, else 6
 };
-// Volume categories. Only MASTER is applied at this layer; the others are stored for the settings menu and
-// take effect once a Wwise-level hook (AK::SoundEngine bus/RTPC) is wired (docs/audio.md, "Volume").
+// Volume categories (docs/audio.md, "Volume API for UI"). MASTER is applied in the host mixer; BGM/SE/VOICE are applied
+// inside Wwise by host/abi_audio.cpp (it posts the game's own Set_volume_<cat>_NN events from the Wwise sink thread).
 enum SnapAudioVolume { SNAP_VOL_MASTER = 0, SNAP_VOL_BGM = 1, SNAP_VOL_SE = 2, SNAP_VOL_VOICE = 3, SNAP_VOL_COUNT = 4 };
 
 SNAP_AUDIO_API void snap_audio_default_config(SnapAudioConfig* cfg);
@@ -78,6 +85,16 @@ SNAP_AUDIO_API void snap_audio_configure(const SnapAudioConfig* cfg);  // before
 SNAP_AUDIO_API void snap_audio_shutdown(void);
 SNAP_AUDIO_API void snap_audio_set_volume(int category, float v);
 SNAP_AUDIO_API float snap_audio_get_volume(int category);
+// Output mode API for the UI (docs/audio.md, "Surround and spatial output"). Persists to audio.json
+// ("output": "stereo"|"speakers"|"spatial", "channels": 0|2|6, "speakers": 0|6|8). Takes effect on the next start
+// (the game opens its sink once). Pass -1 to leave a field unchanged.
+SNAP_AUDIO_API void snap_audio_set_output(int outputMode, int gameChannels, int speakerChannels);
+SNAP_AUDIO_API int snap_audio_get_output_mode(void);      // as configured (env > audio.json)
+SNAP_AUDIO_API int snap_audio_game_channels(void);        // channels the game is told to produce (2 or 6); starts the audio layer if needed
+SNAP_AUDIO_API int snap_audio_active_output_mode(void);   // what is actually running (after fallbacks)
+SNAP_AUDIO_API int snap_audio_spatial_available(void);    // 1 if ISpatialAudioClient can render the 5.1 bed on the default device
+SNAP_AUDIO_API uint32_t snap_audio_volume_generation(void);  // changes whenever any volume is set (bridge use)
+SNAP_AUDIO_API int snap_audio_volume_touched(int category);  // bridge use
 // Hook run on the device thread when the default device changes: lets runtime\os signal the SystemEvent.
 typedef void (*SnapAudioSignalEventFn)(void* systemEvent);
 SNAP_AUDIO_API void snap_audio_set_os_hooks(SnapAudioSignalEventFn signal);
@@ -94,6 +111,8 @@ struct SnapAudioStats {
   uint32_t deviceChannels, deviceRate;
   int backendInUse;            // SnapAudioBackend actually running
   int deviceAttached;          // 0 while falling back to the timer
+  int outputModeActive;        // SnapAudioOutputMode actually running
+  uint32_t guestChannels;      // channels the game was told to produce
 };
 SNAP_AUDIO_API void snap_audio_get_stats(SnapAudioStats* s);
 SNAP_AUDIO_API void snap_audio_reset_stats(void);

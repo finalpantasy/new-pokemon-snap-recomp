@@ -36,6 +36,9 @@ Config& config();                                      // process-wide, filled b
 // Reads the JSON file at `path` (empty: the default path). Returns false and logs if the file exists but is invalid;
 // a missing file is fine (defaults). Applies env overrides afterwards and fills the derived paths.
 bool load_config(const std::string& path = "");
+// Picks the save profile for this run and points save_root at it (profiles.h). Called once by the host after load_config; does nothing
+// when SNAP_SAVE_DIR or save_root is set (unless SNAP_PROFILES_DIR is set too).
+void activate_profiles();
 void apply_defaults();                                 // derived paths from data_root; called by load_config
 std::string default_data_root();                       // %APPDATA%\SnapRecomp (HOME/.local/share/SnapRecomp elsewhere)
 std::string default_input_path();                      // %SNAP_CONFIG_DIR%\input.json, else <data_root>\input.json

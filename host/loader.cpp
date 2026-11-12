@@ -38,6 +38,7 @@ static std::vector<Thunk *> g_thunks;
 static std::unordered_map<std::string, Thunk *> g_by_name;
 static std::vector<uint64_t> g_main_import_target;
 extern "C" volatile int g_fnprof;
+extern "C" void snap_fn_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void loader_init_hit(uint64_t a);
 static thread_local GuestThread *g_cur = nullptr;
 thread_local Cpu *loader::g_tls_cpu = nullptr;   // the Cpu of the last host call on this thread (crash reports)
@@ -619,6 +620,7 @@ void loader_enable_fntrace() {
 }
 void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
     loader_init_hit(a);
+    snap_fn_observe(a, lr, x0);   // host/mods/lodanim.cpp (SNAP_TRACE_LOD); returns at once when unused
     for (int i = 0; i < g_fntrace_n; i++)
         if (g_fntrace[i] == a) { loader::trace("fn %#llx entered from %s x0=%#llx", (unsigned long long)a, loader::symbolize(lr).c_str(), (unsigned long long)x0); return; }
 }

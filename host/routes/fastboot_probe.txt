@@ -1,0 +1,2 @@
+# fixture: post_tutorial
+repeat 0 100 0.6 0.15 A

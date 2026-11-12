@@ -1,0 +1,16 @@
+{
+  "browser": "Installed Edge, headless Playwright",
+  "checks": [
+    "contract v1, asset list, both texture variants, normal maps, alpha test",
+    "single/split mode, accessible divider, wireframe, LOD selector",
+    "orbit, wheel zoom, and right-drag pan",
+    "A/B swap, number shortcuts, and background selection",
+    "texture grid metadata, sizes, RGB/R/G/B/A, all zoom levels, synced pan and slider",
+    "search, category, texture-only asset, and 390px layout",
+    "sparse variant falls back to original with a visible notice",
+    "missing-cache message and build command",
+    "path traversal and private file rejection",
+    "zero console errors or page exceptions; nonlocal requests blocked"
+  ],
+  "errors": []
+}

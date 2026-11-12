@@ -3,6 +3,8 @@
 // Guest memory is written after the submit's timeline value completes (FlushReadbacks), from WaitSync, QueueFinish and
 // BufferInvalidateMappedRange. Signatures follow the public NVN entry points as seen at the game's call sites.
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include "nvn_internal.h"
 
@@ -24,6 +26,7 @@ void EnsureQueryPools(Host* h) {
     vkCreateQueryPool(h->device, &qi, nullptr, &h->occPool);
   }
 }
+bool XferLog() { static const bool on = getenv("NVN_XFER_LOG") != nullptr; return on; }
 VkImageAspectFlags AspectOf(const TextureImpl* t) {
   return (t->fi->aspect & VK_IMAGE_ASPECT_COLOR_BIT) ? VK_IMAGE_ASPECT_COLOR_BIT
          : (t->fi->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -58,6 +61,7 @@ void DoCopyTextureToBuffer(ReplayCtx& cx, const Cmd& c) {
   if (!t->uploaded) UploadStaticTexture(cx, t);
   else RefreshDynamicTexture(cx, t);
   uint32_t level, layer; ViewSub(v, c.i[0] != 0, &level, &layer);
+  if (XferLog()) fprintf(stderr, "[xfer] CopyTextureToBuffer tex=%p fmt=%x %dx%d tgt=%d region(%d,%d,%d %dx%dx%d) lvl=%u dst=0x%llx uploaded=%d\n", (void*)t, t->b.format, t->b.width, t->b.height, t->b.target, r.x, r.y, r.z, r.w, r.h, r.d, level, (unsigned long long)c.a[0], (int)t->uploaded);
   const bool layered = IsLayered(t->b.target);
   const uint32_t bw = std::max<uint32_t>(t->fi->bw, 1), bh = std::max<uint32_t>(t->fi->bh, 1);
   const uint32_t w = (uint32_t)r.w, hgt = (uint32_t)std::max(r.h, 1), dep = (uint32_t)std::max(r.d, 1);
@@ -80,6 +84,35 @@ void DoCopyTextureToBuffer(ReplayCtx& cx, const Cmd& c) {
   cx.readbacks->push_back(rb);
 }
 
+// Debug (NVN_RT_DUMP=<dir>): writes the current contents of a color texture to <dir>/NNNN_<tag>_t<ptr>_vk<fmt>_<w>x<h>.raw once the GPU is done.
+void DebugDumpSampledTexture(ReplayCtx& cx, TextureImpl* t, const char* tag) {
+  static const char* dir = getenv("NVN_RT_DUMP");
+  static int seq = 0;
+  if (!dir || !*dir || !t || seq >= 200 || !t->EnsureImage() || !t->fi || t->fi->aspect != VK_IMAGE_ASPECT_COLOR_BIT || t->fi->bw != 1 || t->b.samples > 1) return;
+  if (!t->subLayout.empty() || t->b.target == TT_3D || t->b.target == TT_CUBEMAP) return;
+  const uint64_t size = (uint64_t)t->b.width * t->b.height * t->fi->bytes;
+  if (size > (40u << 20)) return;
+  VkBuffer buf = VK_NULL_HANDLE;
+  uint8_t* map = NewScratch(cx, size, &buf);
+  if (!map) return;
+  const VkImageLayout before = t->layout;
+  EndRendering(cx);
+  Transition(cx.cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  VkBufferImageCopy bc{};
+  bc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  bc.imageExtent = {(uint32_t)t->b.width, (uint32_t)t->b.height, 1};
+  vkCmdCopyImageToBuffer(cx.cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &bc);
+  HostReadBarrier(cx.cb);
+  if (before != VK_IMAGE_LAYOUT_UNDEFINED) Transition(cx.cb, t, before);
+  char name[600];
+  snprintf(name, sizeof name, "%s/%04d_%s_t%p_vk%d_%dx%d_b%u.raw", dir, seq++, tag, (void*)t, (int)t->fi->vk, t->b.width, t->b.height, (unsigned)t->fi->bytes);
+  Readback rb;
+  rb.map = map; rb.dst = nullptr; rb.size = size; rb.kind = 2; rb.dumpPath = name;
+  rb.sb = cx.scratch->back();
+  cx.scratch->pop_back();
+  cx.readbacks->push_back(rb);
+}
+
 void DoCopyTextureToTexture(ReplayCtx& cx, const Cmd& c) {
   TextureImpl* s = c.tex[0]; TextureImpl* d = c.tex[1];
   if (!s || !d || !s->EnsureImage() || !d->EnsureImage() || c.blob.size() < 2 * (sizeof(CopyRegion) + sizeof(TexView))) return;
@@ -89,6 +122,7 @@ void DoCopyTextureToTexture(ReplayCtx& cx, const Cmd& c) {
   memcpy(&sr, b, sizeof sr); memcpy(&sv, b + sizeof sr, sizeof sv); b += sizeof sr + sizeof sv;
   memcpy(&dr, b, sizeof dr); memcpy(&dv, b + sizeof dr, sizeof dv);
   uint32_t sl, sy, dl, dy; ViewSub(sv, c.i[0] & 1, &sl, &sy); ViewSub(dv, c.i[0] & 2, &dl, &dy);
+  if (XferLog()) fprintf(stderr, "[xfer] CopyTextureToTexture src=%p f%x %dx%d (uploaded=%d) region(%d,%d,%d %dx%dx%d) -> dst=%p f%x %dx%d region(%d,%d,%d %dx%dx%d) flags=%d\n", (void*)s, s->b.format, s->b.width, s->b.height, (int)s->uploaded, sr.x, sr.y, sr.z, sr.w, sr.h, sr.d, (void*)d, d->b.format, d->b.width, d->b.height, dr.x, dr.y, dr.z, dr.w, dr.h, dr.d, c.i[1]);
   const bool sLay = IsLayered(s->b.target), dLay = IsLayered(d->b.target);
   if (!s->uploaded) UploadStaticTexture(cx, s);
   else RefreshDynamicTexture(cx, s);
@@ -136,6 +170,7 @@ void DoReportCounter(ReplayCtx& cx, const Cmd& c) {
   }
   EnsureQueryPools(h);
   if (!h->tsPool || !h->occPool) return;
+  if (XferLog()) fprintf(stderr, "[xfer] ReportCounter type=%d dst=0x%llx\n", c.i[0], (unsigned long long)c.a[0]);
   EndRendering(cx);
   const int type = c.i[0];
   uint32_t nOcc = 0, first = 0;
@@ -164,6 +199,19 @@ void DoReportCounter(ReplayCtx& cx, const Cmd& c) {
   cx.readbacks->push_back(rb);
 }
 
+// Records a fragment-shader SSBO range for copy-back into guest memory after this submit (Readback kind 3). The guest bytes are
+// snapshotted now: if the CPU rewrites the range before the copy-back lands (it resets the counters for the next photo), the CPU wins.
+void QueueShaderWriteback(ReplayCtx& cx, PoolImpl* pool, uint64_t off, uint64_t size) {
+  for (auto& r : *cx.readbacks) if (r.kind == 3 && r.pool == pool && r.poolOff == off && r.size == size) return;
+  Readback rb;
+  rb.kind = 3; rb.pool = pool; rb.poolOff = off; rb.size = size;
+  rb.map = pool->mapped + off; rb.dst = static_cast<uint8_t*>(pool->storage) + off;
+  rb.expect.assign(rb.dst, rb.dst + size);
+  static const bool xl = getenv("NVN_XFER_LOG") != nullptr;
+  if (xl) { static int n = 0; if (n++ < 200) fprintf(stderr, "[xfer] shader write-back queued pool %p (size 0x%llx) off=0x%llx size=0x%llx\n", (void*)pool, (unsigned long long)pool->size, (unsigned long long)off, (unsigned long long)size); }
+  cx.readbacks->push_back(std::move(rb));
+}
+
 void FlushReadbacks(Host* h, bool wait) {
   std::lock_guard<std::mutex> lk(h->rbMutex);
   size_t n = 0;
@@ -177,8 +225,16 @@ void FlushReadbacks(Host* h, bool wait) {
       wi.semaphoreCount = 1; wi.pSemaphores = &rb.sem; wi.pValues = &rb.value;
       vkWaitSemaphores(h->device, &wi, UINT64_MAX);
     }
-    if (rb.kind == 0) {
+    if (XferLog()) { uint64_t nz = 0; if (rb.kind == 0 || rb.kind == 3) for (uint64_t i = 0; i < rb.size; i++) nz += rb.map[i] != 0; fprintf(stderr, "[xfer] flush kind=%d dst=%p size=%llu nonzero=%llu\n", rb.kind, (void*)rb.dst, (unsigned long long)rb.size, (unsigned long long)nz); }
+    if (rb.kind == 2) {
+      if (FILE* f = fopen(rb.dumpPath.c_str(), "wb")) { fwrite(rb.map, 1, (size_t)rb.size, f); fclose(f); }
+    } else if (rb.kind == 0) {
       memcpy(rb.dst, rb.map, (size_t)rb.size);
+    } else if (rb.kind == 3) {
+      if (memcmp(rb.dst, rb.expect.data(), (size_t)rb.size) == 0) memcpy(rb.dst, rb.map, (size_t)rb.size);
+      else if (XferLog()) fprintf(stderr, "[xfer] shader write-back skipped: the CPU rewrote %p since the submit\n", (void*)rb.dst);
+      rb.pool->wbPending.fetch_sub(1, std::memory_order_relaxed);
+      continue;   // no scratch buffer: the source is the pool's own mapped mirror
     } else {
       uint64_t ticks = 0, sum = 0;
       memcpy(&ticks, rb.map, 8);

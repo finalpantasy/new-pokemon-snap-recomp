@@ -14,15 +14,18 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "hle/hle.h"
 #include "hle/input_core.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "imgui_impl_win32.h"
+#include "ui_font.h"
 #include "ui_internal.h"
 #include "ui_present.h"
 #include "ui_theme.h"
@@ -46,8 +49,10 @@ double now_s() {
 }
 
 struct Core {
-  std::mutex mu;                       // ImGui context: the window thread (messages) and the present thread (frames)
+  std::recursive_mutex mu;             // ImGui context (recursive: ImGui_ImplWin32_NewFrame can re-enter the window procedure on the presenting thread): the window thread (messages) and the present thread (frames)
   std::atomic<bool> open{false};
+  std::atomic<bool> modal{false};      // shader prompt / progress screen
+  bool was_modal = false;
   std::atomic<bool> imgui_ready{false};
   HWND hwnd = nullptr;
   WNDPROC orig = nullptr;
@@ -67,12 +72,12 @@ struct Core {
 Core g;
 
 // ---- window subclass ------------------------------------------------------------------------------------------------
-LRESULT CALLBACK ui_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
+LRESULT ui_wndproc_impl(HWND h, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
       if (w == VK_F1) {
-        if (!(l & (1 << 30))) overlay_set_open(!g.open.load());   // key-down edge only, not the auto-repeat
+        if (!(l & (1 << 30)) && !g.modal.load()) overlay_set_open(!g.open.load());   // key-down edge only, not the auto-repeat
         return 0;
       }
       break;
@@ -92,15 +97,29 @@ LRESULT CALLBACK ui_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
       if (LOWORD(w) == WA_INACTIVE) ClipCursor(nullptr);
       break;
     case WM_SETCURSOR:
-      if (LOWORD(l) == HTCLIENT && hub().cursor_hidden() && !g.open.load()) { SetCursor(nullptr); return TRUE; }
+      if (LOWORD(l) == HTCLIENT && hub().cursor_hidden() && !g.open.load() && !g.modal.load()) { SetCursor(nullptr); return TRUE; }
       break;
     default: break;
   }
-  if (g.open.load() && g.imgui_ready.load()) {
-    std::lock_guard<std::mutex> lk(g.mu);
+  if ((g.open.load() || g.modal.load()) && g.imgui_ready.load()) {
+    std::lock_guard<std::recursive_mutex> lk(g.mu);
     if (ImGui_ImplWin32_WndProcHandler(h, m, w, l)) return TRUE;
   }
   return CallWindowProcW(g.orig, h, m, w, l);
+}
+
+// No host exception may leave a window procedure (the OS turns it into STATUS_FATAL_USER_CALLBACK_EXCEPTION and kills the process).
+LRESULT CALLBACK ui_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  try {
+    return ui_wndproc_impl(h, m, w, l);
+  } catch (const std::exception& e) {
+    static int n = 0;
+    if (n++ < 20) hle::log("ui: exception in the window procedure (msg 0x%x): %s", m, e.what());
+  } catch (...) {
+    static int n = 0;
+    if (n++ < 20) hle::log("ui: unknown exception in the window procedure (msg 0x%x)", m);
+  }
+  return g.orig ? CallWindowProcW(g.orig, h, m, w, l) : DefWindowProcW(h, m, w, l);
 }
 
 void ensure_window(HWND h) {
@@ -117,14 +136,17 @@ ImVec4 fb(const ImVec4& c) { return g.srgb ? ImVec4(lin(c.x), lin(c.y), lin(c.z)
 void apply_style(float scale) {
   const Theme& t = theme();
   ImGuiStyle s;
-  ImGui::StyleColorsDark(&s);
-  s.WindowRounding = s.ChildRounding = s.FrameRounding = s.PopupRounding = s.GrabRounding = s.TabRounding = t.rounding;
+  ImGui::StyleColorsLight(&s);
+  s.WindowRounding = t.window_round;
+  s.ChildRounding = s.FrameRounding = s.PopupRounding = s.GrabRounding = s.TabRounding = t.rounding;
   s.ScrollbarRounding = t.rounding;
   s.WindowPadding = ImVec2(t.window_pad, t.window_pad);
   s.FramePadding = ImVec2(t.frame_pad_x, t.frame_pad_y);
   s.ItemSpacing = ImVec2(t.item_spacing, t.item_spacing);
   s.ItemInnerSpacing = ImVec2(t.item_spacing * 0.75f, t.item_spacing * 0.5f);
-  s.WindowBorderSize = 1.0f;
+  s.WindowBorderSize = 2.0f;
+  s.TabBarBorderSize = 0.0f;
+  s.FrameBorderSize = 0.0f;
   s.FrameBorderSize = 0.0f;
   s.ScrollbarSize = 14.0f;
   s.GrabMinSize = 16.0f;
@@ -138,27 +160,29 @@ void apply_style(float scale) {
   c[ImGuiCol_Border] = fb(t.border);
   c[ImGuiCol_FrameBg] = fb(t.slot);
   c[ImGuiCol_FrameBgHovered] = fb(t.slot_hover);
-  c[ImGuiCol_FrameBgActive] = fb(t.accent_active);
+  c[ImGuiCol_FrameBgActive] = fb(t.accent);
   c[ImGuiCol_Button] = fb(t.slot);
   c[ImGuiCol_ButtonHovered] = fb(t.slot_hover);
-  c[ImGuiCol_ButtonActive] = fb(t.accent_active);
+  c[ImGuiCol_ButtonActive] = fb(t.accent);
   c[ImGuiCol_Header] = fb(t.slot);
   c[ImGuiCol_HeaderHovered] = fb(t.slot_hover);
-  c[ImGuiCol_HeaderActive] = fb(t.accent_active);
-  c[ImGuiCol_CheckMark] = fb(t.accent_hover);
+  c[ImGuiCol_HeaderActive] = fb(t.accent);
+  c[ImGuiCol_CheckMark] = fb(t.title);
   c[ImGuiCol_SliderGrab] = fb(t.accent);
   c[ImGuiCol_SliderGrabActive] = fb(t.accent_hover);
+  c[ImGuiCol_Separator] = fb(t.border);
   c[ImGuiCol_Tab] = fb(t.slot);
-  c[ImGuiCol_TabHovered] = fb(t.accent_hover);
+  c[ImGuiCol_TabHovered] = fb(t.slot_hover);
   c[ImGuiCol_TabSelected] = fb(t.accent);
-  c[ImGuiCol_TabSelectedOverline] = fb(t.accent_hover);
+  c[ImGuiCol_TabSelectedOverline] = fb(t.accent_hover);   // orange line under the yellow tab
   c[ImGuiCol_TabDimmed] = fb(t.slot);
-  c[ImGuiCol_TabDimmedSelected] = fb(t.accent_active);
+  c[ImGuiCol_TabDimmedSelected] = fb(t.accent);
   c[ImGuiCol_TableHeaderBg] = fb(t.panel_alt);
-  c[ImGuiCol_TableRowBgAlt] = ImVec4(1, 1, 1, g.srgb ? 0.02f : 0.035f);
+  c[ImGuiCol_TableRowBgAlt] = ImVec4(0.4f, 0.3f, 0.2f, g.srgb ? 0.025f : 0.05f);
   c[ImGuiCol_TableBorderLight] = fb(ImVec4(t.border.x, t.border.y, t.border.z, 0.5f));
   c[ImGuiCol_TableBorderStrong] = fb(t.border);
   c[ImGuiCol_NavCursor] = fb(t.accent_hover);
+  c[ImGuiCol_TextSelectedBg] = fb(ImVec4(t.accent.x, t.accent.y, t.accent.z, 0.5f));
   c[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, 0.6f);
   c[ImGuiCol_NavWindowingDimBg] = ImVec4(0, 0, 0, 0.5f);
   c[ImGuiCol_ScrollbarBg] = fb(t.panel);
@@ -173,7 +197,7 @@ void apply_style(float scale) {
 bool init_imgui(const SnapUiFrame* f) {
   if (g.failed) return false;
   if (g.imgui_ready.load()) return g.format == f->format;   // a format change after init is not supported: no overlay then
-  std::lock_guard<std::mutex> lk(g.mu);
+  std::lock_guard<std::recursive_mutex> lk(g.mu);
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
@@ -204,8 +228,19 @@ bool init_imgui(const SnapUiFrame* f) {
   ii.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
   if (!ImGui_ImplVulkan_Init(&ii)) { hle::log("ui: ImGui_ImplVulkan_Init failed"); g.failed = true; ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext(); return false; }
   g.vk_ready = true;
-  // font: Segoe UI from the Windows fonts folder when present (system file, not shipped), else the embedded vector font
+  // font: the game's own UI font decoded from the user's extracted files at run time (ui_font.h; never copied into the repo), else Segoe UI
+  // from the Windows fonts folder when present (system file, not shipped), else the embedded vector font
   bool font_ok = false;
+  {
+    static std::vector<unsigned char> game_font;   // must outlive the atlas
+    if (game_font_ttf(game_font)) {
+      ImFontConfig fc;
+      fc.FontDataOwnedByAtlas = false;
+      font_ok = io.Fonts->AddFontFromMemoryTTF(game_font.data(), (int)game_font.size(), theme().font_px, &fc) != nullptr;
+      if (font_ok) hle::log("ui: using the game's UI font (%s) decoded from the extracted files", game_font_family());
+    }
+  }
+  if (!font_ok)
   if (const char* root = std::getenv("SystemRoot")) {
     std::string path = std::string(root) + "\\Fonts\\" + theme().font_file;
     if (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES) font_ok = io.Fonts->AddFontFromFileTTF(path.c_str(), theme().font_px) != nullptr;
@@ -295,21 +330,45 @@ void* overlay_hwnd() { return g.hwnd; }
 // Window thread (F1) and present thread (chord, scripted test) both call this.
 void overlay_set_open(bool open) {
   if (g.open.exchange(open) == open) return;
-  hle::input::hub().set_menu_open(open);
+  hle::input::hub().set_menu_open(open || g.modal.load());
   if (open) ClipCursor(nullptr);   // the cursor must reach the menu, not stay confined by the game
   hle::log("ui: controls menu %s", open ? "opened" : "closed");
 }
 
+void overlay_set_modal(bool on) {
+  if (g.modal.exchange(on) == on) return;
+  hle::input::hub().set_menu_open(on || g.open.load());
+  if (on) ClipCursor(nullptr);
+  hle::log("ui: shader screen %s", on ? "shown" : "closed");
+}
+
 }  // namespace snap::ui
 
+static void ui_present_impl(const SnapUiFrame* f);
+// Exceptions never reach the NVN present path: log, drop the frame's overlay and keep the game running.
 extern "C" void snap_ui_present(const SnapUiFrame* f) {
+  static int errors = 0;
+  try {
+    ui_present_impl(f);
+  } catch (const std::exception& e) {
+    if (errors++ < 20) hle::log("ui: exception in the overlay frame: %s", e.what());
+  } catch (...) {
+    if (errors++ < 20) hle::log("ui: unknown exception in the overlay frame");
+  }
+}
+
+static void ui_present_impl(const SnapUiFrame* f) {
   using namespace snap::ui;
   auto& hubr = hle::input::hub();
   ensure_window(static_cast<HWND>(f->hwnd));
   const double now = now_s();
   test_tick(now);
-  if (hubr.consume_menu_toggle()) overlay_set_open(!g.open.load());
-  const bool open = g.open.load();
+  const bool shader = shader_screen_active(now);
+  overlay_set_modal(shader);
+  if (!shader && g.was_modal) shader_screen_closed();
+  g.was_modal = shader;
+  if (hubr.consume_menu_toggle() && !shader) overlay_set_open(!g.open.load());
+  const bool open = g.open.load() && !shader;
   if (open && !g.was_open) menu_opened();
   if (!open && g.was_open) menu_closed();
   g.was_open = open;
@@ -322,23 +381,25 @@ extern "C" void snap_ui_present(const SnapUiFrame* f) {
     if (!hubr.message().empty()) g.toast_until = now + 12.0;
   }
   const bool toast = !open && now < g.toast_until;
-  if (!open && !toast) return;
+  if (!open && !shader && !toast) return;
   if (!init_imgui(f)) return;
-  if (open) hubr.poll(8);   // keeps rebinding and the live readout fresh even when the game is not polling
+  if (open || shader) hubr.poll(8);   // keeps rebinding and the live readout fresh even when the game is not polling
 
   const ImVec2 size(static_cast<float>(f->extent.width), static_cast<float>(f->extent.height));
   ImDrawData* dd = nullptr;
   {
-    std::lock_guard<std::mutex> lk(g.mu);
+    std::lock_guard<std::recursive_mutex> lk(g.mu);
     const float scale = std::clamp(hubr.mapping().ui_scale, 0.5f, 3.0f) * std::max(1.0f, size.y / 1080.0f);
     if (std::fabs(scale - g.applied_scale) > 0.001f) apply_style(scale);
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = size;
-    feed_gamepad(io, open && !hubr.capturing());
+    feed_gamepad(io, (open || shader) && !hubr.capturing());
     ImGui::NewFrame();
-    if (open) {
+    if (shader) {
+      draw_shader_screen(size);
+    } else if (open) {
       bool close = false;
       draw_menu(size, &close);
       if (close) overlay_set_open(false);

@@ -14,6 +14,8 @@
 
 #include "hle.h"
 
+namespace nvn { extern int g_presentCount; }   // runtime/nvn/nvn_tex_vk.cpp: frame clock for '@f' script times
+
 namespace hle::input {
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -405,6 +407,21 @@ static bool any_down(const std::vector<Source>& v, const RawInput& in, float thr
   return false;
 }
 
+PadFx& pad_fx() { static PadFx f; return f; }
+
+void gyro_to_stick(float yaw, float pitch, float sens, bool inv_x, bool inv_y, float* sx, float* sy) {
+  auto dz = [](float v) {
+    float a = std::fabs(v);
+    if (a <= kGyroDeadDegPerSec) return 0.0f;
+    return std::copysign(a - kGyroDeadDegPerSec, v);   // subtract the dead zone so there is no jump at its edge
+  };
+  float s = std::max(0.0f, sens) / (kGyroFullDegPerSec - kGyroDeadDegPerSec);
+  float x = -dz(yaw) * s;      // turning the pad to the right (negative yaw rate) pushes the stick right
+  float y = dz(pitch) * s;     // tipping the front up pushes the stick up
+  *sx = std::clamp(inv_x ? -x : x, -1.0f, 1.0f);
+  *sy = std::clamp(inv_y ? -y : y, -1.0f, 1.0f);
+}
+
 static void stick_value(const StickMap& sm, bool is_left, const Mapping& m, const RawInput& in, float mouse_x, float mouse_y, float* ox, float* oy) {
   float x = 0, y = 0;
   std::string analog = sm.analog;
@@ -448,6 +465,11 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
   if (m.mouse_look && eff.focused) {
     mlx = std::clamp(eff.mouse_vx * m.mouse_sensitivity / (float)kMouseLookFullPxPerSec, -1.0f, 1.0f) * (m.mouse_invert_x ? -1.f : 1.f);
     mly = std::clamp(-eff.mouse_vy * m.mouse_sensitivity / (float)kMouseLookFullPxPerSec, -1.0f, 1.0f) * (m.mouse_invert_y ? -1.f : 1.f);
+  }
+  if (eff.gyro_present && pad_fx().gyro_on.load()) {
+    float gx, gy;
+    gyro_to_stick(eff.gyro_y, eff.gyro_x, pad_fx().gyro_sens.load(), pad_fx().gyro_invert_x.load(), pad_fx().gyro_invert_y.load(), &gx, &gy);
+    mlx += gx; mly += gy;
   }
   stick_value(m.right, false, m, eff, mlx, mly, &rx, &ry);
   auto q = [](float v) { return (int32_t)std::lround(std::clamp(v, -1.0f, 1.0f) * kStickMax); };
@@ -610,10 +632,12 @@ bool Hub::save(std::string* err) {
 //   anchor <event>                                 starts a new segment: its entries count seconds from the moment the game
 //                                                  raises <event> (script_event; "swkbd" = the name prompt opened) and the
 //                                                  entries of earlier segments stop. Until the event fires the old segment runs on.
+// Frame timing (load-independent): write the start as @f<frame> (e.g. "@f600 30 A", "repeat @f0 @f3000 90 15 A") and the whole line counts
+// guest presents (nvn present count) since the segment began, so a slow PC does not shift it; end/period/hold may carry an optional @f prefix.
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -622,8 +646,17 @@ struct Script {
   int load_seg = 0;                      // segment being parsed
   std::atomic<int> cur{0};               // segment running
   std::atomic<uint64_t> cur_t0{0};       // start time (ns) of the running segment
+  std::atomic<int> cur_f0{0};            // present count at the start of the running segment
 };
 Script g_script;
+}  // namespace
+namespace {
+// "@f120" or "120" -> number; sets fr when the @f prefix is present
+double script_num(const std::string& w, bool* fr = nullptr) {
+  bool f = w.size() > 2 && w[0] == '@' && w[1] == 'f';
+  if (fr && f) *fr = true;
+  return std::atof(w.c_str() + (f ? 2 : 0));
+}
 
 bool script_token(const std::string& t, ScriptEntry& en) {
   size_t eq = t.find('=');
@@ -665,12 +698,16 @@ void script_load() {
     en.seg = g_script.load_seg;
     bool rep = w == "repeat";
     if (rep) {
-      if (!(is >> en.start >> en.end >> en.period >> en.hold) || en.period <= 0) { log("input script: bad line '%s'", line.c_str()); continue; }
+      std::string a, b, c, d;
+      if (is >> a >> b >> c >> d) { en.start = script_num(a, &en.frames); en.end = script_num(b); en.period = script_num(c); en.hold = script_num(d); }
+      if (a.empty() || d.empty() || en.period <= 0) { log("input script: bad line '%s'", line.c_str()); continue; }
     } else {
-      en.start = std::atof(w.c_str());
+      en.start = script_num(w, &en.frames);
       en.end = en.start;
       en.period = 1;
-      if (!(is >> en.hold)) { log("input script: bad line '%s'", line.c_str()); continue; }
+      std::string hs;
+      if (is >> hs) en.hold = script_num(hs);
+      else { log("input script: bad line '%s'", line.c_str()); continue; }
     }
     bool ok = true;
     while (is >> w) ok &= script_token(w, en);
@@ -686,9 +723,12 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
   static uint64_t last = ~0ull;
   uint64_t cur = 0;
   const int seg = g_script.cur.load();
-  const double now = (double)(now_ns_v - g_script.cur_t0.load()) * 1e-9;
+  const double now_t = (double)(now_ns_v - g_script.cur_t0.load()) * 1e-9;
+  const double now_f = (double)(nvn::g_presentCount - g_script.cur_f0.load());
+  double now = now_t;
   for (const ScriptEntry& en : g_script.e) {
     if (en.seg != seg) continue;
+    now = en.frames ? now_f : now_t;
     bool on;
     if (en.end > en.start) {   // repeat
       on = now >= en.start && now < en.end && std::fmod(now - en.start, en.period) < en.hold;
@@ -710,6 +750,7 @@ void script_event(const char* name) {
   int k = g_script.cur.load();
   if (k < (int)g_script.seg_event.size() && g_script.seg_event[(size_t)k] == name) {
     g_script.cur_t0 = now_ns();
+    g_script.cur_f0 = nvn::g_presentCount;
     g_script.cur = k + 1;
     log("input script: event '%s' starts segment %d", name, k + 1);
   }
@@ -846,7 +887,7 @@ void Hub::poll(int min_interval_ms) {
     pad_.connected = true;
     touch_ = TouchSample{};
   }
-  if (!g_script.loaded) { script_load(); g_script.t0 = t; g_script.cur_t0 = t; }
+  if (!g_script.loaded) { script_load(); g_script.t0 = t; g_script.cur_t0 = t; g_script.cur_f0 = nvn::g_presentCount; }
   if (!g_script.e.empty()) script_apply(t, pad_);
   ++seq_;
 }
@@ -856,7 +897,11 @@ int64_t Hub::sampling_number() const { std::lock_guard<std::mutex> g(mu_); retur
 RawInput Hub::raw() const { std::lock_guard<std::mutex> g(mu_); return raw_; }
 void Hub::rumble(float low, float high) {
   std::lock_guard<std::mutex> g(mu_);
-  if (backend_ && !menu_open_.load()) backend_->rumble(low, high);
+  if (!backend_ || menu_open_.load()) return;
+  const PadFx& fx = pad_fx();
+  if (!fx.rumble_on.load()) { low = high = 0; }
+  else { float k = std::clamp(fx.rumble_strength.load(), 0.0f, 1.5f); low = std::min(1.0f, low * k); high = std::min(1.0f, high * k); }
+  backend_->rumble(low, high);
 }
 
 Hub& hub() {

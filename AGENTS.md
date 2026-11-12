@@ -108,9 +108,25 @@ This is the durable project plan and working agreement. Read it before changing 
     - **Test scripts:** the Python texture-compare scripts need `python -E -P` (user-site numpy).
   - **Live play (2026-11-11):** `host\play.ps1` runs a copy of the exe from `build\play\` under `build\play.lock`.
     - **Switches:** `-SkipIntro` (scripted input to the camera tutorial, about 4 min) and `-ListPads`.
-    - **Test runs:** `run_boot.ps1` refuses to start while `play.lock` is live, and tests use `SNAP_SAVE_DIR=build\testsave`.
+    - **Test runs:** `run_boot.ps1` refuses to start while `play.lock` is live; runs use `build\runs\slot<N>\save`, an exe copy and a shader-cache copy per slot.
+    - **Lock protocol (owner exception, 2026-11-12, `host\locks.ps1`, details in `host\README.md`):** builds hold `build\heavy.lock`; `run_boot.ps1` takes one of 3 slots `build\slots\run0..2.lock` itself (do not hold heavy.lock for runs); `-Bench`/`-Exclusive`/perf take all 3.
+    - **Locks are released only by their holder** (2026-11-12): three workers deleted another worker's `heavy.lock` (`rm`, cleanup commands). Release through `host\locks.ps1` with your own owner tag; never delete a lock file you did not create, even if it looks stale; report it instead.
+    - **Muted test runs (owner, 2026-11-12):** hidden runs default to the silent null audio backend (`SNAP_AUDIO_BACKEND=null`); capture still works. Use `wasapi` only when a test needs the device, with `SNAP_VOL_MASTER=0` where possible.
+    - **Priority and routes:** while `build\heavy.priority` exists slot 0 is for `$env:SNAP_LOCK_OWNER` = its content. Route scripts accept `@f<frame>` times (present count) so load does not shift them.
     - **Input:** the game reads npad 0 in Pro controller style only, never six-axis. Every SDL3 gamepad plus XInput slots 0-3 are merged, with a rescan every 1 s.
     - **Boot crashes fixed:** the host supplies the `ProfanityFilter` vtable, and the software keyboard returns "Ash" (`SNAP_PLAYER_NAME`).
+    - **Save files (2026-11-11):** `scripts\snap_save.py` can dump and patch saves (`dump`, `unlock`, `patch`). Each save file is a 0x30 header plus entries. Each entry is AES-128-CBC with an xorshift IV, plus adler32 and crc32 checksums. The key is read at run time from a local clone of NewSnap (ISC) in `tools\ref\NewSnap` and is never committed. Re-encoding an unedited file gives byte-identical output.
+      - **Unlock fields (static RE, details in `analysis\save\fields.md`):**
+        - Course status is file 11, byte `route-1`: 0 locked, 1 unlocked, 2 entered. High confidence on the read side; the code that sets it was not found.
+        - Course level comes from research points: the file 9 route record at `route*0x1f8`, entries at +8 (12 bytes each, four u16 scores). The level 1-4 thresholds come from `ResearchPoint.mdrp`. High confidence.
+        - Entry ids and the +4 field are low confidence. The points entry uses id 1, which may break the research log UI.
+      - **Fixtures:**
+        - `build\fixtures\saves\unlock_all`: all courses unlocked, level 4. Checksums verified.
+        - `unlock_routes`: unlocks only, no points. Use it if the research log crashes on `unlock_all`.
+        - Not yet tested in game.
+        - `post_tutorial` (2026-11-12, verified in game): a game-written save past the intro, yard camera tutorial, evaluation tutorial and scan tutorial; title, then A, then the lab hub and the Lental Map with Florio (`host\routes\post_tutorial_check.txt` shows the map by 62 s; with no input the run stops at the title). The key is story stage byte `9:0:0x3b50` (1 new game, 3 after yard, 4 after first evaluation, 2 normal); details in `analysis\save\fields.md`. The old fresh save is now fixture `new_game`; `post_yard` is the save right after the yard tutorial, and `host\routes\tut_full.txt` passes the yard tutorial from `new_game` (2 of 2 runs).
+      - **Next step:** diff a save from before and after a scored course run, once photo capture works.
+      - **Photos (2026-11-11):** photos live in the save, not a system album: file 7 = 1200 JPEG entries, file 10 = thumbnails, file 6 = 0x148 metadata (limit 1200, `SNAP_ALBUM_LIMIT` not implemented, plan in `analysis\save\album.md`); `tools-src\gallery` extracts and serves them.
   - **First UI (2026-11-11):** the game reaches the autosave notice and then the voice-language select screen. Text is legible and the image is upright (`analysis/boot/fixed_screen.png`).
     - **Upside-down image:** the game selects the UPPER_LEFT window origin, which now gets a negative-height viewport.
     - **Garbled text:** the glyph atlas is an R8 512x2048 pitch-linear texture that the CPU keeps writing. It is now read with its stride and re-uploaded when its hash changes.
@@ -141,7 +157,11 @@ This is the durable project plan and working agreement. Read it before changing 
 - **Audio (2026-11-11; `docs/audio.md`, `runtime/audio/`, `tests/audio/`):**
   - **Surface:** the game uses AudioOut only, with no AudioRenderer. Wwise mixes everything itself and outputs 48 kHz s16 stereo (or 5.1), 1024-frame buffers, 4 queued. The sink is at `main+0x124640`.
   - **Implementation:** the 16 `nn::audio` imports are host overrides on a WASAPI shared event-driven backend, with a null fallback. The test passes with 0 underruns; the latency is about 22 ms device plus 85 ms guest queue.
-  - **Volume:** BGM/SE/VOICE volume needs the Wwise bus names from the soundbanks. Only master volume is applied today.
+  - **Volume (2026-11-11, done):** per-category volume goes through the game's own options path.
+    - The setter `main+0x67c610(mgr, cat, level 0..10)` posts the `Set_volume_{bgm,se,voice}_NN` events. The host API `snap_audio_set_volume` (master, bgm, se, voice) calls it, and 1.0 posts nothing.
+    - Settings persist in `audio.json`, and `SNAP_VOL_*` env vars override them. See `docs\audio.md`.
+    - Verified: setting all three to 0 gives silence. The persistence round-trip is untested.
+  - **Surround and spatial (2026-11-12, `docs/audio.md` "Surround and spatial output"):** `SNAP_AUDIO_OUTPUT=stereo|speakers|spatial` (also `audio.json` `output`, `channels`, `speakers`) selects 5.1 or 7.1 WASAPI or a Windows spatial 6-object bed (falls back to speakers, then stereo). The game hard-codes stereo (`AkOutputSettings` channel config `0x3102`, built in `main+0x67ffa0`); `host/abi_audio.cpp` rewrites it to 5.1 (`0x60f106`) at the `ListAudioDeviceName` call and again at the sink Open (`main+0x124780`), and the sink then opens 6 channels. Wwise's mixer bus in `Init.bnk` (id 508372457) is fixed stereo; `scripts/audio_make_surround_pack.py` writes a local `surround-bus` mod that frees it, and a host `Upmixer` fills FC, LFE and surrounds from the stereo content (lab device mix RMS FC 0.014, LFE 0.009, BL/BR 0.008, vs 0.0000 before). The game's own mix has no real surround content. Evidence in `build/audio_caps/`; details in `docs/audio.md`.
 - **Data schemas (2026-11-11; `analysis/registries/`, `scripts/fb_*.py`):**
   - **Coverage:** all 37 FlatBuffers data types have inferred `.fbs` schemas with per-field confidence. Round trips are byte-identical for every walked file, except 2 of 100 `cutb` files (known gap).
   - **ID model:** species are identified by P-number, with one row per form; `form_index` and `gender` select the form. Course and entry keys are the CRC32 of the base name.
@@ -158,6 +178,13 @@ This is the durable project plan and working agreement. Read it before changing 
   - **Hooks (off by default):** `nvnHostSetRenderScale` with target exemptions, and `nvnHostSetAnisotropyOverride`.
   - **Not tested yet:** alpha test, indirect draws, compute, counters and the hooks.
   - **Open question:** whether the game reads GPU-written memory without a sync.
+- **Photo evaluation path (2026-11-12, photo worker; details in `docs/nvn-vulkan-design.md`, "Photo capture"):**
+  - **Mechanism (static, from the shipped GLSL):** the score's visibility input is `EvaluationAggregatePS`, a fragment shader with `early_fragment_tests` that does `atomicAdd` into an SSBO per subject pixel that survives the depth/stencil test. The CPU reads that buffer.
+  - **Three layer bugs fixed:**
+    - SSBOs were bound by translator ordinal instead of NVN index, so the aggregate shader (binding 1) wrote into the dummy buffer. Now mapped from the c0 descriptor offset (`SsboIndex`).
+    - The early-fragment-tests flag (control+0x718 bit 0) was dropped, so hidden pixels would have counted too. Now patched into the SPIR-V.
+    - Fragment-shader SSBO writes into CPU pools never reached guest memory. Now copied back at the sync/fence (readback kind 3; `NVN_NO_SHADER_WB=1` disables it).
+  - **Not yet verified in game:** no Evaluation draw happens at the shutter (yard tutorial, `NVN_DRAW_SIG`), so scoring runs at photo select or the review. No scripted route has passed the tutorial's "line up with Pikachu" step yet (`host\routes\photo_select_up.txt` is the probe). So the selection screen and score screens are still unproven.
 - **Shader path (2026-11-11; `analysis/shaders/`, `scripts/nushdb_parse.py`, `scripts/shader_harness/`):**
   - **Format:** nushdb = SSBH SHDR v1.2 (matches `ssbh_lib`, MIT). The GLSLC inner binary decodes fully (sections, SPH, SASS, reflection); some control fields and reflection tables 5-6 remain undecoded.
   - **Census:** 6,227 programs, 1,639 unique (VS 291, PS 1,343, GS 2 with transform feedback, CS 3). Only 263 `resource.drp` programs carry GLSL or NV_gpu_program5 references.
@@ -176,7 +203,10 @@ This is the durable project plan and working agreement. Read it before changing 
     - Incremental by TU: a one-chunk change rebuilds in 17 s.
   - **Jump tables:** all 37 disagreements are resolved (generator right at 34, our map at 3), and the two now agree at 729 sites.
   - **Per-instruction tests:** 438,738 distinct words, 0 mismatches.
-  - **Function tests:** 390 of 434 functions tested, 0 failures.
+  - **Function tests:** 390 of 434 functions tested, 0 failures, at both -O1 and -O2 (2026-11-12).
+    - **-O2 FP compare fix:** at -O2, LLVM folded an FP compare against 0.0 into an integer test that ignores DAZ, so 0x5adcc0 failed. `runtime/simd_fp.h` `FN(cmp)`/`FN(vcmp)` now pass their operands through an opaque `__asm__` copy.
+    - **Harness default:** `tests/snap_func.py` defaults to -O1, which hid this bug. Test with `--cflags "-march=x86-64-v3 -O2"`, the optimization level the real build uses.
+    - **Rebuild after editing runtime headers:** run `recomp/snap_build.py` first; `host/build_snap.py` only relinks.
   - **Host spike:** lifted `0x910270` runs natively in `host/spike.cpp`. It makes 1,033 NVN proc requests (517 names), exactly matching the static map.
 - **Language decision (owner, 2026-11-11):**
   - **Lifted game code:** generated C compiled with clang.
@@ -286,8 +316,11 @@ User NSP/XCI
   - **Shadows:** the dynamic shadow is one 1024² map (`0x5bdd20`), and the static shadow is 3x1024² (`0x4d12a8`).
   - **Draw distance:** per-course fog and atmosphere distances in the ENV levelb data are the best pop-in mask. There are 2,794 meshes with LOD1 and LOD2 variants.
   - **Not found statically:** the camera far plane, LOD switch distances, distant-animation rate and SSAO samples. Each needs a dynamic trace.
+  - **SSAO quality, pass toggles, color looks (2026-11-11; `host/mods/gamemods.cpp`, `host/mods/look.cpp`, rows 7/16/19/29 of `docs/mod-ideas.md`):** `SNAP_SSAO_QUALITY=high|ultra`, `SNAP_SSAO_SAMPLES`, `SNAP_SSAO_HBAO=dirs,samples` patch the pass objects from `MAIN_INLINE_HOOKS` (`0x5a6c94`, `0x5a7bac`); the sample count is a cbuffer value (SimpleAO `+0x17c`, HBAO `+0x174/+0x178`), kernel buffer holds 512. `SNAP_PASS_DUMP=1` / `SNAP_PASS_OFF=` use the pass loop hook `0x989048`; `SNAP_LOOK=warm:0.6` needs the present hook in `analysis/mods/nvn_hook_requests.md`. Photo score overlay (#19) and sharper fonts (#29, `SetScale` callers `0x435658/0x438f70/0x69a63c/0x69a6ec`) are documented, not implemented.
   - **Native 4K:** every fixed-size target must be scaled together.
   - **Scoring safety:** keep the Evaluation depth target (`0x5c3d38`, width 1920) and the photo passes at their original size.
+- **LOD, distant animation and FOV tracing (2026-11-12, `host/mods/lodanim.cpp`, off unless env set):** `SNAP_TRACE_LOD=1` (even/odd-frame function-entry profile for the 30 Hz animation signature; `_FN`, `_CALLERS`, `_MEM`, `_FROM`, `_FRAMES`, `_OUT`), `SNAP_TRACE_FOV=1` and `SNAP_FOV` (multiplier below 10, degrees from 10; scales only the `tanf` call sites in `SNAP_FOV_SITES`, none confirmed yet). Hooks: `snap_fn_observe` call in `host/loader.cpp` `fnprof_hit`, `snap_lodanim_install` in `host/hooks.cpp`. Camera perspective builders found statically (fov at `obj+0x128`, aspect `+0x12c`): `0x291d70 0x295170 0x2971c0 0x297540 0x38b710 0x44f480 0x454270 0x56ab70`; Dynamic results (2026-11-12, runs `1-20261112_034423`, `2-20261112_044540`, `2-20261112_050158`/`1-20261112_050216`): **gameplay camera (lab yard, tutorial) perspective site = `main+0x38cdbc`** (builder `0x38b710`; vertical FOV 33 deg, 1 call per frame from the yard onward); other 33-35 deg callers in the yard are `0x296400 0x297cd4 0x4cf904 0x4cf920 0x352a54 0x337c68` and per-object `0x337a70` (~124 calls per frame), cutscenes use other sites (`0x10e458` 83-149 deg). `SNAP_FOV=1.8 SNAP_FOV_SITES=0x38cdbc` is applied (trace line `fov: SNAP_FOV applied ... 16.50 -> 29.70 deg`, 1000+ hits); default stays off; the other 33 deg sites (culling or shadow frustums?) are not scaled, so a wide FOV may cull at the edges; a same-view A/B screenshot is still missing (tutorial timing varies per run). `SNAP_TRACE_LOD_SEQ` added. Distant-animation rate and LOD selection are still unconfirmed: the parity profile of the boot, lab and yard scenes shows no 30 Hz signature and no route reaches a course with distant Pokemon, so `SNAP_FULL_RATE_ANIM` and `SNAP_DRAW_DISTANCE` are NOT implemented. Risk: a wider FOV or longer draw distance can change photo framing and Evaluation visibility, so keep them off by default and re-check scoring.
+- **Graphics mods (2026-11-12, `runtime/nvn/nvn_entry.cpp` `ApplyHostEnvPolicy`, `nvn_host.h`):** env `SNAP_ANISO=1..16` (mipmapped linear non-compare samplers only), `SNAP_LOD_BIAS=<f>|auto` (auto = -log2 scale when scale is not 1), `SNAP_RENDER_SCALE`, `SNAP_SHADOW_RES=2048|4096` (1024 depth maps only); output size is `SNAP_WINDOW_W/H`; `NVN_FRAME_DUMP_AT=<presents>` and `SNAP_SCALE_LOG=1` for tests. Verified 2026-11-12 (shots in `analysis/mods/compare/`, rows 1/3/4/9 of `docs/mod-ideas.md`): aniso 16x is now the DEFAULT (`SNAP_ANISO=0` = 1x); render scale 2 at 3840x2160 works with 0 validation errors (device loss came from the 1920-wide depth exemption catching the main depth; the Evaluation depth is now tagged from the guest call chain, `nvnHostSetGuestFrame` from the generated bridge, and viewports/scissors re-scale on render-target scale changes); `SNAP_LOD_BIAS` auto is the upscaler bias (0 at native scale); `SNAP_SHADOW_RES=2048` sharpens shadows without offset; `SNAP_LOOK` and `SNAP_WINDOW_FRAME_CAP=30` (33.3 ms median) work. Comparison tools: `NVN_FRAME_DUMP_FULL=1` (full-size dumps), `NVN_FRAME_DUMP_POST=1` (swapchain after look/UI). Present-count dumps are not scene-exact across runs (load times shift the A-mash route); dump many frames and pair them by image difference.
 - **Photo scoring:** scoring must not change. Draw-distance and LOD changes need verification that photo evaluation, visibility tests and spawns behave as on the original path.
 
 ### High frame rates
@@ -304,6 +337,7 @@ User NSP/XCI
 
 - Use layered overlays with per-pack enable state, priority, dependencies, target-version declarations, per-pack settings, and conflict reporting.
 - Support existing LayeredFS-style replacement layouts where practical.
+- **Entry-level DRP mods (2026-11-11; `docs/mods.md`, `runtime/mods/`, `scripts/mods/make_override.py`):** packs under `%APPDATA%\SnapRecomp\mods\<pack>\<archive>.drp\<entry>.<ext>` replace single DRP entries without repacking, any size. The hook is `MAIN_INLINE_HOOKS` in `recomp/snap_gen.py` (before `main+0x5e3a58`, in the entry worker `0x5e38b0`); changing it needs `main` regenerated.
 - Keep original game data out of mod packages. Validate assets and fail with actionable messages.
 - Support hot reload for textures, materials, text, and shaders where safe. Models/courses may initially require a course reload.
 - Version modded saves, record pack versions, preserve unknown IDs, and provide profiles and automatic backups.
@@ -335,6 +369,10 @@ User NSP/XCI
 
 - Use a game-themed layout inspired by the reviewed tabbed settings screenshot: top categories, options on the left, contextual explanations on the right, version/FPS at the edges, and input hints at the bottom.
 - Derive typography, icons, shapes, and palette from Snap's own lab/NEO-ONE interface assets loaded locally. Do not copy Hookshot's theme or ship game assets.
+- **Owner request (2026-11-11): the F1 menu, profile picker and shader screens must look like they belong in the game.**
+  - **Approach:** restyle the ImGui overlay from a measured style reference (`analysis\ui\style_ref.md`). The game's font and UI textures are loaded at run time from `extracted\`, with a plain fallback if they are missing.
+  - **Audio:** an Audio tab drives `snap_audio_set_volume`.
+  - **Later:** adding an entry to the game's own pause or options menu is only a feasibility check for now.
 - Default categories: Graphics, Audio, Controls, Gameplay, Mods, Accessibility, System. Keep Debug behind an advanced toggle.
 - Graphics options include output/render resolution, upscaler, DLSS model, frame cap, pacing, Reflex, HDR, and renderer diagnostics where appropriate.
 - Mods UI includes enabled packs, content browser, load order, profiles, dependencies, conflicts, pack settings, hot-reload/restart status, and safe removal.
@@ -376,15 +414,43 @@ User NSP/XCI
 4. Try the validated ELF in REA, and compare its function set against `analysis/maps/functions_final.tsv`.
 5. Prototype the selected CPU backend and differential tests before building game-dependent runtime code.
 6. Follow the playable milestone order: startup -> title -> complete course with photo scoring -> stable 60 -> native 4K/DLAA -> DLSS -> real 120+ FPS and advanced content mods.
+- **Perf pass 1 (2026-11-11; `analysis\perf\{baseline,results,proposals,shader_precompile_api}.md`):** the lab intro went from 32.1 to 57.5 fps average.
+  - **Pacing:** `Pace()` added a full extra period to every slow frame. Fixed.
+  - **Buffer sync:** bound buffers were synced per draw, about 128 MB per frame. They are now synced once per submit.
+  - **Pipelines:** an async pipeline service with a persistent `VkPipelineCache` and key list in `%APPDATA%\SnapRecomp\shadercache`. Startup precompile goes through `runtime\nvn\shaderprecompile.h`.
+  - **Open risks:**
+    - A cold cache skips about 1.4 draws per new pipeline. A photo taken in that window could miss objects, so photo frames must never skip draws.
+    - Texture-upload bursts (320-440 ms at scene changes) set the worst lows.
+    - The first course was not measured.
+  - **Pass 2 design** (`analysis\perf\pass2_design.md`): implement it after the photo worker releases `runtime\nvn`.
+    - **Order:** instrumentation, then dirty-page tracking with `GetWriteWatch` (poolsync copies 44-52 MB per frame, about 3 ms), then off-thread texture uploads, then a fast pipeline link with GPL (the RTX 4090 supports it). `present_wait` pacing comes after that.
+    - **Finding:** most frames over 50 ms are guest-side stalls (replay under 3 ms). The 1% lows need a CPU-side investigation (game thread, `nn::os`, file I/O), not more renderer work.
+- **HD assets (owner decision, 2026-11-11; `docs/hd-assets.md`):** the owner allows third-party model files for personal, local mods.
+  - **Storage:** they go only in `build/hd/external/`, with provenance in `SOURCES.md` there. They are never committed or distributed.
+  - **File types:** model and texture formats only, never executables.
+  - **Unchanged:** the rule against downloading game dumps, keys, firmware or Nintendo SDKs still stands.
+  - **First comparison (2026-11-11):** only Scorbunny's model is clearly more detailed than Snap's (46.7k vs 9.0k tris). Pikachu, Pichu, Bidoof, Vivillon and Bouffalant are worse, and Grookey is about equal. They come from Pokemon-3D-api/assets, which repackages Sketchfab fan models. They are listed in `build\hd\cache\alt_models.json`, and the comparison images are in `analysis\hd\compare_<species>.png`.
+  - **Owner direction (2026-11-11):** models are parked; do texture upscales only.
+    - **Detail:** add modest detail (crisp eyes, markings and edges, fine surface grain) and keep each Pokémon faithful to its official look. Check against reference images in `build\hd\refs\` (local only).
+    - **Comparisons:** always textured, with the same camera and scale for both sides.
+- **NVIDIA SDKs (owner decision, 2026-11-11):** the owner approved downloading the DLSS (NGX/Streamline) and NVIDIA frame-generation SDKs from NVIDIA's developer site, for local use.
+  - **Storage:** they go only in `tools\nvidia\`, which is git-ignored, and are never committed or distributed.
+  - **Public builds:** if DLSS is missing, the code falls back to FSR or native rendering.
+7. Save states (owner request, 2026-11-11): save and reload state buttons, so a player can retry one photo.
+   - **When:** after photo capture works, a full course scores and 60 FPS is stable.
+   - **First step:** a read-only feasibility study.
+   - **Likely route:** session-only states. Quiesce all guest threads at a frame boundary, snapshot guest memory plus the host runtime state, and track the NVN/Vulkan objects created or destroyed since the snapshot.
+   - **Risks:** host stacks, GPU resources, audio and file handles.
 
 ## Repository hygiene
 
-- **Git:** the repo is private on GitHub at `finalpantasy/new-pokemon-snap-recomp`, created 2026-11-11 with code only.
+- **Git:** the repo is public on GitHub at `finalpantasy/new-pokemon-snap-recomp` (created 2026-11-11, made public by the owner the same day), with code and two README screenshots only.
   - The local git identity is `finalpantasy` with its noreply email. Never use the global identity.
   - Only the coordinator commits and pushes. Before every push, check that `git grep -i` finds no owner name or email and that `git ls-files` contains no game formats or images.
   - Push using the finalpantasy token (`gh auth token -u finalpantasy`) through a per-command credential helper. The active gh account is a different one.
-  - Making the repo public is the owner's decision.
 
 - `work/`, `extracted/`, `analysis/`, and `tools/` are generated/local and ignored.
 - Never commit `.nsp`, `.xci`, `.nca`, `.nso`, `.keys`, extracted RomFS, generated C from the game, NVIDIA binaries, or proprietary SDK files.
 - Keep research/source code separate from game-derived artifacts and record tool versions and input hashes for reproducibility.
+- **Window options (2026-11-12, code written, NOT yet linked or run):** host/window_opts.cpp (F11/Alt+Enter borderless, monitor, remembered rect, pause + mute on focus loss via host tick freeze and present-hook block because the game imports no focus query, window.json, C API; docs in host/README.md), os_time_pause in runtime/os/os_kernel.cpp, hle::oe_post_message in runtime/hle/services_sys.cpp; frame-cap line for nvn Pace() is request #3 in analysis/mods/nvn_hook_requests.md (applied). Linked and run 2026-11-12: the focus test (`SNAP_WINDOW_TEST=blur@70,focus@90`) shows presents and guest time frozen for the blur, audio output 0, all resumed on focus; F11, monitor moves and a real alt-tab are untested.
+- **Fast boot (2026-11-12):** `SNAP_FAST_BOOT=1` drops the frame limiter for the first 3200 presents (`SNAP_FAST_BOOT_FRAMES`). Present #3030 (title logo up) at 58.8 s average over 3 exclusive runs before, 42.4 s after. The first ~2070 frames are a black, frame-count-bound load phase that A presses do not skip.

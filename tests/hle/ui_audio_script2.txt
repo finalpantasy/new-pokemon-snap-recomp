@@ -1,0 +1,16 @@
+# Audio tab, run 2: a new process must have the values run 1 set (audio.json restored), then Reset to original mix is checked by the API.
+25 expect_vol master 70
+25 expect_vol bgm 40
+25 expect_vol se 60
+25 expect_vol voice 20
+26 key F1 1
+28 expect_open 1
+29 tab Audio
+32 shot build/testconfig_prof/audio_tab_restored.bmp
+34 vol master 100
+34 vol bgm 100
+34 vol se 100
+34 vol voice 100
+35 expect_vol bgm 100
+36 key F1 0
+38 quit

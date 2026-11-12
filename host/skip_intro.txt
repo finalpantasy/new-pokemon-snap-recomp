@@ -1,12 +1,19 @@
-# Scripted input for play.ps1 -SkipIntro (SNAP_INPUT_SCRIPT): loading, language/voice/appearance select, name entry, the lab intro
-# cutscene, up to the first tutorial step. Real input stays active and is OR-ed in. See runtime/hle/input_core.cpp for the format.
+# Scripted input for play.ps1 -SkipIntro (SNAP_INPUT_SCRIPT): loading, language/voice/appearance select, name entry and the lab intro
+# cutscene. It hands control back to the player at the tutorial's "Tutorials are based on default button layouts" panel and presses
+# nothing after that: the tutorial's camera, the photo-select screen and everything later need live input (a held A skips the photo
+# selection and the professor's evaluation). Real input stays active and is OR-ed in. See runtime/hle/input_core.cpp for the format.
 # Segment 0: A every 2.5 s until the name prompt opens (the game calls nn::swkbd::ShowKeyboard).
 repeat 12 200 2.5 0.3 A
 anchor swkbd
 # Segment 1 (seconds after the name prompt): the "Are you ready to start?" dialog defaults to No: move up to Yes, confirm, then
-# advance the cutscene dialogue until the tutorial starts.
+# advance the cutscene dialogue. The A presses stop at t=135 at the latest (fallback if the next event never comes).
 2.5 0.2 Up
 3.5 0.2 Up
 4.5 0.2 Up
 5.5 0.3 A
-repeat 9 170 1.2 0.25 A
+repeat 9 135 1.2 0.25 A
+anchor vibration
+# Segment 2 (seconds after the first controller rumble, which is the lab cutscene handing the camera to the player; it comes 120 to
+# 126 s after the name prompt in test runs): the last cutscene lines. The "Tutorials are based on default button layouts" panel
+# appeared 21 to 30 s after the rumble and the first camera prompt 31 to 36 s after it, so A stops at 18 s, before both.
+repeat 0 18 1.2 0.25 A

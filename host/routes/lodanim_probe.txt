@@ -1,0 +1,9 @@
+# fixture: post_tutorial
+# Route lodanim_probe (draft 2): boot -> title -> lab intro -> camera tutorial (reached about t=240 s). Times are seconds since the
+# first input poll. Observed with -SaveFixture post_tutorial AND unlock_all: the game still replays the Prof. Mirror / Rita intro cutscene
+# and the camera tutorial (see host\README.md "Test routes"), so the first course is NOT reached within a 5 min run yet.
+# Mashing A every 3 s from t=55 skips the logos, takes "Start" on the title and advances every dialogue line.
+repeat 55 290 3 0.3 A
+# Next (needs a run longer than 5 min or a fixture that skips the intro): tutorial photos, then:
+#   repeat 300 400 2 0.2 ZR     # photos while the tutorial prompts
+# course select: Up/A to pick Florio, then A through the briefing; in the course: lx/ly stick moves, ZR every 8 s, A to end.

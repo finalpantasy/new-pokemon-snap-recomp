@@ -165,9 +165,16 @@ void oe_set_performance_configuration(Cpu* c) {
 
 void oe_get_desired_language(Cpu* c) { ret(c, language_code(config().language)); }
 
+// Applet notification queue (nn::oe::Message values: 15 FocusStateChanged, 16 Resume, 30 OperationModeChanged). The host window code
+// (host/window_opts.cpp) posts here; the game polls TryPopNotificationMessage once per frame (its handler is at main+0x5dc3f0).
+static std::mutex g_oe_mu;
+static std::vector<uint32_t> g_oe_q;
+void oe_post_message(uint32_t msg) { std::lock_guard<std::mutex> lk(g_oe_mu); if (g_oe_q.size() < 16) g_oe_q.push_back(msg); }
 void oe_try_pop_notification_message(Cpu* c) {
-  if (uint64_t p = arg(c, 0)) store<uint32_t>(ptr<void>(p), 0);
-  ret(c, 0);  // no message pending (focus stays in-focus, operation mode never changes)
+  uint32_t m = 0; bool have = false;
+  { std::lock_guard<std::mutex> lk(g_oe_mu); if (!g_oe_q.empty()) { m = g_oe_q.front(); g_oe_q.erase(g_oe_q.begin()); have = true; } }
+  if (uint64_t p = arg(c, 0)) store<uint32_t>(ptr<void>(p), m);
+  ret(c, have ? 1 : 0);
 }
 
 void oe_get_program_total_active_time(Cpu* c) {
