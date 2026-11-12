@@ -1,4 +1,9 @@
 # fixture: unlock_all
-# Check for the unlock_all fixture: slow A taps get past the title and the lab hub "Research" entry, then stop on the Lental Map
-# (course select). Run: powershell -File host\run_boot.ps1 -Route post_tutorial_check -Timeout 120 -ShotAt 20 -ShotEvery 20
-repeat @f300 @f4600 120 8 A
+# Check for the unlock_all fixture (verified 2026-11-12): A taps from the title (title appears about present 3000; taps before it are lost)
+# through the lab hub "Research" entry and the research-reward "You got a frame" cards, then stop on the Lental Map (about present 7500).
+# A at f7600 opens the Florio course panel (shows Research Level), X at f8300 opens the research level picker.
+# Run: powershell -File host\run_boot.ps1 -Route unlock_all_check -Timeout 190 -ShotAt 125 -ShotEvery 3 -ShotMax 24
+# Under load the first 200 s can pass with few presents; the frame times keep the route in step, so raise -Timeout instead.
+repeat @f3100 @f7250 40 4 A
+@f7600 6 A
+@f8300 6 X
