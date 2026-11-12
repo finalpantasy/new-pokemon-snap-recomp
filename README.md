@@ -1,14 +1,17 @@
 # New Pokémon Snap PC Recomp
 
-[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support%20this%20project-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/finalpantasy)
-
 A native Windows static recompilation of New Pokémon Snap (Switch): the game's AArch64 code is lifted to C, built with clang, and run against a hand-written Horizon OS and NVN-to-Vulkan runtime.
 
 **This repository contains source code only. It includes no game files, keys, extracted assets or generated game code. You must supply your own legally dumped copy of v2.0.1 (version 262144, title update 2.0.1) of the game.**
 
 ## Status
 
-Boots to the lab intro cutscene. Characters are not rendered yet. Not playable.
+Early, but playable. The game boots through the intro and tutorials into the first course, and Pokémon and characters render. Keyboard, mouse and controllers work, and F1 opens a menu for remapping them.
+
+Known problems:
+
+- Photo capture is broken. Thumbnails come out black, and the professor says you have no photos to show.
+- The frame rate sits a little under 60 FPS, with shader-compile stutter.
 
 <!-- screenshots: pending owner decision -->
 
