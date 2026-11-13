@@ -95,7 +95,7 @@ names, last played times and the last used profile.
   D-pad and A; Esc or B continues with the last played). With one profile there is no picker; hold Shift while starting to see it anyway.
 - Direct selection: `host\play.ps1 -Profile "Photo run"` or env `SNAP_PROFILE=<name>` (created when new); env `SNAP_PROFILE_PICKER=0` never shows the picker.
 - F1 menu, Saves tab: Create, Rename, Duplicate (copies one consistent generation), Clear save, Delete profile, Open folder, Switch (restarts the
-  game), "Import save from folder", "Import test save" (folders in `buildixtures\saves\`), and "Restore from trash". Clear and Delete move the data to
+  game), "Import save from folder", "Import test save" (folders in `build\fixtures\saves\`), and "Restore from trash". Clear and Delete move the data to
   `profiles\_trash\<name>-<timestamp>\` (newest 10 kept) after a hold-to-confirm. For the profile that is running, Clear and Delete are queued and applied at the
   next start, before the save mounts. "Restart now" and "Switch profile" relaunch the way `host\play.ps1` starts the game: same exe and arguments, working directory of the first start,
   same environment minus the one-shot variables (`SNAP_INPUT_SCRIPT`, so a `-SkipIntro` script does not replay; the profile picker is not shown again), `SNAP_PROFILE` set
