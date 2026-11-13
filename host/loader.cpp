@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <cstdarg>
+#include <atomic>
 #include <mutex>
+#include <unordered_set>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -37,6 +39,7 @@ std::vector<std::string> g_weak_used;   // weak overrides that bound (no definit
 static std::vector<Thunk *> g_thunks;
 static std::unordered_map<std::string, Thunk *> g_by_name;
 static std::vector<uint64_t> g_main_import_target;
+static std::vector<GuestFn> g_main_import_fn;   // lifted target of each import (null: thunk / host override); dtab never changes after load
 extern "C" volatile int g_fnprof;
 extern "C" void snap_fn_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void snap_skips_observe(uint64_t a, uint64_t lr, uint64_t x0);
@@ -326,6 +329,9 @@ bool load(const char *main_elf, const char *sdk_elf) {
         g_main_import_target[i] = resolve(nm, weak, 0);
         g_unbound.resize(before);   // already reported by the relocation pass
     }
+    // opt 2026-11-13: resolve lifted import targets once, so a PLT call into sdk skips rt_dispatch's range checks and dtab load
+    g_main_import_fn.resize(main_import_count);
+    for (uint64_t i = 0; i < main_import_count; i++) g_main_import_fn[i] = lookup_fn(g_main_import_target[i]);
     g_rstats[0] = saved;
     return true;
 }
@@ -380,29 +386,71 @@ GuestThread *new_thread(size_t stack_size) {
     return t;
 }
 
+// The guest state a nested call may change, restored after it (loader.h call_guest_nested).
+struct NestedSave {
+    uint64_t x[31], sp, pc, nzcv, excl_addr, excl_val, excl_val_hi, fpcr, fpsr;
+    __uint128_t v[32];
+    explicit NestedSave(const Cpu *c)
+        : sp(c->sp), pc(c->pc), nzcv(c->nzcv), excl_addr(c->excl_addr), excl_val(c->excl_val), excl_val_hi(c->excl_val_hi),
+          fpcr(c->fpcr), fpsr(c->fpsr) {
+        memcpy(x, c->x, sizeof x);
+        memcpy(v, c->v, sizeof v);
+    }
+    void restore(Cpu *c) const {
+        memcpy(c->x, x, sizeof x);
+        memcpy(c->v, v, sizeof v);
+        c->sp = sp; c->pc = pc; c->nzcv = nzcv;
+        c->excl_addr = excl_addr; c->excl_val = excl_val; c->excl_val_hi = excl_val_hi;
+        const bool fp = c->fpcr != fpcr;
+        c->fpcr = fpcr; c->fpsr = fpsr;
+        if (fp) rt_fpcr_sync(c);
+    }
+};
+
 uint64_t call_guest_nested(Cpu *c, uint64_t fn, std::initializer_list<uint64_t> args) {
-    uint64_t saved_lr = c->x[30], saved_pc = c->pc;
+    const NestedSave saved(c);
+    // Inside rt_inline_hook c->pc carries HOOK_RA_TAG | the hook site's return address: the callee returns there, so the
+    // guest unwinder walks on into the hooked function (its LSDA) instead of stopping at HOST_SENTINEL.
+    const uint64_t ra = (saved.pc & HOOK_RA_TAG) ? saved.pc & ~HOOK_RA_TAG : 0;
     static bool trace = getenv("SNAP_TRACE") != nullptr;
     if (trace) { fprintf(stderr, "call_guest %s"+0, symbolize(fn).c_str()); fprintf(stderr, " args"); int k = 0; for (uint64_t a : args) { if (k++ < 4) fprintf(stderr, " %#llx", (unsigned long long)a); } fprintf(stderr, "%c", 10); fflush(stderr); }
     int i = 0;
     for (uint64_t a : args) c->x[i++] = a;
-    c->x[30] = HOST_SENTINEL;
+    c->x[30] = ra ? ra : HOST_SENTINEL;
     g_tls_cpu = c;
     c->pc = fn;
     rt_dispatch(c);
     if (c->resuming) {
+        if (ra) throw GuestResume{};   // c->pc / c->sp name the resume target; rt_inline_hook returns to the generated site
         fprintf(stderr, "loader: an exception or longjmp left guest code for the host (resume target pc=%#llx sp=%#llx)\n",
                 (unsigned long long)c->pc, (unsigned long long)c->sp);
         fflush(stderr);
         abort();
     }
     uint64_t r = c->x[0];
-    c->x[30] = saved_lr;
-    c->pc = saved_pc;
+    saved.restore(c);
     return r;
 }
 
 uint64_t call_guest(Cpu *c, uint64_t fn, std::initializer_list<uint64_t> args) { return call_guest_nested(c, fn, args); }
+
+}  // namespace loader
+
+// Every MAIN_INLINE_HOOKS site (recomp/gen.py Emitter.function inline_hook) runs its hook through this. ra: the return
+// address nested guest calls get (0: HOST_SENTINEL). A guest exception or longjmp out of a nested call unwinds the hook
+// (GuestResume) and returns with c->resuming set; the site then takes its landing pad or returns, as after a call.
+extern "C" void rt_inline_hook(Cpu *c, uint64_t ra, void (*fn)(Cpu *c)) {
+    const uint64_t pc = c->pc;
+    c->pc = ra ? ra | loader::HOOK_RA_TAG : 0;
+    try {
+        fn(c);
+    } catch (const loader::GuestResume &) {
+        return;
+    }
+    c->pc = pc;
+}
+
+namespace loader {
 
 // ------------------------------------------------------------------------------------------------ initializers
 
@@ -425,6 +473,7 @@ int run_initializers(Cpu *c, bool log) {
             g_init_watch[fn] = {m->name, (int)i};
         }
     }
+    const int fnprof_before = g_fnprof;
     if (log) g_fnprof = 1;
     for (GuestModule *m : mods) {
         if (m->init_fn) {
@@ -440,6 +489,14 @@ int run_initializers(Cpu *c, bool log) {
     }
     int seen = (int)g_init_seen.size();
     trace("init: DT_INIT of sdk and main done; %d of %zu init_array entries were entered", seen, g_init_watch.size());
+    // Load pass (2026-11-13): the init log turned the FN_ENTER hook on for the whole run, so every lifted function entry paid
+    // fnprof_hit (a hash lookup in g_init_watch plus three observer calls), about a fifth of guest CPU in a host profile. Turn it
+    // off again unless a tracer had it on before (SNAP_FNTRACE, SNAP_TRACE_LOD, SNAP_SKIPS_REC, SNAP_NEO_CAMFN set it at start).
+    // SNAP_FNPROF_KEEP=1 restores the old always-on hook.
+    if (log && !fnprof_before && !getenv("SNAP_FNPROF_KEEP")) {
+        g_init_watch.clear();
+        g_fnprof = 0;
+    }
     return n + seen;
 }
 
@@ -642,6 +699,35 @@ uint64_t rt_ticks(void) {
     return (q / fq) * 19200000ull + (q % fq) * 19200000ull / fq;
 }
 
+// SNAP_MXCSR_CHECK=1 (debug, off by default): lifted FP code relies on MXCSR matching the guest FPCR (cpu.h
+// rt_fpcr_sync: FTZ/DAZ = FPCR.FZ, RC = nearest, exceptions masked). Every host override (HLE, NVN bridge, audio, os)
+// returns to guest code through the thunk call below; this logs each override that comes back with a different
+// MXCSR control word (status flags 0-5 ignored), once per override, and restores the value it had on entry.
+static int g_mxcsr_check = [] { const char *e = getenv("SNAP_MXCSR_CHECK"); return e && *e == '1'; }();
+static void mxcsr_checked_call(Cpu *c, Thunk *th) {
+    unsigned before = __builtin_ia32_stmxcsr();
+    unsigned want = (c->fpcr & (1u << 24) ? 0x8040u : 0) | 0x1F80u;   // FTZ|DAZ per FPCR.FZ, RC nearest, all masked
+    if ((before & 0xFFC0u) != want) {
+        static std::atomic<int> once{0};
+        if (!once.exchange(1)) {
+            fprintf(stderr, "mxcsr: guest code reached %s with MXCSR %#x, want %#x\n", th->name.c_str(), before, want);
+            fflush(stderr);
+        }
+    }
+    if (th->fn1) th->fn1(c); else th->fn2(c, th);
+    unsigned after = __builtin_ia32_stmxcsr();
+    if ((after ^ before) & ~0x3Fu) {
+        static std::mutex mu;
+        static std::unordered_set<std::string> seen;
+        std::lock_guard<std::mutex> lk(mu);
+        if (seen.insert(th->name).second) {
+            fprintf(stderr, "mxcsr: %s changed MXCSR %#x -> %#x (guest fpcr %#llx); restored\n", th->name.c_str(), before, after,
+                    (unsigned long long)c->fpcr);
+            fflush(stderr);
+        }
+        __builtin_ia32_ldmxcsr((after & 0x3Fu) | (before & ~0x3Fu));
+    }
+}
 void rt_dispatch(Cpu *c) {
     uint64_t pc = c->pc;
     GuestFn f = lookup_fn(pc);
@@ -650,9 +736,14 @@ void rt_dispatch(Cpu *c) {
     if (t < g_thunks.size() * 16 && !(t & 15)) {
         Thunk *th = g_thunks[t >> 4];
         g_tls_cpu = c;
-        if (th->calls++ == 0 && g_trace_imports)
+        // the count saturates at 2 (only "first call" is ever read: here and probe_stub_fn's calls == 1), so a hot import no longer
+        // writes its Thunk on every call from several threads (opt 2026-11-13)
+        uint64_t n = th->calls;
+        if (__builtin_expect(n < 2, 0)) th->calls = n + 1;
+        if (n == 0 && g_trace_imports)
             trace("import %s called from %s x0=%#llx x1=%#llx x2=%#llx x3=%#llx", th->name.c_str(), symbolize(c->x[30]).c_str(),
                   (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
+        if (__builtin_expect(g_mxcsr_check, 0)) { mxcsr_checked_call(c, th); return; }
         if (th->fn1) th->fn1(c); else th->fn2(c, th);
         return;
     }
@@ -661,6 +752,7 @@ void rt_dispatch(Cpu *c) {
 
 void rt_import_call(Cpu *c, uint32_t idx) {
     c->pc = g_main_import_target[idx];
+    if (GuestFn f = g_main_import_fn[idx]) { f(c); return; }
     rt_dispatch(c);
 }
 }

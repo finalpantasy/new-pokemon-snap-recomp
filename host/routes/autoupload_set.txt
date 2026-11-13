@@ -1,0 +1,17 @@
+# fixture: post_tutorial
+# Turns "Auto-Upload Photos" On (Settings > Other, third row; default Off) and leaves Settings so the game saves it (hle audit, 2026-11-13).
+# Needs the native-options pack mod loaded (the "options" anchor is raised by host/mods/nativeopt.cpp); copy the run's save to a fixture afterwards.
+repeat @f200 @f1400 100 8 ZL
+repeat @f1500 @f30000 240 8 Up
+repeat @f1530 @f30000 240 8 A
+anchor options
+@f120 8 A
+@f300 8 R
+@f370 8 R
+@f440 8 R
+@f510 8 R
+@f650 8 Down
+@f720 8 Down
+@f900 8 Left
+@f1050 8 B
+@f1500 8 B

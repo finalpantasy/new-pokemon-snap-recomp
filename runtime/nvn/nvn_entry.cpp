@@ -15,9 +15,13 @@
 
 #include "nvn_aa.h"
 #include "nvn_internal.h"
+#include "hle/visual_defaults.h"   // default anisotropy comes from the shared table
 #include "upscale/upscale_nvn.h"   // [upscale]
 
 namespace nvn {
+void CmdVecGive(std::vector<Cmd>& v);
+void CmdVecTake(std::vector<Cmd>& out, size_t want);   // [cpuprof] nvn_life.cpp: recycled command vectors
+static std::atomic<size_t> g_cmdHint{0};   // [cpuprof] largest recording seen on any buffer, capped (BeginRecording reserve hint)
 namespace {
 
 using Dev = void;  // guest object pointers are opaque to the callers; we type them as void*
@@ -174,7 +178,7 @@ Boolean MemoryPoolInitialize(void* pool, const void* b) {
 }
 void MemoryPoolSetDebugLabel(void*, const char*) {}
 void MemoryPoolFinalize(void* pool) {
-  if (auto* p = Impl<PoolImpl>(pool, MAGIC_POOL)) DestroyPool(p);
+  if (auto* p = Impl<PoolImpl>(pool, MAGIC_POOL)) PoolRetire(p);   // [nvnfix] Vulkan mirror freed once the GPU is past it
   Unbind(pool);
 }
 void* MemoryPoolMap(const void* pool) {  // CPU address of the pool = the guest pointer (guest ptr == host ptr)
@@ -187,7 +191,13 @@ void MemoryPoolFlushMappedRange(const void* pool, ptrdiff_t off, size_t size) {
   if (!p->buffer) {
     if (p->size > (256ull << 20) || !EnsureBacking(p)) return;  // EnsureBacking copies the whole pool once
   }
-  if (p->mapped) memcpy(p->mapped + off, static_cast<uint8_t*>(p->storage) + off, size);
+  if (!p->mapped) return;
+  static const bool statsOn = [] { const char* e = getenv("SNAP_NVN_STATS"); return e && atoi(e) > 0; }();
+  if (statsOn) {   // [nvnfix] measurement (SNAP_NVN_STATS): a flush covering a range the GPU writes (the copy below puts CPU bytes over it)
+    std::lock_guard<std::mutex> lk(p->gpuMutex);
+    for (auto& r : p->gpuRanges) if (r.first < (uint64_t)off + size && r.second > (uint64_t)off) { LifeCount(LS_FLUSH_GPU_OVERLAP); break; }
+  }
+  memcpy(p->mapped + off, static_cast<uint8_t*>(p->storage) + off, size);
 }
 size_t MemoryPoolGetSize(const void* pool) {
   auto* p = Impl<PoolImpl>(pool, MAGIC_POOL);
@@ -272,7 +282,9 @@ void TextureFinalize(void* tex) {
   if (auto* t = Impl<TextureImpl>(tex, MAGIC_TEXTURE)) {
     if (t->acctPool) PoolAcct(t->acctPool, t->acctVa, -t->acctBytes);
     if (t->arenaSlot >= 0) ArenaUnacct(t->arenaSlot, t->arenaBytes);
-    DestroyTexture(t);
+    TexPrefetchForget(t);       // [perf] a prefetch job may be reading its guest data: stop it now (the guest frees the storage)
+    UpscaleForgetTexture(t);    // [upscale]
+    Retire(GK_TEXTURE, t);      // [nvnfix] VkImage, views and shadows freed once the GPU is past every submit made before this
   }
   Unbind(tex);
 }
@@ -331,7 +343,7 @@ void QueueSubmitCommands(void* queue, int n, const CommandHandle* handles) {  //
   auto* q = Impl<QueueImpl>(queue, MAGIC_QUEUE);
   if (!q || n <= 0 || !handles) return;
   std::vector<CmdList*> lists(n);
-  for (int i = 0; i < n; i++) lists[i] = reinterpret_cast<CmdList*>(handles[i]);
+  ListAcquire(n, handles, lists.data());   // [nvnfix] handle table: a stale handle is skipped, a repeated one takes another reference
   SubmitLists(q, n, lists.data());
 }
 void QueueFlush(void*) {}  // submissions are issued immediately; nothing is buffered
@@ -421,7 +433,7 @@ Boolean CommandBufferInitialize(void* cb, void* dev) {
   return 1;
 }
 void CommandBufferFinalize(void* cb) {
-  delete Impl<CommandBufferImpl>(cb, MAGIC_CB);
+  if (auto* c = Impl<CommandBufferImpl>(cb, MAGIC_CB)) { CmdVecGive(c->cmds); delete c; }   // [cpuprof] hand the vector back to the recycle pool
   Unbind(cb);
 }
 void CommandBufferSetDebugLabel(void*, const char*) {}
@@ -436,6 +448,9 @@ void CommandBufferBeginRecording(void* cb) {
   if (c->recording) LogError("BeginRecording while already recording");
   c->recording = true;
   c->cmds.clear();
+  // [cpuprof] The game records most lists into freshly initialized buffers (cmdsHigh 0), so a new buffer also reserves the largest
+  // recording seen so far on any buffer (capped at 4096 commands, 768 KiB).
+  if (c->cmds.capacity() == 0) CmdVecTake(c->cmds, std::max(c->cmdsHigh, g_cmdHint.load(std::memory_order_relaxed)));
 }
 CommandHandle CommandBufferEndRecording(void* cb) {
   auto* c = CBI(cb);
@@ -443,9 +458,12 @@ CommandHandle CommandBufferEndRecording(void* cb) {
   if (!c->recording) { LogError("EndRecording without BeginRecording"); return 0; }
   c->recording = false;
   auto* l = new CmdList();
+  const size_t n = c->cmds.size();
   l->cmds = std::move(c->cmds);
   c->cmds.clear();
-  return reinterpret_cast<CommandHandle>(l);
+  c->cmdsHigh = std::max(c->cmdsHigh, n);
+  if (n > g_cmdHint.load(std::memory_order_relaxed)) g_cmdHint.store(std::min<size_t>(n, 4096), std::memory_order_relaxed);
+  return ListRegister(l);   // [nvnfix] an id into the list table (nvn_life.cpp), not the pointer
 }
 Boolean CommandBufferIsRecording(const void* cb) {
   auto* c = Impl<CommandBufferImpl>(cb, MAGIC_CB);
@@ -576,9 +594,10 @@ NVN_HOST_EXPORT void nvnHostSetFramePacing(double hz) { nvn::g_paceHz = hz < 0 ?
 // ---- render-scale policy and anisotropy override (docs/nvn-vulkan-design.md, "Render-target scaling") ----------------
 namespace nvn {
 ScalePolicy g_scale;
-// Default 16x (2026-11-12): sharper oblique surfaces with no measured cost (analysis/mods/compare/aniso_floor_zoom.png).
-// SNAP_ANISO=0 or 1, or nvnHostSetAnisotropyOverride(0), restores the game's 1x.
-float g_anisoOverride = 16.0f;
+// 0 = the game's own sampler filtering. ApplyHostEnvPolicy sets it from SNAP_ANISO or the shared defaults table (hle/visual_defaults.h:
+// original 0, enhanced 16x, which is sharper on oblique surfaces at no measured cost: analysis/mods/compare/aniso_floor_zoom.png).
+// SNAP_ANISO=0 or 1, or nvnHostSetAnisotropyOverride(0), gives the game's own filtering.
+float g_anisoOverride = 0.0f;
 ScalePolicy::ScalePolicy() {
   // The Evaluation depth target ("Evaluation DepthStencil", main+0x5c3d38) keeps the original size: photo scoring counts its
   // pixels. TextureInitialize tags it from the guest call chain. (The old 1920-wide depth signature also caught the main scene
@@ -620,10 +639,11 @@ void ApplyHostEnvPolicy() {
   if (const char* e = getenv("SNAP_RENDER_SCALE")) { float v = (float)atof(e); if (v >= 0.25f && v <= 8.f) g_scale.scale = v; }
   { const float ss = AaParseEnv(); if (ss > 0.f) g_scale.scale = ss; }   // SNAP_AA=ssaa2: 2x the window height (nvn_aa.cpp)
   { float sc = 0, oc = 0; if (UpscaleApplyPolicy(&sc, &oc)) {   // [upscale] SNAP_UPSCALER: scene at sc, window textures at oc; game FXAA off unless SNAP_AA set
-      g_scale.scale = sc; g_scale.displayScale = oc; if (!getenv("SNAP_AA")) g_aaMode = AA_OFF; } }
+      g_scale.scale = sc; g_scale.displayScale = oc; if (!getenv("SNAP_AA")) g_aaMode = AA_OFF;
+      if (!getenv("SNAP_SHARPEN")) g_aaSharpen = 0.0f; } }   // CAS sharpening (profile default) stays off with an upscaler unless SNAP_SHARPEN is set
   if (const char* l = getenv("SNAP_LIGHTING")) { if (!strcmp(l, "high")) g_scale.shadowRes = 2048; }   // lighting preset (host/mods/gamemods.cpp); SNAP_SHADOW_RES below wins
   if (const char* e = getenv("SNAP_SHADOW_RES")) { int v = atoi(e); g_scale.shadowRes = ((v > 1024 && v <= 8192) || v == 512) ? v : 0; }
-  if (const char* e = getenv("SNAP_ANISO")) { float v = (float)atof(e); g_anisoOverride = v > 1.f ? std::min(v, 16.f) : 0.f; }
+  if (const char* e = snapdef::get("SNAP_ANISO")) { float v = (float)atof(e); g_anisoOverride = v > 1.f ? std::min(v, 16.f) : 0.f; }
   if (const char* e = getenv("SNAP_LOD_BIAS")) {
     if (!_stricmp(e, "auto")) g_lodBiasAuto = true; else { g_lodBiasExtra = (float)atof(e); g_lodBiasAuto = false; }
   } else g_lodBiasAuto = g_scale.scale != 1.0f || (g_scale.displayScale > 0.f && g_scale.displayScale != 1.0f);   // [upscale] scene 1.0, output 2.0: bias -1

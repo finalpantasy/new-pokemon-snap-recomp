@@ -285,6 +285,19 @@ static void MakePipeDesc(PipeDesc& pd, DrawState& d, VkPrimitiveTopology topo, c
   if (!(rt.samples > 1)) pd.samples = d.ms.samples > 1 ? d.ms.samples : 1;
 }
 
+// 1 for an unsigned-integer colour format, 2 for a signed one, else 0 (used to bitcast float fragment outputs, PatchIntOutputs).
+static int IntColorKind(VkFormat f) {
+  switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_B8G8R8A8_UINT: case VK_FORMAT_A8B8G8R8_UINT_PACK32:
+    case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT:
+    case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32A32_UINT: return 1;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_B8G8R8A8_SINT: case VK_FORMAT_A8B8G8R8_SINT_PACK32:
+    case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_R16_SINT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT:
+    case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32B32A32_SINT: return 2;
+    default: return 0;
+  }
+}
+
 // Builds the Vulkan graphics pipeline for `pd` from stage objects st[0..4] and `layout`. Safe to call from any thread.
 VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout) {
   static std::mutex fragMu;   // StageProg::fragMods is shared by every pipeline built from the same fragment stage
@@ -316,7 +329,9 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
     PinSubgroup32(&si, &sgPin[s], st[s]->mod);
     if (s == 1) {
       StageProg& fp = *st[1];
-      const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u);
+      uint32_t intKindBits = 0; int intKinds[8] = {};   // [vkval] attachments with an integer format: 1 uint, 2 sint (2 bits each from bit 16)
+      for (int i = 0; i < pd.nColor && i < 8; i++) { const int k = IntColorKind((VkFormat)pd.colorFmt[i]); intKinds[i] = k; intKindBits |= (uint32_t)k << (16 + 2 * i); }
+      const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u) | intKindBits;
       std::lock_guard<std::mutex> fl(fragMu);
       auto it = fp.fragMods.find(vkey);
       if (it == fp.fragMods.end()) {
@@ -328,6 +343,7 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
         }
         VkShaderModule m = fp.mod;
         if (PatchFragmentOutputs(cur, pd.nColor, dual, tmp)) cur = tmp, m = VK_NULL_HANDLE;
+        if (intKindBits && PatchIntOutputs(cur, intKinds, tmp)) cur = tmp, m = VK_NULL_HANDLE;
         else if (alphaOk) m = VK_NULL_HANDLE;
         if (!m) {
           VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -456,14 +472,18 @@ VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, co
     mustHave = rt0->drawStreak < 3;
   }
   VkPipeline pipe = PipelineAcquire(h, pd, d.prog, &pending, mustHave);   // nvn_pipeline.cpp: ready map, inline or background compile, key recording
-  if (!pipe && pending) snap_perf::count(snap_perf::V_PIPES_SKIPPED);
+  if (!pipe && pending) { snap_perf::count(snap_perf::V_PIPES_SKIPPED); LifeCount(LS_PIPE_SKIP); }   // [nvnfix] SNAP_NVN_STATS
   return pipe;
 }
 
 // ---- descriptors ----------------------------------------------------------------------------------------------------------
 VkDescriptorSet AllocSet(ReplayCtx& cx, VkDescriptorSetLayout layout) {
   for (int attempt = 0; attempt < 2; attempt++) {
-    if (cx.pools->empty() || attempt == 1) cx.pools->push_back(AcquireDescriptorPool(cx.q));
+    if (cx.pools->empty() || attempt == 1) {
+      const VkDescriptorPool np = AcquireDescriptorPool(cx.q);
+      if (!np) break;   // [nvnfix] creation failed (logged): no null pool in the list (Reap resets every entry)
+      cx.pools->push_back(np);
+    }
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = cx.pools->back(); ai.descriptorSetCount = 1; ai.pSetLayouts = &layout;
     VkDescriptorSet set = VK_NULL_HANDLE;
@@ -637,6 +657,24 @@ BufBind ResolveBuf(Host* h, uint64_t addr, uint64_t size, uint64_t cap) {
 
 struct TexWrite { int set, binding, idx; ResolvedTex r; bool image; int stype; };
 
+// [cpuprof 2026-11-13] Per-draw scratch vectors reused per thread: PrepareTextures / WriteDescriptors / DoDraw built fresh vectors and
+// deques for every draw (malloc + free were ~5% of the replaying JobWorker in the sampling profile). A nested call (re-entry on the same
+// thread) gets its own vector. SNAP_REPLAY_SCRATCH=0 restores a fresh vector per call.
+static const bool kReplayScratch = [] { const char* e = getenv("SNAP_REPLAY_SCRATCH"); return !(e && *e == '0'); }();
+template <class T> struct ScratchVec {
+  static thread_local std::vector<T> tl;
+  static thread_local bool busy;
+  std::vector<T> own;
+  const bool useTl;
+  ScratchVec() : useTl(kReplayScratch && !busy) { if (useTl) { busy = true; tl.clear(); } }
+  ~ScratchVec() { if (useTl) { tl.clear(); busy = false; } }
+  ScratchVec(const ScratchVec&) = delete;
+  std::vector<T>& get() { return useTl ? tl : own; }
+};
+template <class T> thread_local std::vector<T> ScratchVec<T>::tl;
+template <class T> thread_local bool ScratchVec<T>::busy = false;
+struct PrepWant { TextureImpl* t; VkImageLayout layout; SubRange range; };   // PrepareTextures: a layout a sampled image must be in
+
 // ---- photo evaluation under render scale ----------------------------------------------------------------------------------
 // EvaluationCopyDepthPS copies the photo's scene depth into the 1920x1080 Evaluation target (exempt from render scale) with
 // texture(DepthTexture, uv). With SNAP_RENDER_SCALE=2 that depth texture is 3840x2160, so a 1920 pixel center lands between four
@@ -717,8 +755,8 @@ static ProgramImpl* EvalCopyDepthVariant(ReplayCtx& cx, ProgramImpl* p, const st
 bool PrepareTextures(ReplayCtx& cx, DrawState& d, ProgramImpl* p, std::vector<TexWrite>& texWrites, bool graphics) {
   Host* h = cx.h; (void)h;
   // sampled textures / storage images (layouts must be right before a rendering scope is open)
-  struct Want { TextureImpl* t; VkImageLayout layout; SubRange range; };
-  std::vector<Want> wantLayout;
+  ScratchVec<PrepWant> wantS;   // [cpuprof]
+  std::vector<PrepWant>& wantLayout = wantS.get();
   for (int s = 0; s < 6; s++) {
     if (!p->st[s].valid) continue;
     for (auto& t : p->st[s].tex) {
@@ -785,15 +823,21 @@ bool WriteDescriptors(ReplayCtx& cx, DrawState& d, ProgramImpl* p, const std::ve
   snap_perf::Scope perfDesc(snap_perf::C_DESC);
   // descriptors
   Dummies* dm = h->dummies;
-  std::deque<VkDescriptorBufferInfo> bufInfos;
-  std::deque<VkDescriptorImageInfo> imgInfos;
-  std::vector<VkWriteDescriptorSet> writes;
+  // [cpuprof] reused per-thread vectors; pBufferInfo / pImageInfo hold index + 1 until the fix-up before vkUpdateDescriptorSets (the
+  // vectors may grow while the writes are built)
+  ScratchVec<VkDescriptorBufferInfo> bufS;
+  ScratchVec<VkDescriptorImageInfo> imgS;
+  ScratchVec<VkWriteDescriptorSet> wrS;
+  std::vector<VkDescriptorBufferInfo>& bufInfos = bufS.get();
+  std::vector<VkDescriptorImageInfo>& imgInfos = imgS.get();
+  std::vector<VkWriteDescriptorSet>& writes = wrS.get();
   VkDescriptorSet sets[4] = {};
-  for (int set = 0; set < 4; set++) if (p->setUsed[set]) sets[set] = AllocSet(cx, p->setLayout[set]);
+  for (int set = 0; set < 4; set++) if (p->setUsed[set]) { sets[set] = AllocSet(cx, p->setLayout[set]); if (!sets[set]) return false; }   // [nvnfix] logged in AllocSet: skip the draw
   auto wBuf = [&](int set, int binding, VkDescriptorType t, const BufBind& b) {
     bufInfos.push_back({b.buf, b.off, b.range});
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w.dstSet = sets[set]; w.dstBinding = (uint32_t)binding; w.descriptorCount = 1; w.descriptorType = t; w.pBufferInfo = &bufInfos.back();
+    w.dstSet = sets[set]; w.dstBinding = (uint32_t)binding; w.descriptorCount = 1; w.descriptorType = t;
+    w.pBufferInfo = reinterpret_cast<const VkDescriptorBufferInfo*>((uintptr_t)bufInfos.size());   // index + 1, fixed up below
     writes.push_back(w);
   };
   if (sets[0]) wBuf(0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {dm->support, 0, 1408});
@@ -855,11 +899,15 @@ bool WriteDescriptors(ReplayCtx& cx, DrawState& d, ProgramImpl* p, const std::ve
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = sets[texWrites[i].set]; w.dstBinding = (uint32_t)texWrites[i].binding; w.descriptorCount = (uint32_t)(j - i);
     w.descriptorType = texWrites[i].image ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w.pImageInfo = &imgInfos[first];
+    w.pImageInfo = reinterpret_cast<const VkDescriptorImageInfo*>((uintptr_t)first + 1);   // index + 1, fixed up below
     writes.push_back(w);
     i = j;
   }
   for (auto& w : writes) if (!w.dstSet) return false;
+  for (auto& w : writes) {
+    if (w.pBufferInfo) w.pBufferInfo = &bufInfos[(uintptr_t)w.pBufferInfo - 1];
+    if (w.pImageInfo) w.pImageInfo = &imgInfos[(uintptr_t)w.pImageInfo - 1];
+  }
   if (!writes.empty()) vkUpdateDescriptorSets(h->device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
   for (int set = 0; set < 4; set++)
     if (sets[set]) vkCmdBindDescriptorSets(cx.cb, bind, p->layout, (uint32_t)set, 1, &sets[set], 0, nullptr);
@@ -934,9 +982,12 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
   }
   if (rt.nColor == 0 && !cx.rt[8]) { LogError("draw with no render targets"); return; }
 
-  std::vector<TexWrite> texWrites;
+  ScratchVec<TexWrite> texWritesS;   // [cpuprof]
+  std::vector<TexWrite>& texWrites = texWritesS.get();
   if (!PrepareTextures(cx, d, p, texWrites, true)) return;
-  if (const char* sigPath = getenv("NVN_DRAW_SIG")) {   // debug: one line per distinct (render targets, program, sampled textures) combination, the first time it is drawn
+  static const char* const kDrawSig = getenv("NVN_DRAW_SIG");   // load pass: read once (getenv per draw showed in a host profile)
+  static const bool kRtDump = getenv("NVN_RT_DUMP") != nullptr;
+  if (const char* sigPath = kDrawSig) {   // debug: one line per distinct (render targets, program, sampled textures) combination, the first time it is drawn
     static FILE* sf = fopen(sigPath, "w");
     static std::set<std::string> seen;
     static const auto t0 = std::chrono::steady_clock::now();
@@ -944,7 +995,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     for (auto& w : texWrites) if (w.r.t && n < 900) n += snprintf(buf + n, sizeof buf - n, " [b%d t=%p f%x %dx%d fl%x pool=%d up=%d]", w.binding, (void*)w.r.t, w.r.t->b.format, w.r.t->b.width, w.r.t->b.height, w.r.t->b.flags, w.r.t->b.pool != nullptr, (int)w.r.t->uploaded);
     if (sf && seen.insert(buf).second) fprintf(sf, "[%.2f p%d] %s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), g_presentCount, buf), fflush(sf);
   }
-  if (getenv("NVN_RT_DUMP")) {   // debug: dump the 360x240 photo thumbnail textures and the display texture they are made from
+  if (kRtDump) {   // debug: dump the 360x240 photo thumbnail textures and the display texture they are made from
     static std::set<uintptr_t> dumped;
     const bool smallRt = cx.rt[0] && cx.rt[0]->b.width == 360 && cx.rt[0]->b.height == 240;
     for (auto& w : texWrites) if (w.r.t && !w.r.feedback) {
@@ -1119,7 +1170,8 @@ void DoDispatch(ReplayCtx& cx, const Cmd& c) {
   if (!p || !p->layout || !p->st[5].valid) { LogError("dispatch without a usable compute program"); return; }
   GetDummies(h);
   EndRendering(cx);
-  std::vector<TexWrite> tw;
+  ScratchVec<TexWrite> twS;   // [cpuprof]
+  std::vector<TexWrite>& tw = twS.get();
   if (!PrepareTextures(cx, d, p, tw, false)) return;
   std::string key = "CS" + std::to_string(p->id);
   VkPipeline pipe = VK_NULL_HANDLE;
@@ -1159,7 +1211,8 @@ void DoCopyBufferToTexture(ReplayCtx& cx, const Cmd& c) {
   PoolImpl* pool = nullptr; uint64_t off = 0;
   if (!h->ResolveAddress(c.a[0], &pool, &off)) { LogError("CopyBufferToTexture: source 0x%llx is not in any memory pool", (unsigned long long)c.a[0]); return; }
   if (!pool->buffer && !EnsureBacking(pool)) return;
-  if (pool->storage && getenv("NVN_TEX_DUMP")) {
+  static const bool kTexDump = getenv("NVN_TEX_DUMP") != nullptr;   // load pass: read once
+  if (pool->storage && kTexDump) {
     const uint64_t n = (uint64_t)r.w * std::max(r.h, 1) * std::max(r.d, 1) * t->fi->bytes / std::max<uint32_t>(t->fi->bw * t->fi->bh, 1);
     DebugDumpTexture(t, "copy", static_cast<const uint8_t*>(pool->storage) + off, std::min<uint64_t>(n, pool->size - off), (uint32_t)r.w, (uint32_t)r.h);
   }
@@ -1167,7 +1220,17 @@ void DoCopyBufferToTexture(ReplayCtx& cx, const Cmd& c) {
   EndRendering(cx);
   t->uploaded = true;
   Transition(cx.cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-  const bool layered = t->b.target == TT_2D_ARRAY || t->b.target == TT_1D_ARRAY;
+  // [nvnfix] cube maps are layered images too (face = layer, as IsLayered in nvn_xfer.cpp): r.z used to land in imageOffset.z of a 2D image
+  const bool cube = t->b.target == TT_CUBEMAP || t->b.target == TT_CUBEMAP_ARRAY;
+  const bool layered = t->b.target == TT_2D_ARRAY || t->b.target == TT_1D_ARRAY || cube;
+  if (cube) {
+    LifeCount(LS_CUBE_COPY);
+    static int logged = 0;
+    if (logged++ < 12 && getenv("SNAP_NVN_STATS"))
+      fprintf(stderr, "[nvnstats] cube CopyBufferToTexture t=%p %dx%d fmt 0x%x target %d levels %d: level %u region (%d,%d,%d %dx%dx%d) view layers %u\n",
+              (void*)t, t->b.width, t->b.height, t->b.format, t->b.target, t->b.levels, (c.i[0] && (v.flags & 1)) ? v.lvlBase : 0u, r.x, r.y, r.z, r.w, r.h, r.d,
+              (c.i[0] && (v.flags & 2)) ? v.layerBase : 0u);
+  }
   const uint32_t level = (c.i[0] && (v.flags & 1)) ? v.lvlBase : 0;
   const uint32_t layerBase = (c.i[0] && (v.flags & 2)) ? v.layerBase : 0;
   VkBufferImageCopy bc{};
@@ -1229,7 +1292,7 @@ void RedirectCompressedTargets(ReplayCtx& c) {
     if (v && (v->flags & 4)) if (const FormatInfo* vf = LookupFormat(v->format)) if (vf->bw == 1 && vf->bytes == t->fi->bytes) fmt = v->format;
     if (!fmt) continue;
     TextureImpl* s = t->bcShadow;
-    if (s && (s->b.width != (int)sw || s->b.height != (int)sh || s->b.format != fmt)) { DestroyTexture(s); s = t->bcShadow = nullptr; }   // [ASSUMPTION] no replay still uses it: the shadow lives as long as its texture
+    if (s && (s->b.width != (int)sw || s->b.height != (int)sh || s->b.format != fmt)) { Retire(GK_TEXTURE, s); s = t->bcShadow = nullptr; LifeCount(LS_BC_RECREATE); }   // [nvnfix] earlier commands of this submit may still use it: freed after the GPU
     if (!s) {
       s = new TextureImpl();
       s->host = t->host;
@@ -1390,6 +1453,25 @@ void ReplayEnd(ReplayCtx& c) {
   c.ds = nullptr;   // the state itself lives in the queue (QueueImpl::persistDs)
 }
 
+// [nvnfix] review_nvn.md 10: the persistent draw state outlives command lists. Before the graveyard frees memory pools, programs and
+// texture / sampler pools, every binding that still names one is dropped (a later draw that relies on it binds nothing instead of a
+// destroyed VkBuffer or a freed program). Called under queueMutex, so no replay is running.
+void PersistScrub(QueueImpl* q, const std::unordered_set<const void*>& dead) {
+  DrawState* d = q ? q->persistDs : nullptr;
+  if (!d || dead.empty()) return;
+  uint64_t n = 0;
+  auto buf = [&](BufBind& b) { if (b.pool && dead.count(b.pool)) { b = BufBind{}; n++; } };
+  for (auto& b : d->vb) buf(b);
+  for (auto& st : d->ubo) for (auto& b : st) buf(b);
+  for (auto& st : d->ssbo) for (auto& b : st) buf(b);
+  bool progGone = d->prog && dead.count(d->prog);
+  for (auto& p : d->stageProg) if (p && dead.count(p)) { p = nullptr; progGone = true; }
+  if (progGone) { d->prog = ProgramResolve(q->host, d->stageProg); n++; }
+  if (d->tp && dead.count(d->tp)) { d->tp = nullptr; n++; }
+  if (d->sp && dead.count(d->sp)) { d->sp = nullptr; n++; }
+  if (n) LifeCount(LS_PERSIST_SCRUB, n);
+}
+
 // SNAP_SHADOW_DISTANCE=<k> (1 = original; SNAP_LIGHTING=high uses 2): widens the dynamic shadow map's coverage k times. The game fits one 1024^2
 // orthographic map per frame (light view-projection in a 64-byte VS buffer at slot 9 of the ShadowCast draws; the receivers read the same matrix,
 // remapped to texture space, at floats 16..31 of a 132-byte buffer at slot 9). Called from BindUbo BEFORE the buffer is mirrored to the GPU: the
@@ -1520,7 +1602,7 @@ VkDescriptorPool AcquireDescriptorPool(QueueImpl* q) {
   VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   ci.maxSets = 256; ci.poolSizeCount = 4; ci.pPoolSizes = sz;
   VkDescriptorPool p = VK_NULL_HANDLE;
-  vkCreateDescriptorPool(q->host->device, &ci, nullptr, &p);
+  if (vkCreateDescriptorPool(q->host->device, &ci, nullptr, &p) != VK_SUCCESS) { LogError("vkCreateDescriptorPool failed (out of memory?)"); return VK_NULL_HANDLE; }   // [nvnfix]
   return p;
 }
 

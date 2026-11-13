@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <atomic>
@@ -27,6 +28,7 @@
 #include "hle/hle.h"
 #include "hle/json_lite.h"
 #include "hle/settings.h"
+#include "hle/visual_defaults.h"   // the one table of visual defaults (original look vs extras)
 #include "mods/mods_core.h"
 #include "window_opts.h"
 #include "ui_internal.h"
@@ -42,6 +44,11 @@ enum Kind { kSection, kChoice, kSlider, kToggle, kPath };
 enum When { kLive, kRestart, kSoon };   // applies now / needs a restart / the feature is not in this build yet (control disabled)
 
 using Choices = std::vector<std::pair<std::string, std::string>>;   // (stored value, label)
+
+// Text that must outlive the Opt tables (they hold const char*): kept for the life of the process.
+const char* keep(const std::string& s) { static std::deque<std::string> store; store.push_back(s); return store.back().c_str(); }
+// "Default (<what the default is>)": read from the shared defaults table, so the label follows SNAP_PROFILE and the table's one-line flip.
+std::string default_label(const char* envKey) { return std::string("Default (") + snapdef::def_text(envKey) + ")"; }
 
 struct Opt {
   const char* key;       // settings key, or "" for a section heading (label is its title)
@@ -78,7 +85,7 @@ void set_cap(const std::string& v) { snap_window_set_frame_cap(std::atoi(v.c_str
 // upscaler rows (other workers), and the HDR/color rows (not quality).
 struct PresetKey { const char* key; const char* def; };
 const PresetKey kPresetKeys[] = {
-    {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", "0.00"}, {"gfx_aniso", "16"}, {"gfx_lod_bias", "auto"},
+    {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", snapdef::def("SNAP_SHARPEN")}, {"gfx_aniso", snapdef::def("SNAP_ANISO")}, {"gfx_lod_bias", "auto"},
     {"gfx_shadow_res", "default"}, {"ssao_quality", "default"}, {"gfx_ssao_samples", "default"}, {"gfx_ssao_hbao", "default"},
     {"gfx_pass_bloom", "default"}, {"gfx_pass_dof", "default"},
 };
@@ -91,9 +98,9 @@ const PresetDef kPresets[] = {
     {"verylow", "Very Low", {"0.50", "none", "", "0", "1", "512", "", "4", "", "off", "off"}},
     {"low", "Low", {"", "off", "", "4", "", "", "", "8", "", "", ""}},
     {"normal", "Normal", {"", "", "", "", "", "", "", "", "", "", ""}},
-    {"high", "High", {"", "ssaa2,smaa", "0.30", "", "", "2048", "high", "", "", "", ""}},
-    {"ultra", "Ultra", {"2.00", "smaa", "0.30", "", "", "4096", "ultra", "", "", "", ""}},
-    {"maximum", "Maximum", {"4.00", "smaa", "0.50", "", "", "8192", "ultra", "512", "32,128", "", ""}},
+    {"high", "High", {"", "ssaa2,smaa", "0.30", "16", "", "2048", "high", "", "", "", ""}},
+    {"ultra", "Ultra", {"2.00", "smaa", "0.30", "16", "", "4096", "ultra", "", "", "", ""}},
+    {"maximum", "Maximum", {"4.00", "smaa", "0.50", "16", "", "8192", "ultra", "512", "32,128", "", ""}},
 };
 bool preset_eq(int k, const std::string& a, const std::string& b) {
   if (a == b) return true;
@@ -162,7 +169,7 @@ std::vector<Opt>& graphics_opts() {
       {"gfx_preset", "Quality preset", kChoice, kRestart,
        "Sets the picture-quality rows below together: render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution and ambient occlusion. "
        "Very Low: for really weak hardware (draws the 3D scene at half size, 960 x 540, then stretches it to the window; no anti-aliasing, no filtering, softer textures, 512 shadows, few occlusion samples). "
-       "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Normal: this port's defaults. "
+       "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Normal: the defaults (the game's own look unless SNAP_PROFILE=enhanced). "
        "High: 2x supersampling, SMAA, 2048 shadows, High occlusion. Ultra: 2x scale, 4096 shadows, Ultra occlusion. "
        "Maximum: 4x scale (7680 x 4320), 8192 shadows and the most occlusion samples. It will slow even a very fast graphics card and needs a lot of video memory. "
        "In the course the costly rows are render scale, anti-aliasing, filtering and texture sharpness; shadow size only sharpens Pokemon shadows and the occlusion rows only act on the photo-select screen. "
@@ -175,11 +182,11 @@ std::vector<Opt>& graphics_opts() {
        "Photo scoring still uses the original-size data. Saved photos stay 1080 x 720 but are as sharp as the scene they were taken from.",
        "1.00", {}, 0.5f, 4.0f, "%.2fx", "SNAP_RENDER_SCALE"},
       {"gfx_aa", "Anti-aliasing", kChoice, kRestart,
-       "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling draws at twice the window height first: very sharp, and costs a lot of GPU time.",
+       "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling draws at twice the window height first (capped at 3x the game's size): very sharp, and costs a lot of GPU time.",
        "default",
-       {{"default", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"off", "Off"}, {"none", "None (not even the game's FXAA)"}}, 0, 0, "", "SNAP_AA"},
+       {{"default", default_label("SNAP_AA")}, {"off", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"none", "None (not even the game's FXAA)"}}, 0, 0, "", "SNAP_AA"},
       {"gfx_sharpen", "Sharpening", kSlider, kRestart,
-       "A gentle sharpening pass after anti-aliasing. 0 is off. Too much makes edges look hard.", "0.00", {}, 0.0f, 1.0f, "%.2f", "SNAP_SHARPEN"},
+       "A gentle sharpening pass after anti-aliasing. 0 is off. Too much makes edges look hard.", snapdef::def("SNAP_SHARPEN"), {}, 0.0f, 1.0f, "%.2f", "SNAP_SHARPEN"},
       {"gfx_upscaler", "Upscaler", kChoice, kRestart,
        "DLSS, DLAA, FSR and XeSS rebuild a sharp picture from a smaller one so you can render fewer pixels. DLSS and DLAA need an NVIDIA RTX card. It replaces the render scale and the 2x supersampling default; the game's FXAA is turned off unless you pick an anti-aliasing mode. Photos stay at native size.",
        "off", {{"off", "Off"}, {"dlaa", "DLAA (native, anti-aliased)"}, {"dlss", "DLSS"}, {"fsr", "FSR"}, {"xess", "XeSS"}}, 0, 0, "", "SNAP_UPSCALER"},
@@ -188,8 +195,8 @@ std::vector<Opt>& graphics_opts() {
        {{"native", "Native (no downscale)"}, {"quality", "Quality"}, {"balanced", "Balanced"}, {"performance", "Performance"}}, 0, 0, "", "SNAP_UPSCALE_QUALITY"},
       {"", "Textures and shadows", kSection, kLive, "", ""},
       {"gfx_aniso", "Anisotropic filtering", kChoice, kRestart,
-       "Keeps ground and walls sharp when you look at them from a shallow angle. 16x is the default here (the Switch version used none) and costs almost nothing on a PC GPU.",
-       "16", {{"0", "Off (1x)"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}, 0, 0, "", "SNAP_ANISO"},
+       "Keeps ground and walls sharp when you look at them from a shallow angle. The original game does not force any (Off keeps its own filtering); 16x costs almost nothing on a PC GPU.",
+       snapdef::def("SNAP_ANISO"), {{"0", "Off (1x)"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}, 0, 0, "", "SNAP_ANISO"},
       {"gfx_lod_bias", "Texture sharpness", kChoice, kRestart,
        "Picks which texture detail level is used. Automatic sharpens textures when the render scale is above 1 and leaves the game alone at 1. Sharper values can shimmer.",
        "auto", {{"auto", "Automatic"}, {"-1", "Sharper (-1.0)"}, {"-0.5", "A little sharper (-0.5)"}, {"0", "As the game ships (0)"}, {"0.5", "Softer (+0.5)"}, {"1", "Much softer (+1.0)"}}, 0, 0, "", "SNAP_LOD_BIAS"},
@@ -266,7 +273,7 @@ std::vector<Opt>& display_opts() {
       {"", "Text", kSection, kLive, "", ""},
       {"gfx_ui_font", "Menu text sharpness", kChoice, kRestart,
        "The game's own menus and labels are drawn from a low-resolution letter sheet. Higher draws the letters sharper on large screens, at the same size and position. Automatic uses 2x when the game window is 1440 lines tall or more.", "default",
-       {{"default", "Automatic (2x at 1440p and above)"}, {"1", "Off (as the game ships)"}, {"2", "Sharper (2x)"}, {"3", "Sharper (3x)"}, {"4", "Sharpest (4x)"}}, 0, 0, "", "SNAP_UI_FONT_SCALE"},
+       {{"default", default_label("SNAP_UI_FONT_SCALE")}, {"auto", "Automatic (2x at 1440p and above)"}, {"1", "Off (as the game ships)"}, {"2", "Sharper (2x)"}, {"3", "Sharper (3x)"}, {"4", "Sharpest (4x)"}}, 0, 0, "", "SNAP_UI_FONT_SCALE"},
       {"", "Focus", kSection, kLive, "", ""},
       {"win_pause", "Pause when unfocused", kToggle, kLive,
        "Freezes the game while you are in another window, so nothing happens while you are away. Remembered in window.json.", "1", {}, 0, 0, "", "SNAP_WINDOW_PAUSE", get_pause, set_pause},
@@ -283,7 +290,7 @@ std::vector<Opt>& photo_opts() {
   static std::vector<Opt> v = {
       {"", "Photo files", kSection, kLive, "", ""},
       {"photo_export", "Save a PNG of every photo", kToggle, kRestart,
-       "Each photo you keep is also written as a full-quality PNG file you can share, next to the game's own in-save copy. The save and scoring are not affected.", "1"},
+       "Each photo you keep is also written as a full-quality PNG file you can share, next to the game's own in-save copy. The save and scoring are not affected.", snapdef::def("SNAP_PHOTO_EXPORT")},
       {"photo_dir", "PNG folder", kPath, kRestart,
        "Where the PNG files go. Empty uses %APPDATA%\\SnapRecomp\\photos. The folder is created when the first photo is saved.", ""},      {"", "Expedition", kSection, kLive, "", ""},
       {"neo_speed", "NEO-ONE speed", kSlider, kRestart,
@@ -584,7 +591,7 @@ void mods_reload() {
   std::sort(disk.begin(), disk.end());
   auto listed = [&](const std::string& id) { for (auto& p : order) if (p.first == id) return true; return false; };
   for (auto& d : disk)   // folders the loader would pick up on its own (pack.json), after the ones in mods.json
-    if (!listed(d) && fs::exists(fs::path(g_mods_root) / d / "pack.json", ec)) order.push_back({d, !have_file});
+    if (!listed(d) && fs::exists(fs::path(g_mods_root) / d / "pack.json", ec)) order.push_back({d, d == "native-options"});   // as mods::load: only the pack the game needs is on without a mods.json entry
   for (auto& [id, en] : order) {
     ModRow r;
     r.id = id;

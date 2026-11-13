@@ -180,7 +180,7 @@ MAIN_INLINE_HOOKS = {BASE + 0x5e3a58: 'rt_mod_entry',
                      BASE + 0x435cf0: 'rt_gm_font_fix',         # before the entry's +0x1a/+0x1c store: x1 = glyph, x21 = entry
                      # host/mods/neofilm.cpp (NEO-ONE speed #14, photos per run #22): no-ops unless SNAP_NEO_SPEED / SNAP_FILM is set
                      BASE + 0x4c1df4: 'rt_gm_neo_speed',        # after `str s1, [x19, #0x70]` in the rail update 0x4c0090: x19 = rail object, +0x70 = progress
-                     BASE + 0x393d9c: 'rt_gm_film_c',           # before `subs w10, w8, #1` on the photo counter [x26+0x2b8] in the live HUD update 0x393c90
+                     BASE + 0x393d98: 'rt_gm_film_c',           # before `ldr w8, [x26, #0x2b8]` (the photo counter; `subs w10, w8, #1` follows) in the live HUD update 0x393c90
                      # host/mods/skips.cpp (skip dialogue #18): no-op unless SNAP_SKIP_CUTSCENES is set
                      BASE + 0x676630: 'rt_gm_skip_wait',        # entry of the dialogue window's per-present wait predicate (x0 = window object)
                      # host/boot.cpp (crash B1): GPU arena 7 size, after `mov w10, #0x3800000` in the arena setup; 112 MiB unless SNAP_ARENA7_MB

@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <thread>
@@ -50,12 +51,20 @@ uint64_t Fnv(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull) {
   for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
   return h;
 }
-uint64_t HashDesc(const PipeDesc& pd) { return Fnv(&pd, sizeof pd); }
+// In-memory map key only (never written to a file; entries compare the whole desc). Word-wise (opt 2026-11-13): the byte-wise
+// FNV over 464 bytes ran once per draw in PipelineAcquire, the hottest loop of the replay thread in a PGO profile.
+uint64_t HashDesc(const PipeDesc& pd) {
+  static_assert(sizeof(PipeDesc) % 8 == 0, "word hash");
+  const uint8_t* b = reinterpret_cast<const uint8_t*>(&pd);
+  uint64_t h = 0xcbf29ce484222325ull;
+  for (size_t i = 0; i < sizeof pd; i += 8) { uint64_t w; memcpy(&w, b + i, 8); h = (h ^ w) * 0x9E3779B97F4A7C15ull; h ^= h >> 31; }
+  return h;
+}
 
 enum EntState { ES_PENDING = 0, ES_READY = 1, ES_FAILED = 2, ES_NEEDS_INLINE = 3 };
 struct Ent {
   PipeDesc pd;
-  VkPipeline pipe = VK_NULL_HANDLE;
+  std::atomic<VkPipeline> pipe{VK_NULL_HANDLE};   // atomic: a stale rebuild on the replay thread can race a worker's StoreResult for the same entry
   std::atomic<int> state{ES_PENDING};
   Ent* next = nullptr;   // hash chain
   std::atomic<bool> hot{false};   // a hot-queue job exists (set when the replay thread first asks for an entry that BeginRun queued cold)
@@ -64,7 +73,10 @@ struct Ent {
 
 struct Tmpl {
   std::once_flag once;
-  StageProg sp;
+  StageProg sp;      // as loaded from the translation cache; never modified after the load
+  // What readers (background compiles, GetLayoutFor) use. PatchTmplEft publishes a patched COPY here instead of editing \sp\ in place: a worker
+  // reading mod / spv / fragMods through the old pointer keeps a valid, unchanging object (the old one is never freed while the service runs).
+  std::atomic<StageProg*> cur{nullptr};
   bool ok = false;
   std::mutex em;     // guards eft and the module swap in PatchTmplEft
   bool eft = false;  // the module carries layout(early_fragment_tests)
@@ -163,15 +175,23 @@ bool EftFixOn() { static const bool on = getenv("NVN_NO_EFT_FIX") == nullptr; re
 void PatchTmplEft(Tmpl* t, const char* key12) {
   {
     std::lock_guard<std::mutex> lk(t->em);
-    if (t->eft || !t->ok || t->sp.stage != 1 || t->sp.spv.empty()) return;
-    std::vector<uint32_t> words = t->sp.spv;
+    StageProg* base = t->cur.load(std::memory_order_acquire);
+    if (t->eft || !t->ok || !base || base->stage != 1 || base->spv.empty()) return;
+    std::vector<uint32_t> words = base->spv;
     if (!SpvAddEarlyFragmentTests(words)) return;
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = words.size() * 4; ci.pCode = words.data();
     VkShaderModule mod = VK_NULL_HANDLE;
     if (vkCreateShaderModule(S->h->device, &ci, nullptr, &mod) != VK_SUCCESS) return;
-    t->sp.mod = mod;   // the old module is left alive on purpose: a worker may be compiling with it right now (one module per patched stage)
-    t->sp.spv = std::move(words);
+    // Copy field by field (not "*np = *base": copying base->fragMods would race a worker inserting a variant). fragMods starts empty: the old
+    // variants were built from the module without early fragment tests. A field added to StageProg must be added here.
+    StageProg* np = new StageProg;
+    np->valid = base->valid; memcpy(np->key, base->key, sizeof np->key); memcpy(np->fkey, base->fkey, sizeof np->fkey); np->stage = base->stage;
+    np->cb = base->cb; np->sb = base->sb; np->tex = base->tex; np->img = base->img; np->fragOutputMap = base->fragOutputMap;
+    np->inputMask = base->inputMask; np->outLocs = base->outLocs; np->constBuf = base->constBuf; np->constMem = base->constMem; np->constSize = base->constSize;
+    np->mod = mod;   // the old module is left alive on purpose: a worker may be compiling with it right now (one module per patched stage)
+    np->spv = std::move(words);
+    t->cur.store(np, std::memory_order_release);
     t->eft = true;
   }
   int n = 0;
@@ -209,6 +229,7 @@ Tmpl* GetTmpl(const char* key12) {
     bool want, applied = false;
     { std::lock_guard<std::mutex> lk(S->tm); want = EftFixOn() && S->eftKeys.count(key12) != 0; }
     t->ok = LoadStageFromCache(S->h, full, &t->sp, want, &applied);
+    t->cur.store(&t->sp, std::memory_order_release);
     { std::lock_guard<std::mutex> lk(t->em); t->eft = applied; }
     bool late;   // the game registered the program as early-fragment-tests while this load ran
     { std::lock_guard<std::mutex> lk(S->tm); late = t->ok && EftFixOn() && S->eftKeys.count(key12) != 0; }
@@ -225,7 +246,7 @@ ProgramImpl* GetLayoutFor(const PipeDesc& pd, StageProg* out[6]) {
     if (!pd.stage[s][0]) continue;
     ts[s] = GetTmpl(pd.stage[s]);
     if (!ts[s]) return nullptr;
-    out[s] = &ts[s]->sp;
+    out[s] = ts[s]->cur.load(std::memory_order_acquire);
     key += pd.stage[s]; key += '|';
   }
   out[5] = nullptr;
@@ -234,7 +255,7 @@ ProgramImpl* GetLayoutFor(const PipeDesc& pd, StageProg* out[6]) {
   if (it != S->layouts.end()) return it->second;
   auto* p = new ProgramImpl;
   p->host = S->h; p->composite = true;
-  for (int s = 0; s < 5; s++) if (ts[s]) p->st[s] = ts[s]->sp;
+  for (int s = 0; s < 5; s++) if (ts[s]) p->st[s] = *ts[s]->cur.load(std::memory_order_acquire);
   if (!ProgramBuildLayout(p)) { delete p; S->layouts[key] = nullptr; return nullptr; }
   S->layouts[key] = p;
   return p;
@@ -252,7 +273,31 @@ void LoadKeys() {
       good = true;
       PipeDesc pd;
       std::unordered_set<uint64_t> seen;
-      while (f.read((char*)&pd, sizeof pd)) if (seen.insert(HashDesc(pd)).second) S->known.push_back(pd);
+      uint64_t nGood = 0;
+      // Records are fixed size, so a torn tail (the process was killed mid-write) would shift every record appended after it. Stop at the first
+      // short or implausible record and cut the file there before anything is appended.
+      while (f.read((char*)&pd, sizeof pd)) {
+        bool ok = pd.nattr >= 0 && pd.nattr <= 16 && pd.nstream >= 0 && pd.nstream <= 16 && pd.nColor >= 0 && pd.nColor <= 8;
+        for (int s = 0; s < 5 && ok; s++) ok = pd.stage[s][15] == 0;
+        if (!ok) break;
+        nGood++;
+        // [vkval] keys recorded before the compressed-render-target stand-in existed carry a block-compressed colour format (BC1 photo
+        // thumbnails): Vulkan cannot render to those (VUID-VkGraphicsPipelineCreateInfo-renderPass-06582 at startup), and the live draw
+        // now uses the stand-in format, so the old key is never hit. Do not precompile it.
+        bool compressedRt = false;
+        for (int i = 0; i < pd.nColor; i++) if (pd.colorFmt[i] >= 131 && pd.colorFmt[i] <= 184) compressedRt = true;   // VK_FORMAT_BC1_RGB..ASTC_12x12
+        if (compressedRt) continue;
+        if (seen.insert(HashDesc(pd)).second) S->known.push_back(pd);
+      }
+      f.close();
+      const uint64_t goodLen = sizeof(FileHdr) + nGood * sizeof(PipeDesc);
+      std::error_code ec;
+      const uint64_t have = std::filesystem::file_size(path, ec);
+      if (!ec && have != goodLen) {
+        std::filesystem::resize_file(path, goodLen, ec);
+        Log("pipeline keys: cut %llu stray byte(s) after record %llu%s", (unsigned long long)(have - goodLen), (unsigned long long)nGood, ec ? " (resize failed)" : "");
+        if (ec) good = false;   // cannot repair: start a fresh list rather than append after a torn record
+      }
     }
   }
   if (!good) {   // missing or from another build / translator / descriptor layout: start a fresh list
@@ -294,15 +339,20 @@ void SaveCache(bool force) {
   if (vkGetPipelineCacheData(h->device, h->pipelineCache, &n, nullptr) != VK_SUCCESS || !n) return;
   std::vector<char> data(n);
   if (vkGetPipelineCacheData(h->device, h->pipelineCache, &n, data.data()) != VK_SUCCESS) return;
-  const std::string path = S->dir + "\\pipeline_cache.bin", tmp = path + ".tmp";
+  // The housekeeper and the thread finishing a precompile run can both get here: each writes its own tmp file, then renames it into place
+  // (MoveFileEx replace is atomic), so the cache file is always one writer's complete blob.
+  static std::atomic<unsigned> saveSeq{0};
+  const std::string path = S->dir + "\\pipeline_cache.bin",
+                    tmp = path + "." + std::to_string(GetCurrentProcessId()) + "." + std::to_string(saveSeq.fetch_add(1)) + ".tmp";
   {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
     const FileHdr hdr = MakeHdr(h, kMagicCache, true);
     f.write((const char*)&hdr, sizeof hdr);
     f.write(data.data(), (std::streamsize)n);
-    if (!f.good()) return;
+    f.flush();
+    if (!f.good()) { f.close(); DeleteFileA(tmp.c_str()); return; }
   }
-  MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+  if (!MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) { DeleteFileA(tmp.c_str()); return; }
   S->lastSaveNs = snap_perf::now_ns();
   Log("pipeline cache saved (%zu bytes)", n);
 }
@@ -504,8 +554,11 @@ void PipelineServiceShutdown(Host* h) {
   S->map.clear();
   for (auto& kv : S->layouts) if (kv.second) { ProgramDestroy(kv.second); delete kv.second; }
   for (auto& kv : S->tmpls) {
-    if (kv.second->ok && kv.second->sp.mod) vkDestroyShaderModule(h->device, kv.second->sp.mod, nullptr);
-    delete kv.second;
+    Tmpl* t = kv.second;
+    StageProg* c = t->cur.load();
+    if (t->ok && t->sp.mod) vkDestroyShaderModule(h->device, t->sp.mod, nullptr);
+    if (c && c != &t->sp) { if (c->mod) vkDestroyShaderModule(h->device, c->mod, nullptr); delete c; }   // the PatchTmplEft copy
+    delete t;
   }
   if (S->keysFile) fclose(S->keysFile);
   S->up = false;

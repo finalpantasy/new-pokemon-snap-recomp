@@ -19,6 +19,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <thread>
 
 #include "os_internal.h"
@@ -45,6 +46,7 @@ static uint64_t g_seq = 0;
 static std::vector<Thread *> g_cores;       // owner of each virtual core, nullptr = free
 static std::vector<Thread *> g_core_wait;   // ready threads waiting for a core
 static int g_overflow = 0;
+static uint64_t g_dumps = 0;              // watchdog dumps so far (under G): a dump holds G long enough to look like starvation
 static thread_local Thread *t_self = nullptr;
 
 // ---- logging
@@ -298,8 +300,13 @@ Thread *keyq_pop_best(uint64_t key) {
     return t;
 }
 bool keyq_empty(uint64_t key) { return !g_keyq.count(key); }
+static const char *tname(const Thread *t);
 void wake(Thread *t, uint32_t result) {
-    t->waker = t_self;
+    if (snap_perf::on) {   // copy, not a pointer: the waker may be destroyed before the wait is reported (review finding 15)
+        Thread *w = t_self;
+        snprintf(t->waker_name, sizeof t->waker_name, "%s", tname(w));
+        t->waker_prio = w ? w->eff_prio : -1;
+    }
     t->woken = true;
     t->wresult = result;
     t->wkind = W_NONE;
@@ -337,7 +344,7 @@ static void note_wait(Thread *t, int kind, uint64_t ns) {
     if (ns >= snap_perf::g_wait_event_ns && is_frame_thread()) {
         char det[200];
         snprintf(det, sizeof det, "%s addr=%#llx key=%#llx woken_by=%.24s/p%d %s", kn, (unsigned long long)t->waddr,
-                 (unsigned long long)t->wkey, tname(t->waker), t->waker ? t->waker->eff_prio : -1, t->woken ? "" : "timeout");
+                 (unsigned long long)t->wkey, t->waker_name[0] ? t->waker_name : "host", t->waker_prio, t->woken ? "" : "timeout");
         char kind[16];
         snprintf(kind, sizeof kind, "%s_wait", role_tag());
         snap_perf::event(kind, (double)ns / 1e6, det);
@@ -359,7 +366,8 @@ static bool wait_woken_raw(Thread *t, Lock &lk, Deadline d) {
 bool wait_woken(Thread *t, Lock &lk, Deadline d) {
     if (!snap_perf::on) return wait_woken_raw(t, lk, d);
     const int kind = t->wkind;
-    t->waker = nullptr;
+    t->waker_name[0] = 0;
+    t->waker_prio = -1;
     const uint64_t t0 = snap_perf::now_ns();
     bool r = wait_woken_raw(t, lk, d);
     note_wait(t, kind, snap_perf::now_ns() - t0);
@@ -406,13 +414,36 @@ static void note_cores_in_use() {
 // free cores, the wait list, or a waiter's priority or mask. A waiter takes a core only if it is that core's best waiter,
 // so a best waiter left asleep blocks the core for every other waiter (intro hang 2026-11-12: three pinned threads slept
 // in acquire_core with all cores free). Call this after any such change.
+// Core migration (review finding 1, Horizon KScheduler::UpdateHighestPriorityThreads): an idle core pulls a thread that
+// runs on another core when that core has a next thread. Here: a holder h of a core that waiter t may use, which could
+// run on a free core f instead (f is open to h, and f's best waiter is not better than h). Returns h, or nullptr.
+static Thread *migration_victim(const Thread *t) {
+    for (int c = 0; c < ncores(); c++) {
+        Thread *h = g_cores[c];
+        if (!h || !can_use(t, c)) continue;
+        for (int f = 0; f < ncores(); f++) {
+            if (f == c || g_cores[f] || !can_use(h, f)) continue;
+            Thread *bw = best_waiter_for(f);
+            if (!bw || !better_ready(bw, h)) return h;
+        }
+    }
+    return nullptr;
+}
 static void kick_free_cores() {
+    bool unserved = false;   // a free core no waiter may use
     for (int i = 0; i < ncores(); i++)
-        if (!g_cores[i])
+        if (!g_cores[i]) {
             if (Thread *w = best_waiter_for(i)) {
                 w->core_kicked = true;
                 w->cv.notify_one();
+            } else {
+                unserved = true;
             }
+        }
+    // A pinned waiter may now get its core through a migration: let every waiter that has one re-evaluate.
+    if (unserved && !g_core_wait.empty() && !legacy(LG_MIGRATE))
+        for (Thread *w : g_core_wait)
+            if (migration_victim(w)) w->cv.notify_one();
 }
 static void take_core(Thread *t, int c) {   // t has already left g_core_wait
     t->core = c;
@@ -430,14 +461,24 @@ static void leave_core_wait(Thread *t) {
     t->waiting_core = false;
 }
 
+static bool any_free_core() {
+    for (int c = 0; c < ncores(); c++)
+        if (!g_cores[c]) return true;
+    return false;
+}
+
 static void acquire_core_raw(Thread *t, Lock &lk) {
     t->ready_seq = ++g_seq;
     t->waiting_core = true;
     g_core_wait.push_back(t);
     uint64_t deadline = 0;
-    bool counted = false, rescue_wait = false;
+    const Thread *dl_target = nullptr;   // the holder the overflow deadline was armed for (finding 10)
+    bool counted = false, rescue_wait = false, starve_counted = false;
     const uint64_t slice = g_cfg.rr_slice_us, over = g_cfg.overcommit_us;
+    t->core_wait_since = now_us();
+    const uint64_t dumps0 = g_dumps;
     for (;;) {
+        if (t->core >= 0) return;   // handed a core directly (yield_any); the giver took t off the wait list
         int cand[8], nc = 0;
         if (t->ideal >= 0 && t->ideal < ncores()) cand[nc++] = t->ideal;
         cand[nc++] = t->last_core;
@@ -449,13 +490,15 @@ static void acquire_core_raw(Thread *t, Lock &lk) {
         for (int c = 0; c < ncores() && pick < 0; c++)
             if (!g_cores[c] && can_use(t, c) && best_waiter_for(c) == t) pick = c;
         if (pick >= 0) {
-            if (rescue_wait) {
-                g_stats.core_wake_rescues++;
-                log("os: lost core wakeup: thread %#x prio %d found core %d free after %u ms", t->handle, t->eff_prio, pick,
-                    g_cfg.core_rescue_ms);
-            }
             leave_core_wait(t);   // before take_core, so its kick cannot pick t again for another free core
             take_core(t, pick);
+            if (rescue_wait) {
+                g_stats.core_wake_rescues++;
+                lk.unlock();   // t holds its core already; never write the console under G (finding 12)
+                log("os: lost core wakeup: thread %#x prio %d found core %d free after %u ms", t->handle, t->eff_prio, pick,
+                    g_cfg.core_rescue_ms);
+                lk.lock();
+            }
             return;
         }
         rescue_wait = false;
@@ -474,28 +517,61 @@ static void acquire_core_raw(Thread *t, Lock &lk) {
                 victim = o;
         }
         uint64_t now = now_us();
-        int64_t wait_us = -1;
-        if (victim) {
-            bool outranks = victim->eff_prio > t->eff_prio;
-            bool rr = victim->eff_prio == t->eff_prio && t->eff_prio >= 31;   // kernel 59 round robin
-            if (outranks || (rr && now - victim->core_since >= slice)) {
-                if (!victim->preempt.exchange(1)) g_stats.preempt_requests++;
-                if (!deadline) deadline = now + over;
-                if (now >= deadline) {   // the holder does not poll: run on an overflow core
-                    leave_core_wait(t);
-                    take_core(t, ncores());
-                    g_overflow++;
-                    g_stats.overflow_grants++;
-                    note_cores_in_use();
-                    if (g_cfg.trace)
-                        log("overflow core for thread %#x prio %d (holder %#x prio %d did not yield)", t->handle,
-                            t->eff_prio, victim->handle, victim->eff_prio);
-                    return;
-                }
-                wait_us = (int64_t)(deadline - now);
-            } else if (rr) {
-                wait_us = (int64_t)(victim->core_since + slice - now);
+        if (!starve_counted && now - t->core_wait_since >= (uint64_t)g_cfg.starve_ms * 1000 && g_dumps == dumps0 && any_free_core()) {
+            starve_counted = true;   // finding 1 detector: waiting for a core while another core sits free
+            g_stats.core_starved++;
+            if (g_cfg.starve_log) {
+                char buf[200];
+                int n = snprintf(buf, sizeof buf, "starved: thread %#x %.24s prio %d mask %#llx waited %llu ms with a free core; holders:",
+                                 t->handle, tname(t), t->eff_prio, (unsigned long long)t->mask,
+                                 (unsigned long long)((now - t->core_wait_since) / 1000));
+                for (int c = 0; c < ncores() && n < (int)sizeof buf - 24; c++)
+                    n += snprintf(buf + n, sizeof buf - n, " %d:%s/p%d", c, g_cores[c] ? tname(g_cores[c]) : "-",
+                                  g_cores[c] ? g_cores[c]->eff_prio : -1);
+                lk.unlock();   // never write the console under G (finding 12)
+                log("%s", buf);
+                lk.lock();
+                continue;   // the state may have changed while G was free
             }
+        }
+        int64_t wait_us = -1;
+        Thread *target = nullptr;   // the holder asked to give up (or move off) its core
+        bool rr = false;
+        if (victim) {
+            bool outranks = victim->eff_prio > t->eff_prio && (legacy(LG_YIELD_ANY) || now >= t->humble_until);
+            rr = victim->eff_prio == t->eff_prio && t->eff_prio >= 31;   // kernel 59 round robin
+            if (outranks || (rr && now - victim->core_since >= slice)) target = victim;
+            else if (now < t->humble_until && victim->eff_prio > t->eff_prio) wait_us = (int64_t)(t->humble_until - now);
+        }
+        if (!target && !legacy(LG_MIGRATE))
+            if (Thread *h = migration_victim(t)) {   // the holder may move to a free core: ask it to, as Horizon would
+                target = h;
+                if (!h->preempt.load(std::memory_order_relaxed)) g_stats.migrate_requests++;
+            }
+        if (target) {
+            if (!target->preempt.exchange(1)) g_stats.preempt_requests++;
+            if (!deadline || (!legacy(LG_DEADLINE) && dl_target != target)) {
+                deadline = now + over;
+                dl_target = target;
+            }
+            if (now >= deadline) {   // the holder does not poll: run on an overflow core
+                leave_core_wait(t);
+                take_core(t, ncores());
+                g_overflow++;
+                g_stats.overflow_grants++;
+                note_cores_in_use();
+                if (g_cfg.trace)
+                    log("overflow core for thread %#x prio %d (holder %#x prio %d did not yield)", t->handle,
+                        t->eff_prio, target->handle, target->eff_prio);
+                return;
+            }
+            wait_us = (int64_t)(deadline - now);
+        } else {
+            if (!legacy(LG_DEADLINE)) {   // nothing to preempt now: a later victim gets its full overcommit time
+                deadline = 0;
+                dl_target = nullptr;
+            }
+            if (rr && wait_us < 0) wait_us = (int64_t)(victim->core_since + slice - now);
         }
         if (wait_us < 0) {   // nothing to time: wait for a handoff, with a safety-net recheck that counts a missed one
             t->core_kicked = false;
@@ -548,8 +624,38 @@ void poll_preempt(Thread *t) {
     Lock lk(G);
     if (!t->preempt.exchange(0) || t->core < 0) return;
     g_stats.preempt_yields++;
+    const int c = t->core;
+    if (c < ncores() && !legacy(LG_MIGRATE)) {
+        // Move straight to a free core t may use where t is the best candidate (finding 1): the waiter that asked for
+        // core c then takes it, and t keeps running. Horizon migrates the running thread the same way.
+        for (int f = 0; f < ncores(); f++) {
+            if (f == c || g_cores[f] || !can_use(t, f)) continue;
+            Thread *bw = best_waiter_for(f);
+            if (bw && better_ready(bw, t)) continue;
+            g_cores[c] = nullptr;
+            g_cores[f] = t;
+            t->core = t->last_core = f;
+            g_stats.migrations++;
+            kick_free_cores();
+            return;
+        }
+    }
     release_core(t);
     acquire_core(t, lk);
+}
+
+// A core holder whose priority got worse (end of a priority-inheritance boost, ChangeThreadPriority): ask it to yield
+// to the waiters it no longer outranks and wake them, so they arm their overflow deadline now instead of on their
+// 20 ms safety-net recheck (finding 3).
+static void notify_outranking_waiters(Thread *t) {   // under G
+    if (t->core < 0 || t->core >= ncores()) return;
+    bool any = false;
+    for (Thread *w : g_core_wait)
+        if (can_use(w, t->core) && w->eff_prio < t->eff_prio) {
+            w->cv.notify_one();
+            any = true;
+        }
+    if (any && !t->preempt.exchange(1)) g_stats.preempt_requests++;
 }
 
 // ---- priority inheritance (Horizon: a lock owner runs at the best priority of the threads waiting for its locks)
@@ -559,10 +665,13 @@ void recompute_priority(Thread *t) {
         for (Thread *w : t->lock_waiters) p = std::min(p, w->eff_prio);
         if (p == t->eff_prio) break;
         if (p < t->eff_prio) g_stats.pi_boosts++;
+        const bool worse = p > t->eff_prio;
         t->eff_prio = p;
         if (t->waiting_core) {   // t re-evaluates its victim; a free core may now have a different best waiter
             t->cv.notify_one();
             kick_free_cores();
+        } else if (worse && !legacy(LG_UNBOOST)) {
+            notify_outranking_waiters(t);
         }
         t = t->wkind == W_LOCK ? t->lock_owner : nullptr;
     }
@@ -816,20 +925,33 @@ void thread_start(Thread *t) {
     if (t->started.exchange(1)) return;
     gst8a(t->tt + TT_STATE, TS_STARTED);
     size_t ss = std::min<size_t>(g_cfg.host_stack, 0xfff00000u);
-    uintptr_t h = _beginthreadex(nullptr, (unsigned)ss, host_entry, t, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    // Created suspended so host_thread is set before the thread can run and exit: a DestroyThread racing the start
+    // would otherwise skip the host join and free t under host_entry (finding 8a).
+    uintptr_t h = _beginthreadex(nullptr, (unsigned)ss, host_entry, t, STACK_SIZE_PARAM_IS_A_RESERVATION | CREATE_SUSPENDED, nullptr);
     if (!h) fatal("cannot create a host thread for ThreadType %#llx", (unsigned long long)t->tt);
-    t->host_thread = (void *)h;
+    {
+        std::lock_guard<std::mutex> lk(G);
+        t->host_thread = (void *)h;
+    }
+    ResumeThread((HANDLE)h);
 }
 
 void thread_wait_exit(Thread *t) {
     Thread *me = self();
     Lock lk(G);
+    t->joiners++;   // thread_destroy waits until every joiner has stopped reading t (finding 8b)
     while (!t->exited) block_on_key(me, lk, mkkey(K_JOIN, t->tt), W_JOIN, Deadline::max());
+    if (--t->joiners == 0) keyq_wake_all(mkkey(K_JOINERS, t->tt), R_OK);
 }
 
 void thread_destroy(Thread *t) {
     if (t->started) {
         thread_wait_exit(t);
+        {
+            Thread *me = self();
+            Lock lk(G);
+            while (t->joiners > 0) block_on_key(me, lk, mkkey(K_JOINERS, t->tt), W_JOIN, Deadline::max());
+        }
         if (t->host_thread) {
             WaitForSingleObject((HANDLE)t->host_thread, INFINITE);
             CloseHandle((HANDLE)t->host_thread);
@@ -890,6 +1012,32 @@ void yield_thread(Thread *t) {
     SwitchToThread();
 }
 
+// YieldToAnyThread (svcSleepThread(-2), long spin-gate streaks; finding 2): hand the core straight to its best waiter
+// whatever its priority, then wait for a core without preempting lower-priority holders for yield_any_us. A plain
+// release would not do: t outranks that waiter and would take the core straight back.
+void yield_any(Thread *t) {
+    if (legacy(LG_YIELD_ANY)) return yield_thread(t);
+    {
+        Lock lk(G);
+        const int c = t->core;
+        if (c >= 0 && c < ncores()) {
+            if (Thread *w = best_waiter_for(c)) {
+                g_stats.yield_any++;
+                t->core = -1;
+                t->preempt = 0;
+                g_cores[c] = nullptr;
+                leave_core_wait(w);
+                take_core(w, c);   // also kicks the other free cores
+                w->cv.notify_one();
+                t->humble_until = now_us() + g_cfg.yield_any_us;
+                acquire_core(t, lk);
+                return;
+            }
+        }
+    }
+    SwitchToThread();
+}
+
 int guest_core_number(const Thread *t) {
     const int n = g_cfg.app_cores > 0 ? g_cfg.app_cores : 3;
     if (t->core >= 0 && t->core < n) return t->core;
@@ -921,9 +1069,14 @@ void change_priority(Thread *t, int prio) {
         t->eff_prio = p;
         if (t->wkind == W_LOCK && t->lock_owner) recompute_priority(t->lock_owner);
     }
-    if (t->eff_prio > old && t->core >= 0 && t->core < ncores())
-        for (Thread *w : g_core_wait)
-            if (can_use(w, t->core) && w->eff_prio < t->eff_prio) t->preempt = 1;
+    if (t->eff_prio > old && t->core >= 0 && t->core < ncores()) {
+        if (!legacy(LG_UNBOOST)) {
+            notify_outranking_waiters(t);
+        } else {
+            for (Thread *w : g_core_wait)
+                if (can_use(w, t->core) && w->eff_prio < t->eff_prio) t->preempt = 1;
+        }
+    }
     if (t->waiting_core) {
         t->cv.notify_one();
         kick_free_cores();   // t may no longer be the best waiter of a free core
@@ -939,16 +1092,22 @@ using namespace osk;
 // paused span is subtracted afterwards, so the game's frame delta does not jump on resume.
 static std::mutex g_pause_mu;   // one lock so a tick read never sees the pause flag and the total out of step (time must not go backwards)
 static int64_t g_paused_total = 0, g_pause_start = 0;
+// QPC is read inside the lock in both functions: a read taken before a pause toggle and applied after it would make
+// guest time go backwards (finding 5).
 extern "C" void os_time_pause(int on) {
-    LARGE_INTEGER n; QueryPerformanceCounter(&n);
     std::lock_guard<std::mutex> lk(g_pause_mu);
+    LARGE_INTEGER n; QueryPerformanceCounter(&n);
     if (on) { if (!g_pause_start) g_pause_start = n.QuadPart; }
     else if (g_pause_start) { g_paused_total += n.QuadPart - g_pause_start; g_pause_start = 0; }
 }
 extern "C" uint64_t os_ticks(void) {
     LARGE_INTEGER n;
-    QueryPerformanceCounter(&n);
-    { std::lock_guard<std::mutex> lk(g_pause_mu); if (g_pause_start) n.QuadPart = g_pause_start; n.QuadPart -= g_paused_total; }
+    {
+        std::lock_guard<std::mutex> lk(g_pause_mu);
+        QueryPerformanceCounter(&n);
+        if (g_pause_start) n.QuadPart = g_pause_start;
+        n.QuadPart -= g_paused_total;
+    }
     uint64_t d = (uint64_t)(n.QuadPart - qpc_start());
     uint64_t f = (uint64_t)qpc_freq();   // split so no 128-bit division (__udivti3) is needed; (d % f) * 19.2e6 < 2^63
     return g_cfg.tick_base + d / f * OS_TICK_FREQUENCY + d % f * OS_TICK_FREQUENCY / f;
@@ -971,6 +1130,19 @@ extern "C" void os_init(const OsConfig *in) {
     }
     // perf switches (pass 3): override the virtual-core model without a rebuild
     if (const char *e = getenv("SNAP_OS_CORES")) c.num_cores = atoi(e);              // -1 = unlimited (free host scheduling)
+    if (c.num_cores == 0) c.num_cores = -1;   // 0 would leave g_cores empty and index it (finding 14): treat as unlimited
+    if (const char *e = getenv("SNAP_SCHED_LEGACY")) {   // old scheduler paths, see LG_* in os_internal.h
+        static const struct { const char *n; uint32_t b; } names[] = {{"migrate", LG_MIGRATE}, {"yield", LG_YIELD_ANY},
+            {"unboost", LG_UNBOOST}, {"deadline", LG_DEADLINE}, {"hostblock", LG_HOST_BLOCK}, {"events", LG_EVENTS}};
+        std::string s(e);
+        if (s == "1" || s == "all") c.legacy = ~0u;
+        else
+            for (auto &x : names)
+                if (s.find(x.n) != std::string::npos) c.legacy |= x.b;
+    }
+    if (const char *e = getenv("SNAP_OS_STARVE_MS")) c.starve_ms = (uint32_t)std::max(atoi(e), 1);
+    if (const char *e = getenv("SNAP_OS_STARVE_LOG")) c.starve_log = atoi(e);
+    if (const char *e = getenv("SNAP_OS_YIELD_ANY_US")) c.yield_any_us = (uint32_t)std::clamp(atoi(e), 0, 100000);
     if (const char *e = getenv("SNAP_OS_OVERCOMMIT_US")) c.overcommit_us = (uint32_t)atoi(e);
     if (const char *e = getenv("SNAP_OS_RR_US")) c.rr_slice_us = (uint32_t)atoi(e);
     if (c.num_cores > 64) c.num_cores = 64;
@@ -980,6 +1152,7 @@ extern "C" void os_init(const OsConfig *in) {
     if (const char *e = getenv("SNAP_OS_SPARE_CORES"))
         if (c.num_cores > 0) c.num_cores = std::min(c.num_cores + std::max(atoi(e), 0), 62);
     g_cfg = c;
+    if (c.legacy) log("SNAP_SCHED_LEGACY: old scheduler paths %#x (1 migrate, 2 yield, 4 unboost, 8 deadline, 16 hostblock, 32 events)", c.legacy);
     std::lock_guard<std::mutex> lk(G);
     g_cores.assign(c.num_cores > 0 ? (size_t)c.num_cores : 0, nullptr);
     (void)qpc_freq();
@@ -1043,27 +1216,45 @@ extern "C" void os_host_block_end(void) {
     Lock lk(G);
     if (t->block_depth > 0 && --t->block_depth == 0) acquire_core(t, lk);
 }
+// Blocking host work on a guest thread (file reads, VAMM retry sleeps): release the virtual core like a Horizon IPC
+// wait would (finding 9). SNAP_SCHED_LEGACY=hostblock keeps the core, the old behavior.
+extern "C" void os_io_begin(void) { if (!legacy(LG_HOST_BLOCK)) os_host_block_begin(); }
+extern "C" void os_io_end(void) { if (!legacy(LG_HOST_BLOCK)) os_host_block_end(); }
 extern "C" uint64_t os_current_thread_type(void) { return t_self ? t_self->tt : 0; }
 // Diagnostics (host watchdog): visit every live guest thread with its wait state and the Cpu whose x30/sp the caller can symbolize.
 extern "C" void os_dump_threads(void (*emit)(void *ud, uint64_t tt, uint64_t id, int wkind, uint64_t wkey, uint64_t waddr, int core, int prio, Cpu *cpu), void *ud) {
-    bool locked = G.try_lock();   // diagnostic only: go on without the lock if a stuck thread holds it
+    // G is normally held only briefly: retry for up to 500 ms, so the walk below does not race a map rehash (finding 12).
+    // Only a thread stuck while holding G makes it go on unlocked, and then nothing else can change the maps.
+    bool locked = G.try_lock();
+    for (int i = 0; !locked && i < 500; i++) {
+        Sleep(1);
+        locked = G.try_lock();
+    }
+    // The core handoff state first (who waits for a core, and which waiter each free core is reserved for): the walk below
+    // symbolizes guest stacks under G and takes long enough to distort the wait times.
+    char buf[768];
+    if (locked) g_dumps++;
+    {
+        const uint64_t now = now_us();
+        int n = snprintf(buf, sizeof buf, "dump: G %s, overflow %d, rescues %llu, starved %llu, migrations %llu/%llu, yield_any %llu, core waiters:",
+                         locked ? "locked" : "BUSY (unlocked read)", g_overflow, (unsigned long long)g_stats.core_wake_rescues.load(),
+                         (unsigned long long)g_stats.core_starved.load(), (unsigned long long)g_stats.migrations.load(),
+                         (unsigned long long)g_stats.migrate_requests.load(), (unsigned long long)g_stats.yield_any.load());
+        for (Thread *w : g_core_wait)
+            if (n < (int)sizeof buf - 56)
+                n += snprintf(buf + n, sizeof buf - n, " id%llu/p%d/m%#llx/%llums", (unsigned long long)w->id, w->eff_prio,
+                              (unsigned long long)w->mask, (unsigned long long)((now - w->core_wait_since) / 1000));
+        for (int c = 0; c < g_cfg.num_cores; c++)
+            if (!g_cores[c] && n < (int)sizeof buf - 40)
+                if (Thread *b = best_waiter_for(c)) n += snprintf(buf + n, sizeof buf - n, " | free core %d -> id%llu", c, (unsigned long long)b->id);
+    }
     for (auto &kv : g_by_tt) {
         Thread *t = kv.second;
         emit(ud, t->tt, t->id | ((uint64_t)(t->waiting_core ? 1 : 0) << 62) | ((t->mask & 0xff) << 48) | ((uint64_t)((t->ideal + 4) & 0xf) << 56), t->wkind, t->wkey, t->waddr, t->core, t->eff_prio, t->cur ? t->cur : t->cpu);
     }
     for (int c = 0; c < g_cfg.num_cores; c++) emit(ud, 0xC0DE, (uint64_t)c, 99, 0, 0, c, g_cores[c] ? g_cores[c]->eff_prio : -1, nullptr);   // core occupancy: id = core, prio = holder prio
-    {   // the core handoff state: who waits for a core, and which waiter each free core is reserved for
-        char buf[768];
-        int n = snprintf(buf, sizeof buf, "dump: G %s, overflow %d, rescues %llu, core waiters:", locked ? "locked" : "BUSY (unlocked read)", g_overflow,
-                         (unsigned long long)g_stats.core_wake_rescues.load());
-        for (Thread *w : g_core_wait)
-            if (n < (int)sizeof buf - 40) n += snprintf(buf + n, sizeof buf - n, " id%llu/p%d/m%#llx", (unsigned long long)w->id, w->eff_prio, (unsigned long long)w->mask);
-        for (int c = 0; c < g_cfg.num_cores; c++)
-            if (!g_cores[c] && n < (int)sizeof buf - 40)
-                if (Thread *b = best_waiter_for(c)) n += snprintf(buf + n, sizeof buf - n, " | free core %d -> id%llu", c, (unsigned long long)b->id);
-        log("%s", buf);
-    }
     if (locked) G.unlock();
+    log("%s", buf);   // after G is released (finding 12)
 }
 
 
@@ -1074,16 +1265,29 @@ extern "C" void os_poll(void) {
 extern "C" void os_spin_gate(Cpu *c, uint64_t head) {
     (void)c;
     (void)head;
-    static thread_local uint32_t passes;
+    static thread_local uint32_t passes, streak;
+    static thread_local uint64_t last_tsc;
     Thread *t = t_self;
     if (t) poll_preempt(t);
     uint32_t n = ++passes;
+    // Consecutive passes: a gap of about 3 ms or more between two passes starts a new spin.
+    const uint64_t now = __rdtsc();
+    if (now - last_tsc > 10000000ull) streak = 0;
+    ++streak;
     if ((n & 63) == 0) {   // a spinner may wait for a thread that has no core: offer ours
         g_stats.spin_yields++;
-        if (t) yield_thread(t);
-        else SwitchToThread();
+        if (!t) SwitchToThread();
+        else if (streak >= 4096 && !legacy(LG_YIELD_ANY)) {
+            // A long spin may wait for a lower-priority thread that has no core (finding 2): let it run.
+            streak = 0;
+            yield_any(t);
+        } else {
+            yield_thread(t);
+        }
+        last_tsc = __rdtsc();
     } else {
         _mm_pause();
+        last_tsc = now;
     }
 }
 
@@ -1101,6 +1305,10 @@ extern "C" void os_get_stats(OsStats *o) {
     o->spin_yields = g_stats.spin_yields;
     o->max_cores_in_use = g_stats.max_cores_in_use;
     o->core_wake_rescues = g_stats.core_wake_rescues;
+    o->core_starved = g_stats.core_starved;
+    o->migrate_requests = g_stats.migrate_requests;
+    o->migrations = g_stats.migrations;
+    o->yield_any = g_stats.yield_any;
 }
 
 // ---- SVC helpers for the logging backstop: the thread and arbitration SVCs that lifted sdk code can reach.
@@ -1112,8 +1320,9 @@ static Thread *svc_thread(uint32_t h) {
 extern "C" int os_svc(Cpu *c, uint32_t imm) {
     Thread *me = self();
     switch (imm) {
-    case 0x0b:   // SleepThread(ns): 0 / -1 / -2 are yields
+    case 0x0b:   // SleepThread(ns): 0 / -1 yield to equal or better, -2 YieldToAnyThread
         if ((int64_t)c->x[0] > 0) sleep_ns(me, (int64_t)c->x[0]);
+        else if ((int64_t)c->x[0] == -2) yield_any(me);
         else yield_thread(me);
         return 1;
     case 0x0c: {   // GetThreadPriority(out w1, handle w1)

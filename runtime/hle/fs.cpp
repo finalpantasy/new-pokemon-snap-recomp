@@ -9,8 +9,14 @@
 //   GetFreeSpaceSize(&n,"savedata") at 0x609a30 (needs n >> 22 >= 0x19, i.e. 100 MiB) and 0x6107c8, then
 //   ExtendSaveData(uid, saveSize + need, journal) at 0x610800 when it is short: the host reports plenty so that
 //   path never runs.
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "fs_core.h"
 #include "hle.h"
@@ -50,7 +56,17 @@ void fs_get_save_data_size(Cpu* c) {  // Result GetSaveDataSize(long* size, long
 void fs_mount_save_data(Cpu* c) {  // Result MountSaveData(const char* name, const Uid& uid)
   uint64_t uid[2];
   std::memcpy(uid, ptr<void>(arg(c, 1)), sizeof uid);
-  ret(c, instance().mount_save(cstr(arg(c, 0)), uid));
+  uint32_t rc = instance().mount_save(cstr(arg(c, 0)), uid);
+#ifdef _WIN32
+  if (rc == fs::kResultTargetLocked) {   // another copy of the game owns this save folder: say so and stop, never touch its files
+    const char* msg = "Another copy of New Pokemon Snap is already running with this save folder. Close it, or start this copy with a different profile or save folder (SNAP_SAVE_DIR). This copy will now close without changing any save.";
+    log("fs: %s", msg);
+    if (!config().headless) MessageBoxA(nullptr, msg, "Pokemon Snap", MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
+    std::fflush(nullptr);
+    ExitProcess(3);
+  }
+#endif
+  ret(c, rc);
 }
 
 void fs_extend_save_data(Cpu* c) { ret(c, kSuccess); }  // Result ExtendSaveData(const Uid&, long, long): host space is not limited
@@ -139,6 +155,7 @@ void fs_get_directory_entry_count(Cpu* c) {  // Result (long* out, DirectoryHand
 constexpr size_t kDirEntrySize = 0x310;
 void fs_read_directory(Cpu* c) {  // Result ReadDirectory(long* outCount, DirectoryEntry* out, DirectoryHandle, long max)
   int64_t max = (int64_t)arg(c, 3);
+  max = std::min<int64_t>(max, 1 << 16);   // a guest-controlled count must not size a host allocation (no game directory is near this)
   std::vector<fs::DirEntry> tmp((size_t)(max > 0 ? max : 0));
   int64_t n = 0;
   uint32_t rc = instance().read_directory(arg(c, 2), tmp.data(), max, &n);
@@ -196,3 +213,7 @@ void register_fs(std::vector<Entry>& out) {
 }
 
 }  // namespace hle
+
+// Window close (host/boot.cpp): let a save commit in progress finish before the process exits. The generation scheme survives a kill
+// at any point, but finishing keeps the newest photo / progress instead of falling back one generation.
+extern "C" void snap_fs_drain_for_exit(int ms) { hle::fs::instance().drain_for_exit(ms); }

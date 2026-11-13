@@ -39,7 +39,9 @@ enum Val {   // plain counters (no time)
     V_PIPES_CREATED, V_SCRATCH_ALLOCS, V_DESC_SETS, V_BARRIERS, V_SHADERS, V_PIPES_SKIPPED,
     V_UPLOAD_PREF,   // [perf] static uploads served from the prefetch (deswizzled off the replay thread)
     V_UPLOAD_PREF_IMG,   // [perf] images created by a prefetch worker and adopted by EnsureImage (pass 5)
-    V_PREF_MISS_NONE, V_PREF_MISS_FAIL, V_PREF_MISS_HASH, V_PREF_MISS_LATE,   // [perf] static uploads not served by the prefetch: never queued or dropped / job failed (bytes changed during it) / bytes changed since / job not started yet
+    V_PREF_MISS_NONE, V_PREF_MISS_FAIL, V_PREF_MISS_HASH, V_PREF_MISS_LATE,   // [perf] static uploads not served by the prefetch: never queued / job failed (bytes changed during it) / bytes changed since / job not started yet
+    V_PREF_MISS_DROP,                                                         // [perf] pass 6: queued but dropped from the staging budget before its upload
+    V_PREF_SKIP_KIND, V_PREF_SKIP_NOSRC, V_PREF_SKIP_BUDGET,                  // [perf] pass 6: TexPrefetch calls not queued: format/target/size / no guest source yet / budget full
     V_COUNT
 };
 

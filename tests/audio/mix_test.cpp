@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <vector>
+#include "audio_cfg.h"
 #include "audio_mix.h"
 
 static int fails = 0;
@@ -94,6 +95,15 @@ int main() {
     std::vector<float> d(8 * 4800, 0.0f); Upmixer w;
     for (int k = 0; k < 20; ++k) { for (int i = 0; i < 4800; ++i) { d[i * 8] = 0.3f; d[i * 8 + 1] = 0.3f; d[i * 8 + 2] = d[i*8+3] = d[i*8+6] = d[i*8+7] = 0; } w.process(d.data(), 8, 4800); }
     CHECK(d[4799 * 8 + 6] > 0.0f && d[4799 * 8 + 4] == 0.0f, "7.1: ambience in the side speakers, backs empty");
+  }
+  // audio.json: "speakers" is both a value of "output" and a key (review_hle #4)
+  {
+    const char* j = "{ \"master\": 1.0, \"output\": \"speakers\", \"channels\": 6, \"speakers\": 8 }";
+    int ch = -1, spk = -1, none = -1;
+    CHECK(snap_audio::cfg::read_int(j, "channels", &ch) && ch == 6, "channels key: %d", ch);
+    CHECK(snap_audio::cfg::read_int(j, "speakers", &spk) && spk == 8, "speakers key must skip the output value: %d", spk);
+    CHECK(!snap_audio::cfg::read_int("{\"output\": \"speakers\"}", "speakers", &none), "value alone is not a key");
+    CHECK(snap_audio::cfg::read_int("{\"speakers\" : 6}", "speakers", &none) && none == 6, "space before the colon");
   }
   std::printf(fails ? "mix_test: %d FAILED\n" : "mix_test: all passed\n", fails);
   return fails ? 1 : 0;

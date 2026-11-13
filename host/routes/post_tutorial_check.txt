@@ -1,4 +1,11 @@
 # fixture: post_tutorial
 # Check for the post_tutorial fixture: slow A taps get past the title and the lab hub "Research" entry, then stop on the Lental Map
-# (course select). Run: powershell -File host\run_boot.ps1 -Route post_tutorial_check -Timeout 120 -ShotAt 20 -ShotEvery 20
-repeat @f300 @f2200 120 8 A
+# (course select). Game-state waits (host\README.md "Waiting on game state"); each segment carries its own A taps.
+# Run: powershell -File host\run_boot.ps1 -Route post_tutorial_check -Timeout 180 -ShotAt 20 -ShotEvery 5 -ShotMax 30
+# Pass: "input script: wait 'ui=map_select' met" in boot_stderr.log, then "end of route reached" (exit code 0).
+wait ui=title timeout=150
+repeat @f60 @f20000 120 8 A
+wait ui=main_menu timeout=90
+repeat @f60 @f20000 120 8 A
+wait ui=map_select timeout=60
+end @f240

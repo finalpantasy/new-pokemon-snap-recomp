@@ -16,7 +16,7 @@
 
 #include "hle.h"
 
-namespace nvn { extern int g_presentCount; }   // runtime/nvn/nvn_tex_vk.cpp: frame clock for '@f' script times
+namespace nvn { extern int g_presentCount; extern int g_fdBurst; }   // runtime/nvn/nvn_tex_vk.cpp: frame clock for '@f' script times; nvn_vk.cpp: NVN_FRAME_DUMP burst (script token shot=<n>)
 
 namespace hle::input {
 std::atomic<uint64_t> g_inject_buttons{0};   // NpadButton bits a host mod holds down (see Hub::poll); 0 = none
@@ -546,7 +546,7 @@ Mapping Hub::mapping() const { std::lock_guard<std::mutex> g(mu_); return map_; 
 bool write_mapping_file(const Mapping& m, const std::string& path, std::string* err) {
   namespace fs = std::filesystem;
   std::error_code ec;
-  fs::path target(path);
+  fs::path target = fs::u8path(path);
   if (target.has_parent_path()) fs::create_directories(target.parent_path(), ec);
   std::string text;
   json_dump(m.to_json(), text);
@@ -567,7 +567,7 @@ bool write_mapping_file(const Mapping& m, const std::string& path, std::string* 
 bool write_default_mapping(const std::string& path) { return write_mapping_file(Mapping::defaults(), path, nullptr); }
 
 static bool read_mapping_file(const std::string& path, Mapping* m, std::string* err) {
-  std::ifstream f(path, std::ios::binary);
+  std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
   if (!f) { *err = path + ": cannot open"; return false; }
   std::stringstream ss;
   ss << f.rdbuf();
@@ -668,9 +668,12 @@ bool Hub::save(std::string* err) {
 //                                                  it too) counts from the start of the segment before: when it runs out the
 //                                                  run logs "input script: TIMEOUT" with the state it saw and exits (code 3).
 //     conditions (host/mods/routes.cpp, neofilm.cpp, skips.cpp report them; '!' in front negates):
-//       ui=<scene>             a Lumen UI scene (.drp base names: main_menu, map_select, photo_submit, evaluation, pause_menu,
-//                              option, result_reward, ...) is shown: its last state is not a hidden one and it got events lately
-//       ui=<scene>:<state>     that scene is in that state (a trailing '*' matches a prefix)
+//       ui=<scene>             a Lumen UI scene (.drp base names: title, main_menu, map_select, photo_submit, evaluation,
+//                              pause_menu, option, result_reward, ...) is open (between its "opened" and "closed" events)
+//       ui=<scene>:<state>     that scene is open and in that layout state (a trailing '*' matches a prefix); states seen:
+//                              title PressStart, main_menu MainMenu, map_select Start/StageSelect/CourseSelect/Exit,
+//                              photo_submit FolderSelect (subject folders) / PhotoSubmit (photos of one folder),
+//                              evaluation Start, per photo EvaluationNew/Comment/Score/Announce/PhotoRegister, then End
 //       dialog                 the dialogue / skit text window waits for A (main+0x676630 ran in the last 8 presents)
 //       ride                   the course rail is moving (NEO-ONE progress advanced in the last 20 presents)
 //       ride>=<x>              moving and the progress along the rail (rail object +0x70, about 0.9 per second) is at least x
@@ -681,7 +684,7 @@ bool Hub::save(std::string* err) {
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -698,7 +701,7 @@ Script g_script;
 
 // ---- route signals: game state that inline hooks report (host/mods/routes.cpp, neofilm.cpp, skips.cpp); "wait" lines read it.
 // Off (every report returns at once) unless the script has a "wait" line or SNAP_ROUTE_LOG=1 (which also logs scenes and states).
-struct UiScene { uint64_t player; char name[40]; char state[64]; int f_event, f_state; };
+struct UiScene { uint64_t player; char name[40]; char state[64]; int f_event, f_state; bool open; };
 struct RailSig { uint64_t obj; float prog; int f_adv, f_start; };
 std::mutex g_rs_mu;
 UiScene g_ui[64];
@@ -710,13 +713,6 @@ bool g_route_log;
 std::atomic<int> g_dialog_f{-1000000}, g_film{-1}, g_film_f{-1000000};
 void route_enable() { g_route_on = true; }
 struct RouteInit { RouteInit() { const char* e = std::getenv("SNAP_ROUTE_LOG"); g_route_log = e && *e && *e != '0'; if (g_route_log) g_route_on = true; } } g_route_init;
-
-// a hidden layout state: the scene exists but shows nothing (names seen in probe runs; extend as needed)
-bool ui_hidden_state(const char* s) {
-  static const char* const k[] = {"", "Hide", "hide", "None", "none", "Close", "close", "Out", "out", "Off", "Invisible", "Init", "init"};
-  for (const char* h : k) if (!std::strcmp(s, h)) return true;
-  return false;
-}
 
 // evaluates one "wait" condition (text after '?'); `why` gets a short state note for the log
 bool route_cond(const std::string& c0, std::string* why) {
@@ -733,9 +729,9 @@ bool route_cond(const std::string& c0, std::string* why) {
     for (int i = 0; i < g_nui && !r; ++i) {
       const UiScene& s = g_ui[i];
       if (scene != s.name) continue;
-      if (!st.empty()) r = st.back() == '*' ? std::strncmp(s.state, st.c_str(), st.size() - 1) == 0 : st == s.state;
-      else r = !ui_hidden_state(s.state) && f - s.f_event < 30;
-      std::snprintf(b, sizeof b, "%s state '%s' (last event %d presents ago)", s.name, s.state, f - s.f_event);
+      r = s.open;
+      if (r && !st.empty()) r = st.back() == '*' ? std::strncmp(s.state, st.c_str(), st.size() - 1) == 0 : st == s.state;
+      std::snprintf(b, sizeof b, "%s %s, state '%s' for %d presents", s.name, s.open ? "open" : "closed", s.state, f - s.f_state);
     }
     if (!b[0]) std::snprintf(b, sizeof b, "scene %s not seen", scene.c_str());
   } else if (c == "dialog") {
@@ -762,7 +758,8 @@ void route_dump() {
   std::lock_guard<std::mutex> lk(g_rs_mu);
   const int f = nvn::g_presentCount;
   for (int i = 0; i < g_nui; ++i)
-    log("input script:   ui %-16s state '%s' since %d presents, last event %d presents ago", g_ui[i].name, g_ui[i].state, f - g_ui[i].f_state, f - g_ui[i].f_event);
+    log("input script:   ui %-16s %s, state '%s' for %d presents, last event %d presents ago", g_ui[i].name, g_ui[i].open ? "open  " : "closed",
+        g_ui[i].state, f - g_ui[i].f_state, f - g_ui[i].f_event);
   if (g_rail_cur >= 0) log("input script:   rail progress %.2f, last advance %d presents ago", g_rail[g_rail_cur].prog, f - g_rail[g_rail_cur].f_adv);
   log("input script:   film %d, dialog last waited %d presents ago, present %d", g_film.load(), f - g_dialog_f.load(), f);
 }
@@ -775,9 +772,15 @@ void route_ui(uint64_t player, const char* scene, const char* state, int event, 
   std::lock_guard<std::mutex> lk(g_rs_mu);
   UiScene* s = nullptr;
   for (int i = 0; i < g_nui; ++i) if (g_ui[i].player == player) { s = &g_ui[i]; break; }
+  if (s && std::strcmp(s->name, scene) != 0) {   // the scene was freed and a new one got its address
+    if (g_route_log) log("route: ui player %#llx was '%s', now '%s'", (unsigned long long)player, s->name, scene);
+    s->player = 0;
+    s = nullptr;
+  }
   if (!s) {
-    if (g_nui >= 64) return;
-    s = &g_ui[g_nui++];
+    for (int i = 0; i < g_nui; ++i) if (!g_ui[i].player) { s = &g_ui[i]; break; }
+    if (!s && g_nui >= 64) return;
+    if (!s) s = &g_ui[g_nui++];
     *s = UiScene{};
     s->player = player;
     std::snprintf(s->name, sizeof s->name, "%s", scene);
@@ -786,7 +789,9 @@ void route_ui(uint64_t player, const char* scene, const char* state, int event, 
                          event < 0 ? "SetState" : "event", (unsigned long long)(lr - 0x7100000000ull), f);
   }
   if (event >= 0) s->f_event = f;
-  if (std::strcmp(s->state, state) != 0 && (state[0] || event < 0)) {
+  if (event == 1 || event == 3) s->open = false;   // 1 = built (hidden), 3 = closed
+  if (event == 2) s->open = true;                  // 2 = opened
+  if (std::strcmp(s->state, state) != 0 && state[0]) {   // SetState also passes '' between two states of one page: ignored
     if (g_route_log) log("route: ui %s state '%s' -> '%s' (%s %d) present %d", s->name, s->state, state, event < 0 ? "SetState" : "event", event, f);
     std::snprintf(s->state, sizeof s->state, "%s", state);
     s->f_state = f;
@@ -844,6 +849,10 @@ bool script_token(const std::string& t, ScriptEntry& en) {
     if (k == "gyro") {   // gyro=<yaw_dps>,<pitch_dps>: a pretend gyro rate while the entry is active (needs SNAP_GYRO=1)
       en.has_gyro = true; en.gyro_yaw = (float)std::atof(t.c_str() + eq + 1);
       size_t c = t.find(',', eq); en.gyro_pitch = c == std::string::npos ? 0.0f : (float)std::atof(t.c_str() + c + 1);
+      return true;
+    }
+    if (k == "shot") {   // shot=<n>: while the entry is active, ask NVN_FRAME_DUMP for a frame every n presents (needs NVN_FRAME_DUMP; test evidence aid)
+      en.shot_n = std::max(1, std::atoi(t.c_str() + eq + 1));
       return true;
     }
     if (k == "rumble") {   // rumble=<low>,<high>: a host-side rumble request while the entry is active (test of the host chain)
@@ -996,6 +1005,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     cur |= en.buttons;
     p.buttons |= en.buttons;
     if (en.has_gyro) { g_script_gyro_on = true; g_script_gyro_yaw += en.gyro_yaw; g_script_gyro_pitch += en.gyro_pitch; }
+    if (en.shot_n > 0 && nvn::g_presentCount % en.shot_n == 0 && nvn::g_fdBurst <= 0) nvn::g_fdBurst = 4;   // `shot=<n>` token
     if (en.has_rumble) { g_script_rumble_lo = std::max(g_script_rumble_lo, en.rumble_lo); g_script_rumble_hi = std::max(g_script_rumble_hi, en.rumble_hi); }
     for (int i = 0; i < 4; ++i) if (en.has_ax[i]) (&p.lx)[i] = en.ax[i];
     p.connected = true;
@@ -1036,6 +1046,7 @@ void Hub::set_menu_open(bool open) {
   chord_fired_ = true;   // the chord that opened the menu must be released before it can fire again
   chord_since_ns_ = 0;
   if (!open) { capturing_ = false; cap_have_ = false; }
+  else if (backend_) backend_->rumble(0, 0);   // Hub::rumble is ignored while the menu is open: stop what was running
 }
 bool Hub::consume_menu_toggle() { return toggle_req_.exchange(false); }
 PadSample Hub::preview() const { std::lock_guard<std::mutex> g(mu_); return preview_; }

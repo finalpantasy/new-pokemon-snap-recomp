@@ -1,0 +1,94 @@
+# fixture: unlock_all
+# soak retry loop: Florio Day ride, then pause > Retry (course reload) repeatedly
+wait ui=title timeout=150
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=250
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=30
+@f180 6 A
+wait ride timeout=300
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+@f420 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+wait ride timeout=200
+end @f300

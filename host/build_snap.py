@@ -41,6 +41,11 @@ def main():
     ap.add_argument('--main-lib', default=str(ROOT / 'build' / 'eh' / 'main' / 'lib' / 'snap_main.lib'))
     ap.add_argument('--sdk-lib', default=str(ROOT / 'build' / 'eh' / 'sdk' / 'lib' / 'snap_sdk.lib'))
     ap.add_argument('--name', default='snap_boot')
+    # code-generation switches (host/README.md "PGO and ThinLTO"); pair them with the same flags on recomp/snap_build.py --cflags
+    ap.add_argument('--pgo-gen', action='store_true', help='instrumented build (-fprofile-generate, host/pgo.cpp dump thread)')
+    ap.add_argument('--pgo-use', default='', help='optimize with this .profdata (-fprofile-use)')
+    ap.add_argument('--lto', choices=('', 'thin'), default='', help='ThinLTO for the host objects and the final link')
+    ap.add_argument('--cflags-extra', default='', help='extra flags for the host compile (e.g. -O3)')
     args = ap.parse_args()
     jobs = min(args.jobs, 8)
     out = Path(args.out)
@@ -57,7 +62,7 @@ def main():
         cov.write_bytes(bak)   # the coverage table is the HLE owner's; only the stub file is ours
     shutil.copyfile(ROOT / 'generated' / 'hle_unimplemented.cpp', ROOT / 'generated' / 'unimplemented.cpp')
 
-    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp')]
+    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp', 'pgo.cpp')]
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'os').glob('*.cpp'))]
     srcs += [(p, 20) for p in sorted((ROOT / 'host' / 'mods').glob('*.cpp'))]   # draw-distance mods 26 and 27 (host/mods/lodanim.cpp)
     for d in ('hle', 'audio', 'nvn', 'mods'):
@@ -82,6 +87,15 @@ def main():
     ffx = ROOT / 'tools' / 'amd' / 'ffx_sdk_v1.1.4' / 'ffx-api' / 'include'
     if (ffx / 'ffx_api' / 'ffx_api.h').exists():
         cflags += ['-DSNAP_HAVE_FFX_API', '-I', str(ffx)]
+    cg = []   # code-generation switches, also passed to the link
+    if args.pgo_gen:
+        cg += ['-fprofile-generate']
+        cflags += ['-DSNAP_PGO_GEN']
+    if args.pgo_use:
+        cg += ['-fprofile-use=' + str(Path(args.pgo_use).resolve())]
+    if args.lto:
+        cg += ['-flto=thin']
+    cflags += cg + args.cflags_extra.split()
     env = vc_env()
 
     def compile_one(item):
@@ -119,7 +133,10 @@ def main():
     if sdl_ok:
         libs.append(str(sdl / 'lib' / 'x64' / 'SDL3.lib'))
         shutil.copyfile(sdl / 'lib' / 'x64' / 'SDL3.dll', out / 'SDL3.dll')
-    r = subprocess.run([str(LLVM / 'clang++.exe'), '-fuse-ld=lld', '-g', '-Wl,/map:' + str(out / (args.name + '.map')), '-Wl,/debug', '-o', str(exe)] + [str(o) for o in objs] + res + libs,
+    lflags = [c for c in cg if not c.startswith('-fprofile-use')]
+    if args.lto:   # ThinLTO backends (bitcode libs from snap_build.py -flto=thin): BelowNormal like the rest, at most --jobs threads
+        lflags += ['-Wl,/opt:lldltojobs=' + str(jobs), '-Wl,/lldltocache:' + str(out / 'ltocache')]
+    r = subprocess.run([str(LLVM / 'clang++.exe'), '-fuse-ld=lld', '-g', '-Wl,/manifest:embed', '-Wl,/manifestinput:' + str(ROOT / 'host' / 'snap_utf8.manifest'), '-Wl,/map:' + str(out / (args.name + '.map')), '-Wl,/debug', '-o', str(exe)] + lflags + [str(o) for o in objs] + res + libs,
                        env=env, creationflags=BELOW_NORMAL)
     if r.returncode:
         return 1

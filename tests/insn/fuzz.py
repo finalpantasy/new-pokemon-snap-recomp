@@ -46,6 +46,7 @@ from snap_common import BASE, ELF, SDK_BASE, SDK_ELF, functions, tsv  # noqa: E4
 
 BUF_MID = BUF + 0x10000
 WORK = ROOT / 'build' / 'w' / 'fuzz'
+ALIAS_CODE = 0x7220000000
 CENSUS = ROOT / 'analysis' / 'recomp' / 'insn_census.tsv'
 CONST_CLASSES = {'fpcvt', 'fpest', 'fparith', 'fpcmp', 'fpmove', 'neon_sat', 'neon_narrow', 'neon_widen', 'neon_shift',
                  'neon_lane', 'neon_int', 'simd_other', 'flags', 'intdiv', 'bitfield', 'csel', 'int', 'crc'}
@@ -336,6 +337,16 @@ def collect(args, r):
         n = args.words * (4 if wt >= 8 else 2 if wt >= 5 else 1)
         for w, (name, pc) in lst[:n]:
             picks.append((name, w, pc, f, c, wt))
+            if args.alias and c not in ('ldst', 'branch', 'excl', 'sysreg') and not is_mem(w):
+                # register-aliasing variants (Rd = Rn, Rd = Rm, Rn = Rm, all equal): in-place lane updates
+                d, nn, m = bits(w, 0, 5), bits(w, 5, 5), bits(w, 16, 5)
+                base = w & ~((31 << 0) | (31 << 5) | (31 << 16))
+                for vd, vn, vm in ((nn, nn, m), (m, nn, m), (d, nn, nn), (nn, nn, nn)):
+                    if 31 in (vd, vn, vm):
+                        continue
+                    v2 = base | vd | (vn << 5) | (vm << 16)
+                    if v2 != w and not f.startswith('adr'):
+                        picks.append(('alias', v2, None, f, c, wt))
     return picks, images
 
 
@@ -355,6 +366,7 @@ def main():
     ap.add_argument('--cflags', default='-march=x86-64-v3 -Wno-deprecated-declarations')
     ap.add_argument('--show', type=int, default=60)
     ap.add_argument('--regress', help='append failing cases to this file')
+    ap.add_argument('--alias', action='store_true', help='add register-aliasing variants of each word')
     ap.add_argument('--grid', action='store_true', help='edge-value cross product on one word per form (GRID_CLASSES)')
     args = ap.parse_args()
     r = random.Random(args.seed)
@@ -369,11 +381,17 @@ def main():
         if not p.exists() or p.stat().st_size != len(img.image):
             p.write_bytes(bytes(img.image))
         img_paths.append((base, p))
-    emu = Emu([(base, bytes(img.image)) for _, base, img in images])
+    # aliasing variants are not in the images: they run from a code page of their own (no PC-relative forms)
+    alias = [i for i, p in enumerate(picks) if p[0] == 'alias']
+    for j, i in enumerate(alias):
+        picks[i] = ('alias', picks[i][1], ALIAS_CODE + 4 * j) + picks[i][3:]
+    alias_code = struct.pack(f'<{len(alias)}I', *[picks[i][1] for i in alias]) + bytes(64)
+    emu = Emu([(base, bytes(img.image)) for _, base, img in images] + [(ALIAS_CODE, alias_code)])
     mu = emu.mu
     buf0 = bytes(r.getrandbits(8) for _ in range(4096)) * (BUF_SIZE // 4096)
     mu.mem_write(BUF, buf0)
     lifter = {name: Lifter(base, 'c') for name, base, _ in images}
+    lifter['alias'] = Lifter(ALIAS_CODE, 'c')
 
     # Lift once; cases from Unicorn.
     bodies, cases, expect, meta = [], [], [], []
@@ -477,7 +495,7 @@ def main():
         fpcr, x, v = case[1], case[2], case[5]
         regs = sorted({bits(w, 0, 5), bits(w, 5, 5), bits(w, 16, 5), bits(w, 10, 5)})
         ins = ' '.join(f'x{j}={x[j]:x}' for j in regs if j < 31) + ' | ' + ' '.join(f'v{j}={v[j]:032x}' for j in regs)
-        print(f'  [{mode}] {name}+{pc - (BASE if name == "main" else SDK_BASE):x} {w:08x} {dis(w, pc):40} fpcr={fpcr:x}')
+        print(f'  [{mode}] {name}+{pc - {"main": BASE, "sdk": SDK_BASE, "alias": ALIAS_CODE}[name]:x} {w:08x} {dis(w, pc):40} fpcr={fpcr:x}')
         print(f'      in: {ins}')
         print(f'      {"; ".join(d)}')
     if args.regress and reg:

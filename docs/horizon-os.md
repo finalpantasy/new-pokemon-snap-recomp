@@ -97,7 +97,12 @@ ThreadType fields:
 - **Preemption** is cooperative.
   - **Request:** a ready thread that outranks a core holder sets the holder's preempt flag. So does an equal-priority thread at priority 31 once the holder has run longer than the 10 ms round-robin slice (Horizon round-robins only kernel priority 59).
   - **Where the holder yields:** at its next poll point. Poll points are `GetSystemTick`, `UnlockMutex`, `SignalEvent`, `SleepThread(0)`, `YieldThread`, every blocking call, and `os_spin_gate`/`os_poll`.
-  - **Overflow core:** if the holder does not yield within `overcommit_us` (2 ms), the waiter runs on an overflow core, so a non-polling spin loop cannot deadlock the game. This is counted in `overflow_grants`.
+  - **Overflow core:** if the holder does not yield within `overcommit_us` (2 ms), the waiter runs on an overflow core, so a non-polling spin loop cannot deadlock the game. This is counted in `overflow_grants`. The deadline restarts when the holder asked to yield changes (2026-11-13).
+  - **Migration (2026-11-13, review finding 1):** a waiter that outranks no holder, but whose core is held by a thread that may run on a free core, asks that holder to move (Horizon's idle core pulls a suggested thread whose core has a next thread). At its poll point the holder moves straight to the free core and keeps running; the waiter takes the vacated core. A holder that does not poll gives the waiter an overflow core after 2 ms. A freed core that no waiter may use wakes the waiters that have such a migration. Before this, a pinned loader (p31, core 2) waited behind a JobWorker on core 2 for as long as the job ran, with core 0 idle.
+  - **Priority drops (2026-11-13, finding 3):** when a holder's priority gets worse (end of a priority-inheritance boost or ChangeThreadPriority), the core waiters it no longer outranks are woken and the holder is asked to yield. Before, they noticed only at their 20 ms safety-net recheck.
+  - **Yield to any (2026-11-13, finding 2):** `svcSleepThread(-2)` and a spin gate after 4,096 consecutive passes hand the core straight to its best waiter of any priority; the yielder does not preempt that thread for `yield_any_us` (1 ms). `svcSleepThread(0/-1)` and `YieldThread` still yield only to equal or better waiters.
+  - **Blocking host work (2026-11-13, finding 9):** `Fs::read_file` and the VAMM retry backoff release the virtual core (`os_io_begin`/`os_io_end`), like a Horizon IPC wait.
+  - All four are switchable back with `SNAP_SCHED_LEGACY` (`host\README.md` "Scheduler switches").
 - **Priority inheritance.**
   - A thread waiting in ArbitrateLock is recorded on the lock owner. The owner's effective priority becomes the minimum of its base priority and its waiters' priorities. The boost propagates along chains (owner waiting on another lock) up to depth 64.
   - Unlocking hands the lock directly to the best waiter, like KConditionVariable::SignalToAddress.
@@ -116,7 +121,7 @@ ThreadType fields:
 The lifter turns marked spin back-edges into `rt_spin_gate(c, head)`. The loader forwards that to `os_spin_gate`, which does the following:
 
 - every pass runs `_mm_pause`;
-- every 64 passes it yields to an equal or better waiter;
+- every 64 passes it yields to an equal or better waiter, and after 4,096 consecutive passes (no gap of about 3 ms) it yields to any waiter of its core;
 - it always honors a pending preemption.
 
 Spin loops that need the gate (see `PROPOSED_SHARED_CHANGES.md` section 4):
@@ -182,6 +187,10 @@ The harness's `rt_dispatch` calls `c->pc` as a host function. Thread entries and
 | wake order | 5 condvar waiters woken one at a time, in priority order |
 | memory+boot | VAMM, heap, TlsManager/ThreadManager members with a null `this`, available core mask |
 | core handoff | 300 rounds: cores 0 and 2 freed back to back while a better unpinned waiter sleeps; the core-0-pinned waiter must still run (hung on round 0-2 before the fix) and no wait may end by the safety net |
+| sched migrate | 2 x 250 rounds: a p16 JobWorker-like thread (mask 7) on core 2 spins (no poll, then through the gate) on a flag that a p31 thread pinned to core 2 sets; core 0 is then freed. The p31 thread must run within 50 ms (before the fix: 300 ms, the spinner's own timeout; after: median 3 ms no poll, 0.01 ms gated) |
+| sched yield any | 300 rounds: p23 holds a busy lock and is preempted at GetSystemTick by a p16 thread on the same core that spins on the lock through the gate; the spinner must get the lock (before: 276 of 300 stuck) |
+| sched unboost | 60 rounds: a p31 holder boosted to p1 unlocks; the p8 core waiter must run within 3 ms median (before: 21 ms) |
+| sched mw race / time mono / cv far / destroy race / event pulse / link wake / vamm block | findings 4, 5, 6, 8, 11, 13, 9 of `analysis\core\review_os.md` (vamm block needs `SNAP_FAULT_VAMM=0:7 OS_TEST_ONLY=vamm`; destroy race shows the old use-after-free only under `-fsanitize=address`) |
 | stress 10K | mutex 6x10K, Event and LightEvent ping-pong 10K, Semaphore 10K, condvar 10K, RW lock, Barrier 3x1000, Sdk* types, periodic timer |
 
 **Result:** 145 checks, 0 failed, on 7 consecutive runs. One run takes about 4 s on a loaded PC.

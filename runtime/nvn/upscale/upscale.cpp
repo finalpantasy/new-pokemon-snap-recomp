@@ -27,6 +27,7 @@
 #include <cstring>
 
 #include "../nvn_internal.h"
+#include "../nvn_aa.h"   // HostWindowHeight
 #include "../../hle/input_core.h"
 #include "upscale_mv_spv.h"
 #include "upscale_nvn.h"
@@ -432,18 +433,7 @@ void TakeCamera(const uint8_t* p) {
 }  // namespace
 
 // ---- NVN entry points -----------------------------------------------------------------------------------------------
-static int WindowHeightPx() {
-  if (const char* e = getenv("SNAP_WINDOW_H")) if (atoi(e) > 0) return atoi(e);
-  std::string dir;
-  if (const char* c = getenv("SNAP_CONFIG_DIR")) dir = c; else if (const char* a = getenv("APPDATA")) dir = std::string(a) + "\\SnapRecomp";
-  if (!dir.empty()) {
-    if (FILE* f = fopen((dir + "\\window.json").c_str(), "rb")) {
-      char buf[4096]; size_t n = fread(buf, 1, sizeof buf - 1, f); fclose(f); buf[n] = 0;
-      if (const char* p = strstr(buf, "\"height\"")) { p = strchr(p, ':'); if (p && atoi(p + 1) > 0) return atoi(p + 1); }
-    }
-  }
-  return 1080;
-}
+static int WindowHeightPx() { return HostWindowHeight(); }   // nvn_aa.cpp: SNAP_WINDOW_H, window.json, else 720 (one source for AA and the upscaler)
 
 bool UpscaleApplyPolicy(float* sceneScale, float* outScale) {
   if (!snap_upscale::Wanted()) return false;

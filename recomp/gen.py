@@ -291,6 +291,12 @@ class Emitter:
             k = ins.kind
             if k in ('bl', 'blr') and entry + 4 * i in self._pads:   # a call resumes at its landing pad or a setjmp return point
                 return [i + 1] + [j for t in self._pads[entry + 4 * i] for j in idx(t)]
+            if entry + 4 * i in self._pads:   # an inline hook's nested guest call resumes there too (function() hook_pad)
+                return [t for t in of_plain(ins, i)] + [j for t in self._pads[entry + 4 * i] for j in idx(t)]
+            return of_plain(ins, i)
+
+        def of_plain(ins, i):
+            k = ins.kind
             if k in ('op', 'bl', 'blr'):
                 return [i + 1]
             if k == 'b':
@@ -372,6 +378,7 @@ class Emitter:
         all_labels = 'all' in tables.values()
         # exception landing pads and setjmp return points: self._pads {call address: [resume targets]} for the flow analyses
         self._pads, setjmps, pad_of = {}, [], {}
+        hook_pad = {}   # mid-function inline hook: landing pad of the LSDA call site covering it (rt_inline_hook, host/loader.cpp)
         if self.resume and not all_labels:
             for i, ins in enumerate(insns):
                 a = entry + 4 * i
@@ -385,6 +392,9 @@ class Emitter:
                     for a in range(max(s0, entry), min(s0 + n0, end), 4):
                         if insns[(a - entry) // 4].kind in ('bl', 'blr') and a not in setjmps:
                             pad_of[a] = lp
+                    for a in self.inline_hooks:   # nested guest calls of a mid-function hook unwind as from a call at a
+                        if entry < a < end and s0 <= a < s0 + n0:
+                            hook_pad[a] = lp
                 self.stats['pad_call_sites'] += len(pad_of)
                 self.stats['pads'] += len(set(pad_of.values()))
             for i, ins in enumerate(insns):
@@ -393,7 +403,11 @@ class Emitter:
                     t = ([pad_of[a]] if a in pad_of else []) + [x + 4 for x in setjmps if x != a]
                     if t:
                         self._pads[a] = t
-            labels = labels | set(pad_of.values()) | {x + 4 for x in setjmps}
+                if a in self.inline_hooks:
+                    t = [p for p in [hook_pad.get(a)] + [x + 4 for x in setjmps if x != a] if p and p not in self._pads.get(a, [])]
+                    if t:
+                        self._pads[a] = self._pads.get(a, []) + t
+            labels = labels | set(pad_of.values()) | set(hook_pad.values()) | {x + 4 for x in setjmps}
         elif self.resume and entry in self.lsda:
             self.stats['pad_functions_all_labels_skipped'] += 1
         pads = pad_of
@@ -445,7 +459,7 @@ class Emitter:
         else:
             redispatch = f'{MUSTTAIL} rt_dispatch(c);'
             out = [f'void {fname(entry)}(Cpu *c) {{', f'    FN_ENTER({hx(entry)});']
-            if pads:
+            if pads or hook_pad:
                 out.append('    uint64_t sp0;')
             if setjmps:
                 out.append('    uint64_t ' + ', '.join(f'sj_{x:x} = 0' for x in setjmps) + ';')
@@ -474,6 +488,31 @@ class Emitter:
             if inner:
                 return pre, f'if (RESUMING(c)) {{ {inner}return; }} '
             return '', 'if (RESUMING(c)) return; '
+
+        def inline_hook(a):
+            """C of the inline hook before the instruction at a (recomp/snap_gen.py MAIN_INLINE_HOOKS). The Cpu is made
+            current before it (spill) and every local is reloaded after it, so a hook reads and writes any register.
+            rt_inline_hook (host/loader.cpp) runs it with the return address its nested guest calls unwind through: a + 4
+            mid-function (the LSDA call site covering a, as if a were a call), the caller's at the function entry, none
+            (HOST_SENTINEL, an exception aborts) at an entry that is also a branch target. When a nested call ends in an
+            exception or longjmp, the hook returns with c->resuming set and the site resumes like a call does."""
+            h = self.inline_hooks[a]
+            ra = hx(a + 4) if a != entry else '0' if a in labels else 'c->x[30]'
+            pre, chk = '', ''
+            if self.resume:
+                self.stats['hook_resume_checks'] += 1
+                inner = ''
+                if a in hook_pad:
+                    p = hook_pad[a]
+                    pre = 'sp0 = (c)->sp; '
+                    inner += f'if ((c)->pc == {hx(p)} && (c)->sp == sp0) {{ (c)->resuming = 0;{reload} goto L_{p:x}; }} '
+                for x in setjmps:
+                    if x != a:
+                        inner += f'if ((c)->pc == {hx(x + 4)} && (c)->sp == sj_{x:x}) {{ (c)->resuming = 0;{reload} goto L_{x + 4:x}; }} '
+                chk = f'if (RESUMING(c)) {{ {inner}return; }} '
+            self.stats['inline_hook_sites'] += 1
+            return (f'{spill}{pre}{{ void {h}(Cpu *c); void rt_inline_hook(Cpu *c, uint64_t ra, void (*fn)(Cpu *c)); '
+                    f'rt_inline_hook(c, {ra}, {h}); }} {chk}{reload}')
 
         def call(t, a):
             pre, chk = resume_check(a)
@@ -513,6 +552,7 @@ class Emitter:
             return f'{line} {{ {one(i, ins, a)} }}'
 
         body = []   # (instruction index or None for a label, line); a line belongs to the instruction it lifts
+        hook_rows = set()   # body indices of inline hook lines
 
         def emit(i, line):
             body.append((i, line))
@@ -524,7 +564,8 @@ class Emitter:
                 emit(None, f'L_{a:x}:;')
             k = ins.kind
             if a in self.inline_hooks:
-                emit(i, f'    {spill if self.inline_hooks[a].startswith("rt_gm_") else ""}{{ void {self.inline_hooks[a]}(Cpu *c); {self.inline_hooks[a]}(c); }}')   # rt_gm_* hooks (host/mods/gamemods.cpp) read registers: make the Cpu current first
+                hook_rows.add(len(body))
+                emit(i, '    ' + inline_hook(a))
             if a in self.patched:
                 emit(i, patch(i, ins, a))
             elif k == 'op':
@@ -563,12 +604,14 @@ class Emitter:
             else:
                 emit(n, f'    {spill}rt_udf(c, {hx(end)});')
         if local:
-            texts = [''] * (n + 1)
-            for i, line in body:
+            texts, own = [''] * (n + 1), [''] * (n + 1)
+            for r, (i, line) in enumerate(body):
                 if i is not None:
                     texts[i] += line
+                    if r not in hook_rows:   # a hook's reload comes before its instruction, which may still write a local
+                        own[i] += line
             clean = {i for i, ins in enumerate(insns) if entry + 4 * i not in self.patched
-                     and (ins.kind in ('bl', 'blr') or (ins.kind == 'op' and regs.RELOAD in texts[i]))}
+                     and (ins.kind in ('bl', 'blr') or (ins.kind == 'op' and regs.RELOAD in own[i]))}
             rp = regs.plan(texts, succ, clean, self.reg_locals, self.kept)
             if rp.regs:
                 out.append('    ' + rp.decl())

@@ -80,16 +80,25 @@ bool vamm_wait(const char *what, uint64_t size, uint64_t &waited, DWORD err) {  
     const bool transient = err == ERROR_COMMITMENT_LIMIT || err == ERROR_NOT_ENOUGH_MEMORY || err == ERROR_OUTOFMEMORY ||
                            err == ERROR_NO_SYSTEM_RESOURCES || err == ERROR_COMMITMENT_MINIMUM;
     const uint64_t lim = transient ? retry_ms() : 0;
-    if (waited == 0)
+    if (waited == 0) {
+        uint64_t res, com;
+        size_t nreg;
+        {   // review finding 9: the totals are read under g_mm
+            std::lock_guard<std::mutex> lk(g_mm);
+            res = g_reserved_total, com = g_committed_total, nreg = g_regions.size();
+        }
         fprintf(stderr, "[os-mem] %s(%#llx) failed: error %lu (reserved %#llx, committed %#llx, %zu regions)%s\n", what, (unsigned long long)size, err,
-                (unsigned long long)g_reserved_total, (unsigned long long)g_committed_total, g_regions.size(), lim ? ": retrying" : "");
+                (unsigned long long)res, (unsigned long long)com, nreg, lim ? ": retrying" : "");
+    }
     if (waited >= lim) {
         if (lim) fprintf(stderr, "[os-mem] %s(%#llx) still failing after %llu ms: giving up\n", what, (unsigned long long)size, (unsigned long long)waited);
         return false;
     }
     static thread_local uint64_t step = 1;
     if (waited == 0) step = 1;
+    os_io_begin();   // the backoff does not hold a virtual core (finding 9; SNAP_SCHED_LEGACY=hostblock keeps it)
     Sleep((DWORD)step);
+    os_io_end();
     waited += step;
     step = std::min<uint64_t>(step * 2, 100);
     return true;
@@ -270,6 +279,17 @@ uint64_t reserve_once(uint64_t &slot, uint64_t size) {   // under g_mm
 }
 
 }  // namespace
+
+// SNAP_SOAK_LOG (runtime/nvn/nvn_soak.cpp): guest VAMM and memory-heap totals. out = {vamm reserved, vamm committed, region count,
+// heap size, heap block count, heap bytes in blocks}.
+extern "C" void snap_os_mem_stats(uint64_t *out) {
+    std::lock_guard<std::mutex> lk(g_mm);
+    out[0] = g_reserved_total; out[1] = g_committed_total; out[2] = g_regions.size();
+    out[3] = g_heap_size; out[4] = g_heap_blocks.size();
+    uint64_t b = 0;
+    for (auto &kv : g_heap_blocks) b += kv.second;
+    out[5] = b;
+}
 
 namespace osk {
 uint32_t mem_get_info(uint32_t type, uint64_t *out) {

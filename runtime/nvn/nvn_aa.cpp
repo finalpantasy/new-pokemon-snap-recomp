@@ -16,29 +16,22 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <string>
+#include <tuple>
 
 #include "nvn_aa.h"
 #include "nvn_aa_spv.h"
 #include "nvn_internal.h"
+#include "hle/visual_defaults.h"   // the one table of visual defaults
 
 namespace nvn {
 int g_aaMode = AA_FXAA;
 float g_aaSharpen = 0.0f;
-namespace {
-bool g_parsed;
-bool g_log;
-bool g_split;   // SNAP_AA_SPLIT=1: the left half of the frame keeps the game's own picture (same-frame A/B shots)
-
-// first 12 hex digits of the translation cache keys (computed from the game's nushdb data, see AGENTS.md "Anti-aliasing")
-const char* kFxaaKeys[] = {"3df861d79c36" /*TonemappingFXAAPS*/, "874c3a9bc04b" /*TonemappingLutFXAAPS*/, "49a9f4c5b6d7" /*TonemappingLutFXAADistortionPS*/,
-                           "e85954edec1f" /*FXAAOnlyPS*/};
-const char* kPlainKeys[] = {"981bcb0e4161" /*TonemappingPS*/, "5729ba114d4b" /*TonemappingLutPS*/, "067ec8d5c8f9" /*TonemappingLutDistortionPS*/};
-bool In(const char* const* l, size_t n, const char* k) { for (size_t i = 0; i < n; i++) if (!strncmp(l[i], k, 12)) return true; return false; }
-bool IsFxaa(const char* k) { return In(kFxaaKeys, 4, k); }
-bool IsTonemap(const char* k) { return IsFxaa(k) || In(kPlainKeys, 3, k); }
-
-int WindowHeight() {
+// Window client height in pixels: SNAP_WINDOW_H, else window.json "height", else 720 (host/window_opts.cpp's default windowed size).
+// Shared with the upscaler (upscale.cpp used its own copy that fell back to 1080).
+int HostWindowHeight() {
   if (const char* e = getenv("SNAP_WINDOW_H")) if (atoi(e) > 0) return atoi(e);
   std::string dir;
   if (const char* c = getenv("SNAP_CONFIG_DIR")) dir = c; else if (const char* a = getenv("APPDATA")) dir = std::string(a) + "\\SnapRecomp";
@@ -50,6 +43,19 @@ int WindowHeight() {
   }
   return 720;
 }
+namespace {
+bool g_parsed;
+float g_ssaaScale = 0.f;   // the scale AaParseEnv handed to g_scale; reset to 1 if the AA step fails (AaFail)
+bool g_log;
+bool g_split;   // SNAP_AA_SPLIT=1: the left half of the frame keeps the game's own picture (same-frame A/B shots)
+
+// first 12 hex digits of the translation cache keys (computed from the game's nushdb data, see AGENTS.md "Anti-aliasing")
+const char* kFxaaKeys[] = {"3df861d79c36" /*TonemappingFXAAPS*/, "874c3a9bc04b" /*TonemappingLutFXAAPS*/, "49a9f4c5b6d7" /*TonemappingLutFXAADistortionPS*/,
+                           "e85954edec1f" /*FXAAOnlyPS*/};
+const char* kPlainKeys[] = {"981bcb0e4161" /*TonemappingPS*/, "5729ba114d4b" /*TonemappingLutPS*/, "067ec8d5c8f9" /*TonemappingLutDistortionPS*/};
+bool In(const char* const* l, size_t n, const char* k) { for (size_t i = 0; i < n; i++) if (!strncmp(l[i], k, 12)) return true; return false; }
+bool IsFxaa(const char* k) { return In(kFxaaKeys, 4, k); }
+bool IsTonemap(const char* k) { return IsFxaa(k) || In(kPlainKeys, 3, k); }
 
 // ---- Vulkan objects ------------------------------------------------------------------------------------------------------
 struct Pipes { VkPipeline edge = VK_NULL_HANDLE, weights = VK_NULL_HANDLE, blend = VK_NULL_HANDLE, cas = VK_NULL_HANDLE; VkFormat fmt = VK_FORMAT_UNDEFINED; };
@@ -68,7 +74,8 @@ struct G {
   Img area, search; VkBuffer stage = VK_NULL_HANDLE; VkDeviceMemory stageMem = VK_NULL_HANDLE;
   Pipes pipes[4]; int npipes = 0;
   Sized sz;
-  std::map<uint64_t, VkImageView> unormViews;   // sRGB targets: UNORM view of the same image/level/layer
+  std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> unormViews;   // sRGB targets: UNORM view of (image, level, layer); guarded by unormMu
+  std::mutex unormMu;   // AaAfterDraw (replay thread) vs AaForgetTexture (graveyard reaper)
 } g;
 
 // SNAP_AA_DUMP=<dir> SNAP_AA_DUMP_AT=<p1,p2,...> (test aid): at the first tonemap draw at or after each present count, write the scene before the
@@ -224,9 +231,21 @@ VkDescriptorSet MakeSet(VkImageView v0, VkImageView v1, VkImageView v2, VkImageV
 bool Resize(uint32_t w, uint32_t hh, VkFormat fmt) {
   Host* h = g.h;
   if (g.sz.w == w && g.sz.h == hh && g.sz.fmt == fmt && g.sz.c.img) return true;
-  vkDeviceWaitIdle(h->device);
-  FreeImg(h, g.sz.c); FreeImg(h, g.sz.e); FreeImg(h, g.sz.wt); FreeImg(h, g.sz.b);
-  vkResetDescriptorPool(h->device, g.pool, 0);
+  if (g.sz.c.img) {
+    // [nvnfix] review_nvn.md 8: commands recorded earlier in this submit (not on the GPU yet, so vkDeviceWaitIdle never covered them) may
+    // still use the old images and sets. They get a fresh descriptor pool, and the old images and pool go to the graveyard (nvn_life.cpp).
+    LifeCount(LS_AA_RESIZE);
+    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4 * 16}, {VK_DESCRIPTOR_TYPE_SAMPLER, 2 * 16}};   // as in Init
+    VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dp.maxSets = 16; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
+    VkDescriptorPool fresh = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(h->device, &dp, nullptr, &fresh) != VK_SUCCESS) return false;
+    Sized old = g.sz; const VkDescriptorPool oldPool = g.pool;
+    g.pool = fresh;
+    RetireFn([h, old, oldPool]() mutable {
+      FreeImg(h, old.c); FreeImg(h, old.e); FreeImg(h, old.wt); FreeImg(h, old.b);
+      vkDestroyDescriptorPool(h->device, oldPool, nullptr);
+    });
+  }
   g.sz = Sized{};
   g.sz.w = w; g.sz.h = hh; g.sz.fmt = fmt;
   const VkImageUsageFlags rt = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -256,6 +275,24 @@ void FullPass(ReplayCtx& cx, VkImageView target, uint32_t w, uint32_t hh, VkAtta
 }
 }  // namespace
 
+// ssaa2 asks for 2x the window height, then is capped: 2x the window per side is the formula's own ceiling, and on top of that
+//   * scale <= kSsaaMaxScale (3.0 = 5760x3240): a 2160p window used to render at 7680x4320 (4.0), 4x the pixels of 4K for no visible gain
+//   * no render side over 8192 px (the largest 2D image size every desktop GPU guarantees) = scale <= 8192/1920
+// Raise kSsaaMaxScale (or set SNAP_RENDER_SCALE explicitly) to opt into more.
+constexpr float kSsaaMaxScale = 3.0f;
+static float SsaaScale(int windowH) {
+  const float want = 2.0f * (float)windowH / 1080.0f;
+  const float cap = std::min(kSsaaMaxScale, 8192.0f / 1920.0f);
+  const float v = std::clamp(want, 1.0f, cap);
+  if (v < want) fprintf(stderr, "aa: ssaa2 scale capped %.3f -> %.3f (window height %d, max %.2f = %.0fx%.0f)\n", want, v, windowH, cap, 1920 * v, 1080 * v);
+  return v;
+}
+// Called when the AA step gives up (setup, pipeline or scratch-image failure): drop the supersampling scale it raised, which has no benefit
+// without the AA step. Only new textures see it (existing targets keep their size); an explicit SNAP_RENDER_SCALE is left alone.
+static void AaFail() {
+  if (g_ssaaScale > 0.f && g_scale.scale == g_ssaaScale) { fprintf(stderr, "aa: render scale %.3f reset to 1 (AA disabled)\n", g_ssaaScale); g_scale.scale = 1.0f; g_ssaaScale = 0.f; }
+}
+
 float AaParseEnv() {
   if (g_parsed) return 0.f;
   g_parsed = true;
@@ -263,10 +300,12 @@ float AaParseEnv() {
   g_log = getenv("SNAP_AA_LOG") && getenv("SNAP_AA_LOG")[0] != '0';
   float scale = 0.f;
   {
-    // Default (SNAP_AA unset): 2x supersampling + SMAA + light CAS. SNAP_AA=off is the original FXAA path. An explicit SNAP_RENDER_SCALE wins over the default ssaa2.
-    const char* e = getenv("SNAP_AA");
-    std::string s = e ? e : (getenv("SNAP_RENDER_SCALE") ? "smaa" : "ssaa2+smaa");
-    if (!e) g_aaSharpen = 0.3f;
+    // Default (SNAP_AA unset) comes from hle/visual_defaults.h: the game's own FXAA ("original") or ssaa2+smaa+CAS ("enhanced", SNAP_PROFILE).
+    // SNAP_AA=off is the original FXAA path. An explicit SNAP_RENDER_SCALE wins over the enhanced default's ssaa2.
+    const char* e = getenv("SNAP_AA"); if (e && !*e) e = nullptr;
+    std::string s = e ? e : snapdef::get("SNAP_AA");
+    if (!e && getenv("SNAP_RENDER_SCALE") && s.find("ssaa2") != std::string::npos) s = "smaa";
+    g_aaSharpen = std::clamp((float)atof(snapdef::get("SNAP_SHARPEN")), 0.0f, 1.0f);
     for (auto& ch : s) { ch = (char)tolower((unsigned char)ch); if (ch == '+') ch = ','; }
     size_t pos = 0;
     while (pos <= s.size()) {
@@ -275,12 +314,12 @@ float AaParseEnv() {
       if (t == "smaa") g_aaMode = AA_SMAA;
       else if (t == "none") g_aaMode = AA_OFF;   // the game's FXAA removed, nothing in its place
       else if (t == "off" || t == "original" || t == "fxaa" || t.empty()) g_aaMode = AA_FXAA;   // the game's own FXAA, untouched
-      else if (t == "ssaa2") scale = std::clamp(2.0f * (float)WindowHeight() / 1080.0f, 1.0f, 8.0f);
+      else if (t == "ssaa2") scale = SsaaScale(HostWindowHeight());
       else fprintf(stderr, "aa: unknown SNAP_AA token '%s' (fxaa, off, smaa, ssaa2)\n", t.c_str());
     }
   }
-  if (const char* e = getenv("SNAP_SHARPEN")) g_aaSharpen = std::clamp((float)atof(e), 0.0f, 1.0f);
   fprintf(stderr, "aa: mode %s, sharpen %.2f, ssaa render scale %.3f\n", g_aaMode == AA_SMAA ? "smaa" : g_aaMode == AA_OFF ? "off" : "fxaa", g_aaSharpen, scale);
+  g_ssaaScale = scale;
   return scale;
 }
 
@@ -300,6 +339,17 @@ void AaPatchFragment(std::vector<uint32_t>& w, const char* key) {
   fprintf(stderr, "aa: FXAA edge test not found in %.12s, left unchanged\n", key);
 }
 
+// DestroyTexture runs from the graveyard (nvn_life.cpp) only after the GPU has finished with the texture, so the views can go now.
+// Without this the cache kept views of destroyed images, and a recycled VkImage handle could hand back a stale view.
+void AaForgetTexture(const TextureImpl* t) {
+  if (!t || !t->image || !g.h || !g.h->device) return;
+  std::lock_guard<std::mutex> lk(g.unormMu);
+  for (auto it = g.unormViews.lower_bound(std::make_tuple(t->image, 0u, 0u)); it != g.unormViews.end() && std::get<0>(it->first) == t->image;) {
+    vkDestroyImageView(g.h->device, it->second, nullptr);
+    it = g.unormViews.erase(it);
+  }
+}
+
 void AaAfterDraw(ReplayCtx& cx, const char* key) {
   if (g_aaMode != AA_SMAA && g_aaSharpen <= 0.0f) return;
   if (g.failed || !IsTonemap(key)) return;
@@ -311,7 +361,7 @@ void AaAfterDraw(ReplayCtx& cx, const char* key) {
   const VkFormat fmt = Unorm(t->fi->vk);
   if (fmt == VK_FORMAT_UNDEFINED) { static bool w; if (!w) { w = true; fprintf(stderr, "aa: tonemap target format %d not supported, AA step skipped\n", (int)t->fi->vk); } return; }
   Host* h = cx.h;
-  if (!g.ready) { if (!Setup(h)) { g.failed = true; fprintf(stderr, "aa: setup failed, disabled\n"); return; } g.ready = true; }
+  if (!g.ready) { if (!Setup(h)) { g.failed = true; fprintf(stderr, "aa: setup failed, disabled\n"); AaFail(); return; } g.ready = true; }
   const bool smaa = g_aaMode == AA_SMAA, cas = g_aaSharpen > 0.0f;
   EndRendering(cx);
   SubRange rr;
@@ -320,17 +370,18 @@ void AaAfterDraw(ReplayCtx& cx, const char* key) {
   if (rr.yn != 1 || w < 64 || hh < 64) return;
   if (g_log) { static int n; if (n++ < 12) fprintf(stderr, "aa: p%d key %.12s target %ux%u fmt %d level %u layer %u fxaa=%d\n", g_presentCount, key, w, hh, (int)t->fi->vk, rr.lb, rr.yb, (int)IsFxaa(key)); }
   Pipes* pp = GetPipes(fmt);
-  if (!pp) { g.failed = true; fprintf(stderr, "aa: pipeline creation failed (format %d), disabled\n", (int)fmt); return; }
-  if (!Resize(w, hh, fmt)) { g.failed = true; fprintf(stderr, "aa: scratch image or descriptor setup failed (%ux%u), disabled\n", w, hh); return; }
+  if (!pp) { g.failed = true; fprintf(stderr, "aa: pipeline creation failed (format %d), disabled\n", (int)fmt); AaFail(); return; }
+  if (!Resize(w, hh, fmt)) { g.failed = true; fprintf(stderr, "aa: scratch image or descriptor setup failed (%ux%u), disabled\n", w, hh); AaFail(); return; }
   // write view: a UNORM view when the target is sRGB, so SMAA and CAS read and write the stored (gamma) values unchanged
   if (t->fi->vk != fmt) {
-    const uint64_t k = ((uint64_t)(uintptr_t)t->image << 8) ^ ((uint64_t)rr.lb << 4) ^ rr.yb;
+    const auto k = std::make_tuple(t->image, (uint32_t)rr.lb, (uint32_t)rr.yb);
+    std::lock_guard<std::mutex> ulk(g.unormMu);
     auto it = g.unormViews.find(k);
     if (it == g.unormViews.end()) {
       VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
       vc.image = t->image; vc.viewType = VK_IMAGE_VIEW_TYPE_2D; vc.format = fmt; vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, rr.lb, 1, rr.yb, 1};
       VkImageView v = VK_NULL_HANDLE;
-      if (vkCreateImageView(h->device, &vc, nullptr, &v) != VK_SUCCESS) { g.failed = true; return; }
+      if (vkCreateImageView(h->device, &vc, nullptr, &v) != VK_SUCCESS) { g.failed = true; AaFail(); return; }
       it = g.unormViews.emplace(k, v).first;
     }
     rtv = it->second;

@@ -10,6 +10,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -172,8 +173,9 @@ std::unordered_map<const TextureImpl*, std::shared_ptr<Prep>> g_prepOf;
 std::deque<std::pair<const TextureImpl*, uint64_t>> g_prepOrder;   // ready order for eviction (texture, seq)
 uint64_t g_prepBytes = 0, g_prepSeq = 0;
 std::vector<const Prep*> g_prepRunning;   // jobs reading guest memory right now (TexPrefetchPoolGone waits for them)
+std::unordered_set<const TextureImpl*> g_prepDropped;   // [perf] evicted before their upload (pref_miss_drop)
 uint64_t PrepBudget() {
-  static const uint64_t b = [] { const char* e = getenv("SNAP_UPLOAD_PREFETCH_MB"); long v = e && *e ? strtol(e, nullptr, 10) : 384; return (uint64_t)std::clamp(v, 0L, 8192L) << 20; }();   // MB, clamped (negative wrapped)
+  static const uint64_t b = [] { const char* e = getenv("SNAP_UPLOAD_PREFETCH_MB"); long v = e && *e ? strtol(e, nullptr, 10) : 1536; return (uint64_t)std::clamp(v, 0L, 8192L) << 20; }();   // MB, clamped (negative wrapped); pass 6 default 1536 (384 dropped all 788 missed uploads)
   return b;
 }
 // Total Vulkan-side bytes and per-(layer, level) offsets, exactly as UploadStaticTexture computes them.
@@ -245,13 +247,15 @@ void PrepEvictLocked() {
     if (it->second->state.load() == 2) g_prepBytes -= std::min<uint64_t>(g_prepBytes, it->second->data.size());
     it->second->cancel = true;
     g_prepOf.erase(it);
+    if (g_prepDropped.size() > 65536) g_prepDropped.clear();   // diagnostics only: keep it bounded
+    g_prepDropped.insert(t);
   }
 }
 // Removes the entry of `t`; waits while its job runs. Returns it only when its data is ready.
-std::shared_ptr<Prep> PrepTake(const TextureImpl* t, int* why) {   // why: 1 none queued, 2 job not usable
+std::shared_ptr<Prep> PrepTake(const TextureImpl* t, int* why) {   // why: 1 none queued, 2 job not usable, 3 not started, 4 dropped
   std::unique_lock<std::mutex> lk(g_prepMu);
   auto it = g_prepOf.find(t);
-  if (it == g_prepOf.end()) { *why = 1; return nullptr; }
+  if (it == g_prepOf.end()) { *why = g_prepDropped.erase(t) ? 4 : 1; return nullptr; }
   std::shared_ptr<Prep> pr = it->second;
   g_prepOf.erase(it);
   if (pr->state.load() == 0 && !PrepHelpOn()) { pr->cancel = true; pr->state = 3; *why = 3; return nullptr; }   // not started: synchronous path
@@ -287,8 +291,8 @@ void TexPrefetch(TextureImpl* t) {
   const TextureBuilder& b = t->b;
   const FormatInfo* fi = t->fi;
   if (fi->astcW || fi->aspect != VK_IMAGE_ASPECT_COLOR_BIT || b.samples > 1 || (b.flags & TF_LINEAR) || b.width <= 0 || b.height <= 0) return;
-  if (b.target != TT_2D && b.target != TT_2D_ARRAY && b.target != TT_CUBEMAP && b.target != TT_CUBEMAP_ARRAY && b.target != TT_3D) return;
-  if (TextureStorageSize(b) > (48ull << 20)) return;   // render-target sized: not worth holding
+  if (b.target != TT_2D && b.target != TT_2D_ARRAY && b.target != TT_CUBEMAP && b.target != TT_CUBEMAP_ARRAY && b.target != TT_3D) { snap_perf::count(snap_perf::V_PREF_SKIP_KIND); return; }
+  if (TextureStorageSize(b) > (48ull << 20)) { snap_perf::count(snap_perf::V_PREF_SKIP_KIND); return; }   // render-target sized: not worth holding
   const uint8_t* src = static_cast<const uint8_t*>(b.packaged);
   const void* poolKey = nullptr;
   if (b.pool) {
@@ -297,7 +301,7 @@ void TexPrefetch(TextureImpl* t) {
       if (!src && !(b.flags & (TF_COMPRESSIBLE | TF_DISPLAY | TF_LINEAR_RENDER_TARGET)) && p->storage) src = static_cast<const uint8_t*>(p->storage) + b.poolOffset;
     }
   }
-  if (!src) return;
+  if (!src) { snap_perf::count(snap_perf::V_PREF_SKIP_NOSRC); return; }
   static std::once_flag once;
   std::call_once(once, [] {
     const unsigned n = std::max(1u, std::min(4u, std::thread::hardware_concurrency() / 8));
@@ -309,7 +313,8 @@ void TexPrefetch(TextureImpl* t) {
   {
     std::lock_guard<std::mutex> lk(g_prepMu);
     PrepEvictLocked();
-    if (g_prepBytes >= PrepBudget()) return;
+    if (g_prepBytes >= PrepBudget()) { snap_perf::count(snap_perf::V_PREF_SKIP_BUDGET); return; }
+    g_prepDropped.erase(t);
     pr->seq = ++g_prepSeq;
     auto old = g_prepOf.find(t);
     if (old != g_prepOf.end()) {
@@ -447,7 +452,7 @@ void UploadStaticTexture(ReplayCtx& cx, TextureImpl* t) {
       snap_perf::count(snap_perf::V_PREF_MISS_HASH);
     }
   } else if (!astc && PrepBudget() && !(b.flags & TF_LINEAR) && b.samples <= 1) {
-    snap_perf::count(prepWhy == 1 ? snap_perf::V_PREF_MISS_NONE : prepWhy == 3 ? snap_perf::V_PREF_MISS_LATE : snap_perf::V_PREF_MISS_FAIL);
+    snap_perf::count(prepWhy == 1 ? snap_perf::V_PREF_MISS_NONE : prepWhy == 4 ? snap_perf::V_PREF_MISS_DROP : prepWhy == 3 ? snap_perf::V_PREF_MISS_LATE : snap_perf::V_PREF_MISS_FAIL);
   }
   if (astc && !cx.h->cacheDir.empty()) {
     uint64_t h1 = 0xcbf29ce484222325ull, h2 = 0x1234567ull;

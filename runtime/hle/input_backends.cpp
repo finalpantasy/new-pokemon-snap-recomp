@@ -222,7 +222,11 @@ class Win32Backend final : public Backend {
           log("pad: xinput slot %u %s", (unsigned)i, ok ? "connected" : "disconnected");
         }
         if (!ok) continue;
-        if (pad_index_ == 0 || !xslot_[pad_index_]) pad_index_ = i;
+        if (!xslot_[pad_index_] || pad_index_ >= 4) {   // the rumble pad is gone: move to the first connected slot (never away from a live one)
+          if (set_ && rumbling_) { XVibration z{0, 0}; set_(pad_index_ < 4 ? pad_index_ : 0, &z); }
+          rumbling_ = false;
+          pad_index_ = i;
+        }
         RawInput r;
         r.pad_connected = true;
         WORD b = s.buttons;
@@ -238,6 +242,12 @@ class Win32Backend final : public Backend {
       }
     }
     if (!out.focused) { out.pad.reset(); out.lx = out.ly = out.rx = out.ry = out.lt = out.rt = 0; }
+    // XInput vibration has no timeout of its own: stop it when the window loses focus, or when the game stopped refreshing it (hang, pause).
+    if (rumbling_ && set_ && (!out.focused || GetTickCount64() - rumble_tick_ > kRumbleStaleMs)) {
+      XVibration z{0, 0};
+      set_(pad_index_, &z);
+      rumbling_ = false;
+    }
     if (out.focused) {
       for (int k = 1; k < kKeyCount; ++k) {
         int vk = vk_for_key(k);
@@ -293,6 +303,7 @@ class Win32Backend final : public Backend {
     if (rumble_log_enabled()) hle::log("rumble: XInput pad %d left=%u right=%u", (int)pad_index_, (unsigned)v.left, (unsigned)v.right);
     set_(pad_index_, &v);
     rumbling_ = v.left || v.right;
+    rumble_tick_ = GetTickCount64();
   }
 
  private:
@@ -305,6 +316,8 @@ class Win32Backend final : public Backend {
   DWORD pad_index_ = 0;
   bool xslot_[4] = {false, false, false, false};
   bool rumbling_ = false, background_ = false, have_last_ = false;
+  ULONGLONG rumble_tick_ = 0;
+  static constexpr ULONGLONG kRumbleStaleMs = 2000;   // the game refreshes its values every frame
   bool lock_ = false, recenter_ = false, clipped_ = false, was_recenter_ = false;
   RECT clip_{};
 #ifdef HLE_WITH_SDL3

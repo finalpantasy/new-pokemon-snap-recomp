@@ -84,6 +84,9 @@ class Fs {
   // Makes every change since the last commit durable and visible to the next mount, atomically: the new state is
   // built as a complete generation directory, then a one-line pointer file is replaced by write-temp + rename.
   uint32_t commit(const std::string& mount);
+  // Exit path: waits up to `ms` for a commit in progress, then keeps the table lock for good so no new commit can start. True when the
+  // lock was taken (a commit that was running has finished); false on timeout. Never returns the lock: call only right before exiting.
+  bool drain_for_exit(int ms);
   uint32_t get_free_space(int64_t* out, const std::string& mount);
   std::vector<SaveGeneration> list_generations(const std::string& mount);
   // Makes generation `gen` the current one by committing a copy of it as a new generation.

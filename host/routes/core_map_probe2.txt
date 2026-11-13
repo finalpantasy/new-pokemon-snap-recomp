@@ -1,0 +1,15 @@
+# fixture: unlock_all
+# Map probe 2 (sweep2): from Florio, R x5, U x2 (Snowfields), then Left, Left, Left, Down, one press per 180 presents.
+wait ui=title timeout=150
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=200
+repeat @f120 @f1000 180 6 Right
+@f1200 6 Up
+@f1380 6 Up
+@f1560 6 Left
+@f1740 6 Left
+@f1920 6 Left
+@f2100 6 Down
+@f2280 6 Down
+@f2460 6 Left
+end @f2700

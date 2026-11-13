@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "loader.h"
+#include "hle/visual_defaults.h"   // default font scale (SNAP_PROFILE)
 
 using namespace loader;
 
@@ -283,10 +284,11 @@ BOOL CALLBACK font_enum_win(HWND h, LPARAM lp) {
 }
 
 // Decides g_font_k once, at the first atlas creation (the window exists by then). SNAP_UI_FONT_SCALE: 1 or off = off, 2..4 = that scale,
-// unset / auto / default = 2 when the output is 1440 lines or taller (the F1 menu stores "default" as unset).
+// auto / default = 2 when the output is 1440 lines or taller. Unset = the shared defaults table (hle/visual_defaults.h: off in the
+// original profile, auto in the enhanced one); the F1 menu stores "default" as unset.
 void decide_font_scale() {
     g_font_decided = true;
-    const char* f = getenv("SNAP_UI_FONT_SCALE");
+    const char* f = snapdef::get("SNAP_UI_FONT_SCALE");
     if (f && *f && strcmp(f, "auto") && strcmp(f, "default")) {
         int k = !strcmp(f, "off") ? 1 : atoi(f);
         if (k >= 2 && k <= 4) g_font_k = k;

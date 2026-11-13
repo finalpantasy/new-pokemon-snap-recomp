@@ -61,7 +61,11 @@ namespace ShaderHarness
             // capabilities that the layer's device does not enable. Fragment shader interlock is the one that the
             // translator declares by default and that no consumer GPU path here provides.
             public bool QueryHostSupportsFragmentShaderInterlock() => false;
+            // Translator diagnostics ("instruction X is not implemented", "Invalid ...") are dropped by default. SNAP_XLATE_LOG=<file> in
+            // --nvn-batch appends them as <program>, a tab and the message (audit: docs/nvn-vulkan-design.md, analysis/core/shader_audit.md).
+            public void Log(string message) { if (LogW != null) lock (LogW) LogW.WriteLine(LogName + "\t" + message.Replace('\n', ' ')); }
         }
+        static StreamWriter LogW; static string LogName = "";
 
         static string J(string s) => "\"" + s + "\"";
 
@@ -126,7 +130,7 @@ namespace ShaderHarness
 
         // --nvn-batch list.tsv binsDir outDir salt: every program of the list (corpus from scripts/xlate_corpus.py) is translated in
         // this process and written as <key>.spv/.json, key = SHA-256(data section || salt|stage|codeOff), the NVN layer's cache key
-        // (runtime/nvn/nvn_shader.cpp Sha256Hex). Failures are listed in outDirailures.tsv and do not stop the run.
+        // (runtime/nvn/nvn_shader.cpp Sha256Hex). Failures are listed in outDir\failures.tsv and do not stop the run.
         // Optional 5th/6th arguments first and count translate a slice of the list (chunks under 10 minutes).
         static int NvnBatch(string[] a)
         {
@@ -136,11 +140,14 @@ namespace ShaderHarness
             Directory.CreateDirectory(outDir);
             using var fail = new StreamWriter(Path.Combine(outDir, "failures" + first + ".tsv"));
             int ok = 0, bad = 0;
+            string logPath = Environment.GetEnvironmentVariable("SNAP_XLATE_LOG");
+            if (!string.IsNullOrEmpty(logPath)) LogW = new StreamWriter(logPath, true);
             for (int i = first; i < Math.Min(lines.Length, first + count); i++)
             {
                 string[] f = lines[i].Split('	');
                 byte[] data = File.ReadAllBytes(Path.Combine(binsDir, f[0] + ".bin"));
                 int stage = int.Parse(f[1]), constOff = int.Parse(f[2]), codeOff = int.Parse(f[3]);
+                LogName = f[4];
                 byte[] extra = System.Text.Encoding.ASCII.GetBytes(salt + "|" + stage + "|" + codeOff);
                 var sha = System.Security.Cryptography.SHA256.Create();
                 sha.TransformBlock(data, 0, data.Length, null, 0);
@@ -149,6 +156,7 @@ namespace ShaderHarness
                 try { NvnTranslate(data, Path.Combine(outDir, key + ".spv"), Path.Combine(outDir, key + ".json"), stage, constOff, codeOff); ok++; }
                 catch (Exception e) { bad++; fail.WriteLine(f[0] + "\t" + key + "\t" + f[4] + "\t" + e.GetType().Name + ": " + e.Message.Replace('\n', ' ')); }
             }
+            LogW?.Flush();
             Console.WriteLine("ok " + ok + " failed " + bad);
             return bad == 0 ? 0 : 1;
         }

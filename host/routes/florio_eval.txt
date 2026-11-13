@@ -1,32 +1,55 @@
 # fixture: post_tutorial
-# Florio photo run that picks photos at photo select and gets the professor's evaluation (photo evaluation path, 2026-11-12).
-# Same course part as florio_photos.txt. From f12000 a 1200-present cycle: Right (next subject folder), A (open), A (select the shown photo),
-# B (back), twice; then Plus (Evaluate Photos), Up (Yes), A, A taps through the evaluation, and B at the cycle end, which closes a pause
-# menu or help page when the cycle runs while the course is still on (photo select began anywhere from f7152 to f18737 in eight runs).
-# 2026-11-13 fix: f12000 to f20000 only A then B every 400 presents (advances the professor's lines; in photo select it opens a folder
-# and closes it again, never selecting). Before, the cycle's own A press often opened photo select right before Plus, so Plus with
-# nothing picked asked "Finish without showing photos?" and Up+A answered Yes (3 of 4 runs). Repeated picks are no fix either: a second
-# A A in an already picked folder removes the check mark. The pick cycle starts at f20000, after photo select opened in every run seen.
-# Run: powershell -File host\run_boot.ps1 -Route florio_eval -Timeout 590 -ShotAt 280 -ShotEvery 4 -ShotMax 60
-repeat @f300 @f12000 120 8 A
-repeat @f6000 @f12000 24 4 A
-repeat @f6000 @f11000 600 200 ZL
-repeat @f6000 @f11000 400 60 rx=0.25
-repeat @f6200 @f11000 400 60 rx=-0.25
-repeat @f12000 @f20000 400 10 A
-repeat @f12200 @f20000 400 10 B
-repeat @f20000 @f60000 1200 10 Right
-repeat @f20100 @f60000 1200 10 A
-repeat @f20200 @f60000 1200 10 A
-repeat @f20300 @f60000 1200 10 B
-repeat @f20400 @f60000 1200 10 Right
-repeat @f20500 @f60000 1200 10 A
-repeat @f20600 @f60000 1200 10 A
-repeat @f20700 @f60000 1200 10 B
-repeat @f20800 @f60000 1200 10 Plus
-repeat @f20880 @f60000 1200 10 Up
-repeat @f20960 @f60000 1200 10 A
-repeat @f21020 @f60000 1200 8 A
-repeat @f21080 @f60000 1200 8 A
-repeat @f21140 @f60000 1200 8 A
-repeat @f21180 @f60000 1200 8 B
+# Florio photo run to the professor's score, driven by game state ("wait" lines, host\README.md "Waiting on game state";
+# 2026-11-13, replaces the present-timed version that missed photo select in 3 of 4 runs).
+# Run: powershell -File host\run_boot.ps1 -Route florio_eval -Timeout 590 -ShotAt 280 -ShotEvery 6 -ShotMax 60
+# Pass: boot_stderr.log has "wait 'ui=evaluation:Score' met" (a photo was scored) and "end of route reached" (exit code 0).
+# 1) Slow A taps: title, lab hub "Research", Lental Map (Florio is the only open course), course start.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+# 2) Riding: fast shutter taps with a slow right-stick yaw wobble and a ZL zoom now and then, until the 72 shots are used up
+#    (the ride itself goes on to the end of the rail, progress about 116).
+repeat @f0 @f30000 24 4 A
+repeat @f0 @f6000 600 200 ZL
+repeat @f0 @f30000 400 60 rx=0.25
+repeat @f200 @f30000 400 60 rx=-0.25
+wait film<=0 timeout=300
+# 3) Rest of the ride, course end and the professor's lines: slow A taps until photo select shows its subject folders.
+repeat @f120 @f60000 90 8 A
+wait ui=photo_submit:FolderSelect timeout=400
+# 4) Photo select. Folder 1 (Wurmple) is refused as not clearly visible, so: Right to the next folder, A opens it, A picks the
+#    shown photo (the screen goes back to the folders by itself); then the same for the next folder.
+@f150 8 Right
+@f230 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+# A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
+# open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders
+# (run 1-20261113_160836 timed out on a refused Pichu photo).
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Right
+@f140 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+# A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
+# open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders
+# (run 1-20261113_160836 timed out on a refused Pichu photo).
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+# 5) Plus (Evaluate Photos), Up (Yes in "Is this all you want to show?"; the default is No), A.
+@f60 8 Plus
+@f140 8 Up
+@f220 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation (states Start, then per photo EvaluationNew, Comment, Score, Announce, PhotoRegister; End): A taps through it.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

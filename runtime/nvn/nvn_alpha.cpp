@@ -288,6 +288,134 @@ bool PatchFragmentOutputs(const std::vector<uint32_t>& in, int nColor, bool dual
   return true;
 }
 
+// A fragment color output the translator declares as float, drawn into an integer attachment (the BC1 thumbnail encoder writes raw
+// block bits into an RGBA16_UINT stand-in, `RedirectCompressedTargets`), is undefined by the spec (validation: "numeric type of FLOAT
+// but ... UINT"; other GPUs may convert the value instead of keeping the bits). kinds[L] = 1 uint / 2 sint for attachment L, else 0.
+// Each such output becomes a Private float variable (all writes go there) plus a new Output variable of the integer type at the
+// same Location; before every OpReturn of the entry function the Private value is loaded, OpBitcast to the integer type and stored.
+// The bits written are exactly what the float output carried before. Returns false when the module needs no change.
+bool PatchIntOutputs(const std::vector<uint32_t>& in, const int kinds[8], std::vector<uint32_t>& out) {
+  constexpr uint32_t OpStoreC = 62, OpBitcastC = 124;
+  if (in.size() < 6 || in[0] != 0x07230203) return false;
+  const bool legacyIface = in[1] < 0x10400;
+  std::unordered_map<uint32_t, uint32_t> loc, varType, varSc, ptrTo, ptrSc;
+  std::unordered_set<uint32_t> hasIndex, f32;
+  std::map<std::pair<uint32_t, uint32_t>, uint32_t> intT;                 // (width, signed) -> id
+  std::map<std::pair<uint32_t, uint32_t>, uint32_t> vecT;                 // (component type, count) -> id
+  std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> vecOf;      // vec id -> (component, count)
+  std::map<std::pair<uint32_t, uint32_t>, uint32_t> ptrT;                 // (storage class, pointee) -> id
+  std::vector<uint32_t> outVars;
+  uint32_t entryFn = 0, firstFunc = 0, firstType = 0;
+  size_t firstFuncAt = 0, firstTypeAt = 0;
+  for (size_t i = 5; i < in.size();) {
+    const uint32_t wc = in[i] >> 16, op = in[i] & 0xFFFF;
+    if (!wc || i + wc > in.size()) return false;
+    const uint32_t* w = &in[i];
+    if (op == OpDecorate && wc >= 4 && w[2] == kDecLocation) loc[w[1]] = w[3];
+    if (op == OpDecorate && wc >= 4 && w[2] == kDecIndex) hasIndex.insert(w[1]);
+    if (op == OpEntryPoint && !entryFn) entryFn = w[2];
+    if (op >= OpTypeVoid && op <= 39 && !firstTypeAt) firstTypeAt = i;
+    if (op == OpTypeInt && wc >= 4) intT[{w[2], w[3]}] = w[1];
+    if (op == OpTypeFloat && wc >= 3 && w[2] == 32) f32.insert(w[1]);
+    if (op == OpTypeVector && wc >= 4) { vecT[{w[2], w[3]}] = w[1]; vecOf[w[1]] = {w[2], w[3]}; }
+    if (op == OpTypePointer && wc >= 4) { ptrT[{w[2], w[3]}] = w[1]; ptrTo[w[1]] = w[3]; ptrSc[w[1]] = w[2]; }
+    if (op == OpVariable) { varType[w[2]] = w[1]; varSc[w[2]] = w[3]; if (w[3] == kScOutput) outVars.push_back(w[2]); }
+    if (op == OpFunction && !firstFuncAt) firstFuncAt = i;
+    i += wc;
+  }
+  (void)firstFunc; (void)firstType;
+  if (!entryFn || !firstFuncAt || !firstTypeAt) return false;
+  struct T { uint32_t var, nv, ptrOld, pointee, comp, count, ity, ivec, optr; int kind; };
+  std::vector<T> tg;
+  std::set<uint32_t> pinned;
+  uint32_t next = in[3];
+  std::vector<uint32_t> newTypes;   // declarations placed before the first function
+  auto pushType = [&](uint32_t op, std::initializer_list<uint32_t> w) { Emit(newTypes, op, w); };
+  for (uint32_t v : outVars) {
+    if (!loc.count(v) || hasIndex.count(v) || loc[v] >= 8 || kinds[loc[v]] == 0) continue;
+    T t{}; t.var = v; t.kind = kinds[loc[v]]; t.ptrOld = varType[v]; t.pointee = ptrTo[t.ptrOld];
+    uint32_t comp = t.pointee, count = 1;
+    if (vecOf.count(t.pointee)) { comp = vecOf[t.pointee].first; count = vecOf[t.pointee].second; }
+    if (!f32.count(comp)) continue;   // only float32 outputs
+    t.comp = comp; t.count = count;
+    const uint32_t sg = t.kind == 2 ? 1 : 0;
+    if (!intT.count({32, sg})) { intT[{32, sg}] = next++; pushType(OpTypeInt, {intT[{32, sg}], 32, sg}); }
+    t.ity = intT[{32, sg}];
+    t.ivec = t.ity;
+    if (count > 1) {
+      if (!vecT.count({t.ity, count})) { vecT[{t.ity, count}] = next++; pushType(OpTypeVector, {vecT[{t.ity, count}], t.ity, count}); }
+      t.ivec = vecT[{t.ity, count}];
+    }
+    if (!ptrT.count({kScOutput, t.ivec})) { ptrT[{kScOutput, t.ivec}] = next++; pushType(OpTypePointer, {ptrT[{kScOutput, t.ivec}], kScOutput, t.ivec}); }
+    t.optr = ptrT[{kScOutput, t.ivec}];
+    t.nv = next++;
+    tg.push_back(t);
+  }
+  if (tg.empty()) return false;
+  std::set<uint32_t> chain, needPtr;
+  std::unordered_map<uint32_t, uint32_t> byVar;
+  for (size_t k = 0; k < tg.size(); k++) { chain.insert(tg[k].var); needPtr.insert(tg[k].ptrOld); byVar[tg[k].var] = (uint32_t)k; }
+  for (size_t i = 5; i < in.size();) {
+    const uint32_t wc = in[i] >> 16, op = in[i] & 0xFFFF;
+    if ((op == OpAccessChain || op == OpInBoundsAccessChain) && wc >= 4 && chain.count(in[i + 3])) { chain.insert(in[i + 2]); needPtr.insert(in[i + 1]); }
+    i += wc;
+  }
+  std::unordered_map<uint32_t, uint32_t> priv;
+  for (uint32_t t : needPtr) priv[t] = next++;
+  std::set<uint32_t> oldVars; for (auto& t : tg) oldVars.insert(t.var);
+  out.assign(in.begin(), in.begin() + 5);
+  uint32_t curFn = 0;
+  for (size_t i = 5; i < in.size();) {
+    const uint32_t wc = in[i] >> 16, op = in[i] & 0xFFFF;
+    const uint32_t* w = &in[i];
+    if (i == firstTypeAt) for (auto& t : tg) { Emit(out, OpDecorate, {t.nv, kDecLocation, loc[t.var]}); }
+    if (i == firstFuncAt) {
+      out.insert(out.end(), newTypes.begin(), newTypes.end());
+      for (auto& t : tg) Emit(out, OpVariable, {t.optr, t.nv, kScOutput});
+    }
+    if (op == OpEntryPoint) {
+      size_t k = 3;
+      while (k < wc) {
+        const bool hasNul = ((w[k] & 0xFF000000u) == 0) || ((w[k] & 0x00FF0000u) == 0) || ((w[k] & 0x0000FF00u) == 0) || ((w[k] & 0xFFu) == 0);
+        k++;
+        if (hasNul) break;
+      }
+      std::vector<uint32_t> ins(w, w + std::min<size_t>(k, wc));
+      for (size_t j = k; j < wc; j++) if (!(legacyIface && oldVars.count(w[j]))) ins.push_back(w[j]);
+      for (auto& t : tg) ins.push_back(t.nv);
+      ins[0] = ((uint32_t)ins.size() << 16) | OpEntryPoint;
+      out.insert(out.end(), ins.begin(), ins.end());
+    } else if (op == OpDecorate && wc >= 3 && oldVars.count(w[1]) && (w[2] == kDecLocation || w[2] == kDecComponent)) {
+      // dropped: the Private variable carries no interface decoration
+    } else if (op == OpTypePointer && priv.count(w[1])) {
+      out.insert(out.end(), w, w + wc);
+      Emit(out, OpTypePointer, {priv[w[1]], kScPrivate, w[3]});
+    } else if (op == OpVariable && oldVars.count(w[2])) {
+      std::vector<uint32_t> v(w, w + wc);
+      v[1] = priv[v[1]]; v[3] = kScPrivate;
+      out.insert(out.end(), v.begin(), v.end());
+    } else if ((op == OpAccessChain || op == OpInBoundsAccessChain) && wc >= 4 && chain.count(w[3])) {
+      std::vector<uint32_t> v(w, w + wc);
+      v[1] = priv[v[1]];
+      out.insert(out.end(), v.begin(), v.end());
+    } else if (op == OpReturn && curFn == entryFn) {
+      for (auto& t : tg) {
+        const uint32_t l = next++, b = next++;
+        Emit(out, OpLoad, {t.pointee, l, t.var});
+        Emit(out, OpBitcastC, {t.ivec, b, l});
+        Emit(out, OpStoreC, {t.nv, b});
+      }
+      out.insert(out.end(), w, w + wc);
+    } else {
+      if (op == OpFunction) curFn = w[2];
+      out.insert(out.end(), w, w + wc);
+    }
+    i += wc;
+  }
+  out[3] = next;
+  return true;
+}
+
 // The translator cannot know a compute shader's workgroup size (it lives in the NVN control section), so the module is
 // emitted with LocalSize 1 1 1; the shader indexes everything through the invocation / workgroup ids, so setting the real
 // size here is all it takes. Returns false when the module has no LocalSize execution mode.

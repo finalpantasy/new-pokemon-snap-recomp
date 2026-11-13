@@ -26,6 +26,7 @@ struct Config {
   std::string region = "US";
   bool docked = true;                                  // nn::oe::GetOperationMode: Console
   std::string display_version = "2.0.1";
+  std::string player_name = "Ash";                     // answer to the name prompt (nn::swkbd); hle.json "player_name", env SNAP_PLAYER_NAME
   bool headless = false;                               // nn::err::Show* only logs (tests, CI); env SNAP_HLE_HEADLESS=1
   std::string input_map_path;                          // default %SNAP_CONFIG_DIR% or <data_root>, file input.json
   std::string screenshot_dir;                          // nn::album::SaveScreenshot; default <data_root>\screenshots
@@ -40,6 +41,9 @@ bool load_config(const std::string& path = "");
 // when SNAP_SAVE_DIR or save_root is set (unless SNAP_PROFILES_DIR is set too).
 void activate_profiles();
 void apply_defaults();                                 // derived paths from data_root; called by load_config
+#ifdef _WIN32
+std::string appdata_utf8();                            // %APPDATA% as UTF-8 (wide API; a non-ASCII user name is safe)
+#endif
 std::string default_data_root();                       // %APPDATA%\SnapRecomp (HOME/.local/share/SnapRecomp elsewhere)
 std::string default_input_path();                      // %SNAP_CONFIG_DIR%\input.json, else <data_root>\input.json
 std::string legacy_input_path();                       // <data_root>\config\input_map.json (version 1, migrated on first load)

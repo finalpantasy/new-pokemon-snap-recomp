@@ -44,7 +44,7 @@ Boolean ProgramInitialize(void* prog, void* dev) {   // [CALL]: (NVNprogram*, NV
   return 1;
 }
 void ProgramFinalize(void* prog) {
-  if (auto* p = Impl<ProgramImpl>(prog, MAGIC_PROGRAM)) { ProgramDestroy(p); delete p; }
+  if (auto* p = Impl<ProgramImpl>(prog, MAGIC_PROGRAM)) Retire(GK_PROGRAM, p);   // [nvnfix] destroyed after the GPU; persistDs forgets it first
   Unbind(prog);
 }
 Boolean ProgramSetShaders(void* prog, int n, const ShaderData* sd) {   // (program, count, NVNshaderData{addr, control}*)
@@ -59,9 +59,13 @@ Boolean TexturePoolInitialize(void* tp, const void* /*pool*/, ptrdiff_t /*offset
   auto* p = new TexPoolImpl();
   p->host = g_host;
   Bind(tp, MAGIC_TEXPOOL, p);
+  TexPoolLive(p, true);   // [nvnfix] slots naming a freed texture are nulled (nvn_life.cpp)
   return 1;
 }
-void TexturePoolFinalize(void* tp) { delete Impl<TexPoolImpl>(tp, MAGIC_TEXPOOL); Unbind(tp); }
+void TexturePoolFinalize(void* tp) {   // [nvnfix] recorded SetTexturePool commands and persistDs hold the pointer: free it after the GPU
+  if (auto* p = Impl<TexPoolImpl>(tp, MAGIC_TEXPOOL)) { TexPoolLive(p, false); Retire(GK_TEXPOOL, p); }
+  Unbind(tp);
+}
 void TexturePoolRegisterTexture(const void* tp, int id, const void* tex, const void* view) {
   auto* p = Impl<TexPoolImpl>(tp, MAGIC_TEXPOOL);
   auto* t = Impl<TextureImpl>(tex, MAGIC_TEXTURE);
@@ -96,9 +100,13 @@ Boolean SamplerPoolInitialize(void* sp, const void* /*pool*/, ptrdiff_t /*offset
   auto* p = new SampPoolImpl();
   p->host = g_host;
   Bind(sp, MAGIC_SAMPPOOL, p);
+  SampPoolLive(p, true);   // [nvnfix]
   return 1;
 }
-void SamplerPoolFinalize(void* sp) { delete Impl<SampPoolImpl>(sp, MAGIC_SAMPPOOL); Unbind(sp); }
+void SamplerPoolFinalize(void* sp) {   // [nvnfix] as TexturePoolFinalize
+  if (auto* p = Impl<SampPoolImpl>(sp, MAGIC_SAMPPOOL)) { SampPoolLive(p, false); Retire(GK_SAMPPOOL, p); }
+  Unbind(sp);
+}
 void SamplerPoolRegisterSampler(const void* sp, int id, const void* samp) {
   auto* p = Impl<SampPoolImpl>(sp, MAGIC_SAMPPOOL);
   auto* s = Impl<SamplerImpl>(samp, MAGIC_SAMPLER);
@@ -307,10 +315,9 @@ Boolean SamplerInitialize(void* samp, const void* builder) {
   return 1;
 }
 void SamplerFinalize(void* samp) {
-  if (auto* s = Impl<SamplerImpl>(samp, MAGIC_SAMPLER)) {
-    if (s->host && s->host->device && s->sampler) vkDestroySampler(s->host->device, s->sampler, nullptr);
-    delete s;
-  }
+  // [nvnfix] the VkSampler may still be in descriptors of submitted work, and pool slots may still name it: both are handled
+  // when the graveyard frees it (nvn_life.cpp)
+  if (auto* s = Impl<SamplerImpl>(samp, MAGIC_SAMPLER)) Retire(GK_SAMPLER, s);
   Unbind(samp);
 }
 

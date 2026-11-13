@@ -6,6 +6,7 @@
 //                               wait-free (SPSC rings), everything else takes at most the init mutex.
 //   device thread (backend)   : calls core_mix() once per device period. Never takes a lock.
 #include "audio_internal.h"
+#include "audio_cfg.h"
 #include "audio_mix.h"
 #include "spsc_ring.h"
 
@@ -102,10 +103,38 @@ struct Globals {
   Globals();
 };
 
+#if defined(_WIN32)
+// Paths are UTF-8 strings; getenv / fopen / MoveFileExA use the ANSI code page and break on a non-ASCII user name (review_hle #3).
+std::wstring widen(const std::string& u) {
+  if (u.empty()) return {};
+  int n = MultiByteToWideChar(CP_UTF8, 0, u.data(), (int)u.size(), nullptr, 0);
+  std::wstring w((size_t)(n > 0 ? n : 0), L'\0');
+  if (n > 0) MultiByteToWideChar(CP_UTF8, 0, u.data(), (int)u.size(), w.data(), n);
+  return w;
+}
+std::string narrow(const wchar_t* w) {
+  int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+  std::string s((size_t)(n > 1 ? n - 1 : 0), '\0');
+  if (n > 1) WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+  return s;
+}
+FILE* fopen_u8(const std::string& path, const wchar_t* mode) { return _wfopen(widen(path).c_str(), mode); }
+#define FOPEN_RB L"rb"
+#define FOPEN_WB L"wb"
+#else
+FILE* fopen_u8(const std::string& path, const char* mode) { return std::fopen(path.c_str(), mode); }
+#define FOPEN_RB "rb"
+#define FOPEN_WB "wb"
+#endif
+
 std::string config_path() {
   std::string d;
+#if defined(_WIN32)
+  if (const wchar_t* e = _wgetenv(L"SNAP_CONFIG_DIR"); e && *e) d = narrow(e);
+  else if (const wchar_t* a = _wgetenv(L"APPDATA"); a && *a) d = narrow(a) + "\\SnapRecomp";
+#else
   if (const char* e = std::getenv("SNAP_CONFIG_DIR"); e && *e) d = e;
-  else if (const char* a = std::getenv("APPDATA"); a && *a) d = std::string(a) + "\\SnapRecomp";
+#endif
   else d = ".";
   return d + "\\audio.json";
 }
@@ -114,7 +143,7 @@ const char* const kVolKeys[SNAP_VOL_COUNT] = {"master", "bgm", "se", "voice"};
 
 // Tiny reader for {"master":1.0,"bgm":1.0,...}; missing or malformed keys keep the default 1.0.
 void load_volumes(Globals& g) {
-  FILE* f = std::fopen(config_path().c_str(), "rb");
+  FILE* f = fopen_u8(config_path(), FOPEN_RB);
   if (f) {
     char buf[1024]; size_t n = std::fread(buf, 1, sizeof buf - 1, f); buf[n] = 0; std::fclose(f);
     for (int i = 0; i < SNAP_VOL_COUNT; ++i) {
@@ -162,16 +191,15 @@ const char* mode_name(int m) { return m == SNAP_AUDIO_OUT_SPEAKERS ? "speakers" 
 
 // "output"/"channels"/"speakers" keys of audio.json (stored in g.cfg*). Env overrides are applied in ensure_init.
 void load_output(Globals& g) {
-  FILE* f = std::fopen(config_path().c_str(), "rb");
+  FILE* f = fopen_u8(config_path(), FOPEN_RB);
   if (!f) return;
   char buf[1024]; size_t n = std::fread(buf, 1, sizeof buf - 1, f); buf[n] = 0; std::fclose(f);
   char v[32];
   if (read_json_string(buf, "output", v, sizeof v)) { int m = parse_mode(v); if (m >= 0) g.cfgOutMode = m; }
   for (int k = 0; k < 2; ++k) {
     const char* key = k == 0 ? "channels" : "speakers";
-    const char* p = std::strstr(buf, (std::string("\"") + key + "\"").c_str());
-    if (!p || !(p = std::strchr(p, ':'))) continue;
-    int x = std::atoi(p + 1);
+    int x = 0;
+    if (!cfg::read_int(buf, key, &x)) continue;   // key lookup, not value lookup: "output": "speakers" must not match the "speakers" key
     if (k == 0 && (x == 0 || x == 2 || x == 6)) g.cfgGameCh = x;
     if (k == 1 && (x == 0 || x == 6 || x == 8)) g.cfgSpk = x;
   }
@@ -180,14 +208,20 @@ void load_output(Globals& g) {
 void save_volumes(Globals& g) {
   std::lock_guard<std::mutex> lk(g.volMu);
   const std::string path = config_path(), tmp = path + ".tmp";
-  FILE* f = std::fopen(tmp.c_str(), "wb");
+#if defined(_WIN32)
+  if (const size_t cut = path.find_last_of("\\/"); cut != std::string::npos) CreateDirectoryW(widen(path.substr(0, cut)).c_str(), nullptr);   // first run: the folder may not exist
+#endif
+  FILE* f = fopen_u8(tmp, FOPEN_WB);
   if (!f) return;
   std::fprintf(f, "{\n  \"master\": %.4f,\n  \"bgm\": %.4f,\n  \"se\": %.4f,\n  \"voice\": %.4f,\n  \"output\": \"%s\",\n  \"channels\": %d,\n  \"speakers\": %d\n}\n",
                g.vol[0].load(), g.vol[1].load(), g.vol[2].load(), g.vol[3].load(), mode_name(g.cfgOutMode), g.cfgGameCh, g.cfgSpk);
-  std::fclose(f);
+  // a short write (disk full) or failed close must not replace the good file with a truncated one
+  const bool wrote = std::ferror(f) == 0;
+  const bool closed = std::fclose(f) == 0;
 #if defined(_WIN32)
-  if (!MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) std::remove(tmp.c_str());
+  if (!wrote || !closed || !MoveFileExW(widen(tmp).c_str(), widen(path).c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) DeleteFileW(widen(tmp).c_str());
 #else
+  if (!wrote || !closed) { std::remove(tmp.c_str()); return; }
   std::rename(tmp.c_str(), path.c_str());
 #endif
 }

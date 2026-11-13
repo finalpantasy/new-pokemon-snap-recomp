@@ -11,15 +11,18 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <vulkan/vulkan.h>
+#include "nvn_vkcount.h"
 
 #include <array>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "nvn_host.h"
@@ -123,7 +126,8 @@ struct Cmd {
   void* p[2] = {};            // ProgramImpl*, pool impls
   std::vector<uint8_t> blob;  // arrays (vertex attribs, streams, copy region + view)
 };
-struct CmdList { std::vector<Cmd> cmds; };
+// id = the CommandHandle given to the guest (nvn_life.cpp); refs/submitted are guarded by the list table's mutex.
+struct CmdList { std::vector<Cmd> cmds; uint64_t id = 0; int refs = 1; bool submitted = false; };
 
 struct CommandBufferImpl {
   Host* host = nullptr;
@@ -131,6 +135,7 @@ struct CommandBufferImpl {
   CommandBufferMemoryCallback cb = nullptr;
   void* cbData = nullptr;
   std::vector<Cmd> cmds;
+  size_t cmdsHigh = 0;   // [cpuprof] largest recording of this buffer: EndRecording reserves this much in the next vector
   // memory handed to us by the guest (kept for diagnostics; NVN command words are never written)
   uint64_t commandBytes = 0, controlBytes = 0;
 };
@@ -159,6 +164,10 @@ struct PoolImpl {
   std::atomic<int> subCount{0};
   // [perf] dirty-page sync (SyncPoolRangeOnce): 0 = not set up, 1 = GetWriteWatch tracks the storage, -1 = unusable (full copies).
   int8_t ww = 0;
+  // [cpuprof] one whole-pool dirty snapshot (GetWriteWatch without reset) per replay epoch; a range with no page dirty in it skips its
+  // own GetWriteWatch syscall (SNAP_POOLSYNC_SNAPSHOT=0: a syscall per range, as before). Guarded by gpuMutex.
+  uint64_t wwSnapEpoch = 0;
+  std::vector<uint64_t> wwBits;   // one bit per 4 KiB page of the storage
   std::atomic<bool> wbPool{false};   // has fragment-shader write-backs (photo evaluation): always full copies, as before
   bool Cpu() const { return !(flags & MP_CPU_NO_ACCESS); }
 };
@@ -306,6 +315,7 @@ bool SpvAddStorageImageCaps(std::vector<uint32_t>& spv);                  // nvn
 uint32_t SpvVertexInputMask(const std::vector<uint32_t>& in);
 std::vector<int> SpvFragmentOutputs(const std::vector<uint32_t>& in);
 bool PatchFragmentOutputs(const std::vector<uint32_t>& in, int nColor, bool dual, std::vector<uint32_t>& out);
+bool PatchIntOutputs(const std::vector<uint32_t>& in, const int kinds[8], std::vector<uint32_t>& out);   // [vkval] float output into an integer attachment: bitcast
 bool ProgramSetShadersImpl(ProgramImpl* p, int n, const ShaderData* sd);
 bool ProgramBuildLayout(ProgramImpl* p);
 // BindProgram(prog, stagesMask) is per stage (the game binds a vertex-only and a fragment-only program). Returns the program whose stages
@@ -556,5 +566,27 @@ SyncWaitResult WaitSync(const SyncImpl* s, uint64_t timeoutNs);
 // Host-visible, coherent buffer (mapped persistently); used for constant data, dummy UBOs and the support buffer.
 bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem, void** mapped);
 extern int g_fdBurst;   // NVN_FRAME_DUMP burst counter (set by the photo-thumbnail debug log)
+
+// ---- object lifetime against the GPU timeline (nvn_life.cpp; analysis/core/review_nvn.md 1-4, 10) -------------------------------
+CommandHandle ListRegister(CmdList* l);                                   // EndRecording: the handle is a table id
+void ListAcquire(int n, const CommandHandle* handles, CmdList** out);     // QueueSubmitCommands: a reference per handle; unknown -> nullptr
+void ListRelease(CmdList* l);                                             // QueueImpl::Reap
+enum GraveKind : uint8_t { GK_TEXTURE, GK_SAMPLER, GK_POOL, GK_TEXPOOL, GK_SAMPPOOL, GK_PROGRAM, GK_FN };
+void Retire(GraveKind k, void* obj);   // destroyed once the queue timeline passes every submit made before this call
+void RetireFn(std::function<void()> fn);   // the same for host-owned Vulkan objects (runs fn then)
+void GraveReap(QueueImpl* q);          // at present, under queueMutex
+void GraveDrain(Host* h);              // Host::Shutdown after vkDeviceWaitIdle
+void PoolRetire(PoolImpl* p);          // MemoryPoolFinalize: unregister, finish readbacks into its storage, retire
+void TexPoolLive(TexPoolImpl* p, bool live);    // registry of pools whose slots are scrubbed when a texture is freed
+void SampPoolLive(SampPoolImpl* p, bool live);
+void PersistScrub(QueueImpl* q, const std::unordered_set<const void*>& dead);   // nvn_draw.cpp: drop dead objects from persistDs
+enum LifeStat {
+  LS_RESUBMIT, LS_STALE_HANDLE, LS_LISTS_MADE, LS_RETIRED, LS_DESTROYED, LS_SLOTS_CLEARED, LS_PERSIST_SCRUB, LS_RB_WAIT_POOL_GONE,
+  LS_PIPE_SKIP, LS_BC_RECREATE, LS_AA_RESIZE, LS_CUBE_COPY, LS_FLUSH_GPU_OVERLAP, LS_CLEAR_SCISSORED, LS_X_ALPHA_VIEWS, LS_BACKING_RACE,
+  LS_COUNT
+};
+extern std::atomic<uint64_t> g_lifeStat[LS_COUNT];
+inline void LifeCount(LifeStat s, uint64_t n = 1) { g_lifeStat[s].fetch_add(n, std::memory_order_relaxed); }
+void LifeStatsTick();                  // at present: SNAP_NVN_STATS=1 prints the counters every 300 presents
 
 }  // namespace nvn

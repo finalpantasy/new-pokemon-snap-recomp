@@ -23,7 +23,7 @@ git. host/play.ps1 runs this script when the pack is missing or older than this 
 
   python -I scripts/ui/make_native_options.py [--src <option.lmb>] [--out <mods root>]
 """
-import argparse, hashlib, json, os, sys
+import argparse, hashlib, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lmb as L
 
@@ -59,12 +59,15 @@ TABS = [
             (('0.50', '0.5x'), ('0.75', '0.75x'), ('1.00', '1x (1080p)'), ('1.25', '1.25x'), ('1.50', '1.5x'),
              ('2.00', '2x (4K)'), ('2.50', '2.5x'), ('3.00', '3x'), ('4.00', '4x (8K)')),
             'How sharp the 3D picture is drawn. Higher is crisper and slower.' + R),
-        row('Anti-aliasing', 'p', 'opt', 'gfx_aa', 'default',
-            (('default', 'FXAA (original)'), ('smaa', 'SMAA'), ('ssaa2', '2x SSAA + FXAA'), ('ssaa2,smaa', '2x SSAA + SMAA'),
-             ('off', 'Off'), ('none', 'None')),
-            'Smooths jagged edges. FXAA is the original, SMAA keeps more detail, SSAA costs the most.' + R),
-        row('Sharpening', 'n', 'opt', 'gfx_sharpen', '0.00', (),
-            'A gentle sharpening pass after anti-aliasing. 0 is off.' + R),
+        # Visual extras (owner 2026-11-13): original look by default, every extra off; explicit values, so a change of the
+        # runtime's own defaults cannot move them. (SNAP_AA: original = the game's FXAA.)
+        row('Anti-aliasing', 'p', 'opt', 'gfx_aa', 'original',
+            (('original', 'Original'), ('smaa', 'SMAA'), ('ssaa2+smaa', 'SMAA + supersampling')),
+            'Smooths jagged edges. Supersampling draws at 2x size (1.5x at 4K) and costs the most.' + R),
+        # (a pulldown, not the game's 0..10 slider: its knob is moved by the game's handler, which a PC page bypasses)
+        row('Sharpening', 'p', 'opt', 'gfx_sharpen', '0.00',
+            (('0.00', 'Off'), ('0.30', 'Low'), ('0.50', 'Medium')),
+            'A gentle sharpening pass after anti-aliasing.' + R),
         row('Upscaler', 'p', 'opt', 'gfx_upscaler', 'off',
             (('off', 'Off'), ('dlaa', 'DLAA'), ('dlss', 'DLSS'), ('fsr', 'FSR'), ('xess', 'XeSS')),
             'Rebuilds a sharp picture from fewer pixels. DLSS and DLAA need an NVIDIA RTX card.' + R),
@@ -73,8 +76,7 @@ TABS = [
             'How many pixels are drawn before the upscaler enlarges them. Lower modes run faster.' + R),
     ]),
     ('Textures', 'Texture, shadow and shading detail.', [
-        row('Anisotropic filtering', 'p', 'opt', 'gfx_aniso', '16',
-            (('0', 'Off'), ('2', '2x'), ('4', '4x'), ('8', '8x'), ('16', '16x')),
+        row('Texture filtering', 'c', 'opt', 'gfx_aniso', '0', (('0', 'Original'), ('16', '16x anisotropic')),
             'Keeps ground and walls sharp at shallow angles. 16x costs almost nothing on a PC.' + R),
         row('Texture sharpness', 'p', 'opt', 'gfx_lod_bias', 'auto',
             (('auto', 'Automatic'), ('-1', 'Sharper'), ('-0.5', 'A little sharper'), ('0', 'Original'), ('0.5', 'Softer'),
@@ -145,9 +147,8 @@ TABS = [
             (('', 'Remembered'), ('1280x720', '1280 x 720'), ('1600x900', '1600 x 900'), ('1920x1080', '1920 x 1080'),
              ('2560x1440', '2560 x 1440'), ('3840x2160', '3840 x 2160')),
             'The picture size when windowed. Remembered keeps the size you last dragged it to.' + R),
-        row('Menu text sharpness', 'p', 'opt', 'gfx_ui_font', 'default',
-            (('default', 'Automatic'), ('1', 'Original'), ('2', '2x'), ('3', '3x'), ('4', '4x')),
-            'Draws menu letters sharper on large screens, at the same size.' + R),
+        row('Sharper menu text', 'c', 'opt', 'gfx_ui_font', 'off', (('auto', 'On'), ('off', 'Off')),
+            'At 1440p and above, draws menu letters twice as sharp, at the same size.' + R),
         row('Pause when unfocused', 'c', 'opt', 'win_pause', '1', TOGGLE,
             'Freezes the game while you are in another window.'),
         row('Fast boot', 'c', 'opt', 'fast_boot', '0', TOGGLE,
@@ -183,7 +184,8 @@ TABS = [
             'Keeps the cursor inside the game window while you play.'),
     ]),
     ('Audio', 'Overall volume and sound output. Music, effects and voices are on the Sound tab.', [
-        row('Master volume', 'n', 'vol', 'master', '10', (),
+        row('Master volume', 'p', 'vol', 'master', '10',
+            (('0', 'Mute'),) + tuple((str(v), '%d%%' % (v * 10)) for v in range(2, 11)),
             'Overall loudness of the game.'),
         row('Output mode', 'p', 'opt', 'audio_output', 'stereo',
             (('stereo', 'Stereo'), ('speakers', 'Speakers (5.1/7.1)'), ('spatial', 'Spatial (headphones)')),
@@ -192,7 +194,7 @@ TABS = [
             'Silences the game while its window is not in front.'),
     ]),
     ('Photos', 'Photo files and expeditions.', [
-        row('Save PNG copies', 'c', 'opt', 'photo_export', '1', TOGGLE,
+        row('Save PNG copies', 'c', 'opt', 'photo_export', '0', TOGGLE,
             'Each photo you keep is also saved as a full-quality PNG file.' + R),
         row('NEO-ONE speed', 'p', 'opt', 'neo_speed', '1',
             (('0.5', '0.5x'), ('0.75', '0.75x'), ('1', '1x (original)'), ('1.25', '1.25x'), ('1.5', '1.5x'), ('2', '2x'),
@@ -205,6 +207,25 @@ TABS = [
             'Presses A for you when a dialogue box is waiting. Choices are not answered for you.' + R),
     ]),
 ]
+def visual_defaults():
+    """The visual-extras defaults from runtime/hle/visual_defaults.h (the runtime's one table), so the menu's defaults
+    (and Restore Default Settings) cannot disagree with the runtime: {env name: default value}."""
+    src = open(os.path.join(ROOT, 'runtime', 'hle', 'visual_defaults.h'), encoding='utf-8').read()
+    enhanced = re.search(r'kDefaultEnhanced\s*=\s*(true|false)', src).group(1) == 'true'
+    rows = re.findall(r'\{"(SNAP_\w+)",\s*"([^"]*)",\s*"([^"]*)"', src)
+    assert rows, 'visual_defaults.h: no rows'
+    return {k: (e if enhanced else o) for k, o, e in rows}
+
+
+VISUAL_KEYS = {'gfx_aa': 'SNAP_AA', 'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',
+               'photo_export': 'SNAP_PHOTO_EXPORT'}
+_VD = visual_defaults()
+for _t in TABS:
+    for _r in _t[2]:
+        if _r['key'] in VISUAL_KEYS:
+            _r['default'] = _VD[VISUAL_KEYS[_r['key']]]
+            assert _r['default'] in [c[0] for c in _r['choices']], (_r['label'], _r['default'])
+
 RESET_NOTE = ' Restore Default Settings resets only this tab.'
 GAME_TABS = ('Game', 'Camera', 'Button', 'Sound', 'Others')    # state = tab element names, in tab-bar order
 # message ids of the game's tab names (Init sets them once through {Tab1Text}..; only Init has those variables)
@@ -405,29 +426,26 @@ class Gen:
             enter.append((10, 1, pd + '/selector_item_%02d_mc' % k, var(t, s, 'I%d' % k)))
         enter.append((1, 1, pd, 'lb_end_list%02d' % (n + 1)))
         enter.append((2, 1, pd, 'lb_end_list%02d' % (n + 1)))
-        elements, groups = [], []
-        tmpl = self.gel['Turbo1']
-        for k in range(1, n + 1):
-            a = pd + '/selector_item_%02d_mc' % k
-            acts = [(3, 1, a, 'lb_select'), (4, 1, a, 'lb_unselect'), (1, 1, a, 'lb_decide'), (3, 7, 'help_mc/dt_help', r['help']),
-                    (3, 10, '', 'Play_out_cursor'), (1, 10, '', 'Play_out_decision')]
-            # one focus group, like the game's choice rows: the cursor opens on the item the host marks current
-            e = self.element(tmpl, 'PcI%d' % k, a, acts, 'PcIG')
-            e.fields[6], e.types[6] = 4, 'u32'     # decide returns to the previous state (as the game's list and CancelArea do)
-            elements.append(e)
-        groups.append(group('PcIG', []))
+        # The game's own list element (type 6, f6 = 4): it moves the cursor over selector_item_01..f4 itself, reports
+        # focus and decide as PulldownMenuItemNN and returns to the previous state on decide. (Separate item elements
+        # linked by focus groups never moved: the player resolved Down back to the same item.)
+        acts = [(3, 1, pd + '/selector_main_mc', 'lb_select'), (4, 1, pd + '/selector_main_mc', 'lb_unselect'),
+                (1, 1, pd + '/selector_main_mc', 'lb_decide'), (3, 7, 'help_mc/dt_help', r['help']), (3, 10, '', 'Play_out_cursor')]
+        e = self.element(self.nel['PulldownMenu'], 'PulldownMenu', pd + '/selector_main_mc', acts, None)
+        e.fields[4], e.types[4] = pd + '/selector_item_%02d_mc' % n, 'off'
+        elements = [e]
         for nm in ('CancelArea',):   # (the game's MenuArea belongs to its list widget and takes the cursor from our items)
             tm = self.nel[nm]
             e = self.l.to_table(tm, L.ELEMENT)
-            e.fields[3], e.types[3] = self.l.get(tm, 3, 'str').replace('{LineNaviFrequency}', '%02d' % s), 'off'
+            # B and a click outside close the popup through this element (f6 = 4); on the full-screen dimmer it took the
+            # cursor whenever the mouse rested on the screen, so it sits on the (covered) L arrow instead
+            e.fields[3], e.types[3] = 'arrow_l_mc', 'off'
             elements.append(e)
         st = self.l.to_table(self.navi, L.STATE)
         st.fields[0], st.types[0] = pull_name(t, s), 'off'
         st.fields[1], st.types[1] = [act(*a) for a in enter], 'off'
         st.fields[2], st.types[2] = elements, 'off'
-        st.fields[8], st.types[8] = groups, 'off'
-        st.fields[9], st.types[9] = 'PcIG', 'off'
-        return st
+        return st   # (no focus groups, as in the game's NaviFrequency popup)
 
     # ------------------------------------------------------------------ the game's own tabs set their tab texts again
     def game_tab(self, name):
@@ -469,6 +487,7 @@ def script_hash():
     h = hashlib.sha256()
     for f in ('make_native_options.py', 'lmb.py'):
         h.update(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), f), 'rb').read())
+    h.update(open(os.path.join(ROOT, 'runtime', 'hle', 'visual_defaults.h'), 'rb').read())   # the row defaults come from it
     return h.hexdigest()[:16]
 
 

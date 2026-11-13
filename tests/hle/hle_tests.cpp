@@ -8,6 +8,7 @@
 //   misc  : registry, account, oe, settings, time, album PNG, unimplemented backstop
 // Usage: hle_tests [project_root]   (default: three levels above this file)
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -31,7 +32,7 @@
 
 namespace stdfs = std::filesystem;
 using namespace hle;
-namespace nvn { int g_presentCount = 0; }   // input_core.cpp reads the nvn frame clock; the renderer is not linked into this test
+namespace nvn { int g_presentCount = 0; int g_fdBurst = 0; }   // input_core.cpp reads the nvn frame clock; the renderer is not linked into this test
 #include "../../runtime/os/os.h"
 extern "C" void os_get_stats(OsStats* o) { *o = OsStats{}; }   // runtime/os/perf.cpp (linked for fs_core's counters) reads the os layer, which is not linked here
 
@@ -391,6 +392,136 @@ static void test_save_roundtrip() {
   }
 }
 
+// review_hle #1: a handle that stays open across Commit keeps writing; the next commit must hold those bytes
+static void test_save_open_handle_commit() {
+  g_test = "save.open_handle_commit";
+  stdfs::path root = g_tmp / "save_openh";
+  const std::string a = "savedata:/0000000100000002";
+  {
+    fs::Fs f;
+    f.set_save_root(root.string());
+    CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+    CHECK_EQ(f.create_file(a, 8), 0u);
+    fs::FileId id = 0;
+    CHECK_EQ(f.open_file(&id, a, fs::kModeRead | fs::kModeWrite), 0u);
+    CHECK_EQ(f.write_file(id, 0, "AAAAAAAA", 8, false), 0u);
+    CHECK_EQ(f.commit("savedata"), 0u);
+    CHECK_EQ(f.write_file(id, 0, "BBBBBBBB", 8, false), 0u);  // same handle, after the commit
+    CHECK_EQ(f.commit("savedata"), 0u);
+    CHECK_EQ(f.set_file_size(id, 4), 0u);                     // resize alone must also count
+    CHECK_EQ(f.commit("savedata"), 0u);
+    f.close_file(id);  // process "dies" without unmount
+  }
+  fs::Fs f;
+  f.set_save_root(root.string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  std::string body;
+  CHECK(get(f, a, &body));
+  CHECK(body == "BBBB");
+}
+
+// review_hle #2: one running game per save folder; parallel runs (other folders) are unaffected
+static void test_save_single_instance() {
+  g_test = "save.single_instance";
+  stdfs::path root = g_tmp / "save_lock", other = g_tmp / "save_lock_other";
+  const std::string a = "savedata:/0000000100000002";
+  fs::Fs first;
+  first.set_save_root(root.string());
+  CHECK_EQ(first.mount_save("savedata", kUid), 0u);
+  put(first, a, "committed");
+  CHECK_EQ(first.commit("savedata"), 0u);
+  put(first, a, "uncommitted working copy");
+  {
+    fs::Fs second;   // same folder: must refuse and must not wipe first's working/ or generations
+    second.set_save_root(root.string());
+    CHECK_EQ(second.mount_save("savedata", kUid), fs::kResultTargetLocked);
+    CHECK(!second.is_mounted("savedata"));
+  }
+  {
+    fs::Fs par;      // another save folder at the same time: fine
+    par.set_save_root(other.string());
+    CHECK_EQ(par.mount_save("savedata", kUid), 0u);
+  }
+  std::string body;
+  CHECK(get(first, a, &body));
+  CHECK(body == "uncommitted working copy");
+  CHECK_EQ(first.commit("savedata"), 0u);
+  CHECK_EQ(first.mount_save("savedata", kUid), 0u);   // the owner may remount its own folder
+  CHECK(get(first, a, &body));
+  CHECK(body == "uncommitted working copy");
+  { fs::Fs third; third.set_save_root(root.string()); CHECK_EQ(third.mount_save("savedata", kUid), fs::kResultTargetLocked); }  // held while mounted
+  CHECK_EQ(first.unmount("savedata"), 0u);
+  { fs::Fs third; third.set_save_root(root.string()); CHECK_EQ(third.mount_save("savedata", kUid), 0u); }                       // released by unmount
+}
+static void test_save_single_instance_released() {
+  g_test = "save.single_instance_released";
+  stdfs::path root = g_tmp / "save_lock2";
+  { fs::Fs a; a.set_save_root(root.string()); CHECK_EQ(a.mount_save("savedata", kUid), 0u); }
+  fs::Fs b; b.set_save_root(root.string());
+  CHECK_EQ(b.mount_save("savedata", kUid), 0u);       // the lock goes away with its owner
+}
+
+// review_hle #3: a non-ASCII user name in %APPDATA% (UTF-8 byte sequences below: e-acute, a-umlaut, a CJK character)
+static void test_nonascii_appdata() {
+  g_test = "paths.nonascii_appdata";
+#ifdef _WIN32
+  const std::string name = "Jos\xC3\xA9 \xC3\xA4\xE4\xB8\xAD";
+  stdfs::path ap = g_tmp / stdfs::u8path(name) / "AppData" / "Roaming";
+  std::error_code ec;
+  stdfs::create_directories(ap, ec);
+  CHECK(!ec);
+  std::wstring var = L"APPDATA=" + ap.wstring();
+  const wchar_t* old = _wgetenv(L"APPDATA");
+  std::wstring saved = old ? old : L"";
+  _wputenv(var.c_str());
+  std::string root = hle::default_data_root();
+  { auto u = ap.u8string(); std::string e(u.begin(), u.end()); e += std::string(1, char(92)) + "SnapRecomp"; CHECK(root == e); }
+  hle::Config& c = config();
+  const std::string save_root_before = c.save_root;
+  fs::Fs f;
+  f.set_save_root(root + "/save");
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  put(f, "savedata:/0000000100000002", "unicode path save");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  CHECK(stdfs::exists(stdfs::u8path(root + "/save"), ec));
+  CHECK_EQ(f.unmount("savedata"), 0u);
+  // the same folder via the mapping file helpers (input.json lives under the data root)
+  input::Mapping m = input::Mapping::defaults();
+  std::string err;
+  CHECK(input::write_mapping_file(m, root + "/config/input.json", &err));
+  CHECK(stdfs::exists(stdfs::u8path(root + "/config/input.json"), ec));
+  c.save_root = save_root_before;
+  _wputenv((L"APPDATA=" + saved).c_str());
+#endif
+}
+
+// window close: drain_for_exit waits for a commit in progress
+static void test_save_drain_for_exit() {
+  g_test = "save.drain_for_exit";
+  stdfs::path root = g_tmp / "save_drain";
+  const std::string a = "savedata:/0000000100000002";
+  fs::Fs f;
+  f.set_save_root(root.string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  put(f, a, "drain me");
+  std::atomic<int> stage{0};
+  std::atomic<bool> release{false};
+  f.set_fault_hook([&](const char* st) {
+    if (std::string(st) == "commit:carried") { stage = 1; while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  });
+  uint32_t rc = 99;
+  std::thread t([&] { rc = f.commit("savedata"); });
+  while (stage != 1) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  CHECK(!f.drain_for_exit(60));          // commit still running: times out
+  release = true;
+  CHECK(f.drain_for_exit(5000));         // finished, lock now held for good
+  t.join();
+  CHECK_EQ(rc, 0u);
+  // (root is locked by f until it dies, so inspect the files directly)
+  CHECK(stdfs::exists(root / hle::uid_dir_name(kUid) / "CURRENT"));
+  CHECK(stdfs::exists(root / hle::uid_dir_name(kUid) / "gens" / "1.ok"));
+}
+
 static void test_save_crash_midwrite() {
   g_test = "save.crash_midwrite";
   stdfs::path root = g_tmp / "save_mid";
@@ -482,6 +613,7 @@ static void test_save_backups() {
   CHECK(body.rfind("VERSION-", 0) == 0);
   std::printf("  restored generation %llu -> %s (kept %zu generations)\n", (unsigned long long)oldest, body.c_str(), gens.size());
   // restored state survives a remount
+  CHECK_EQ(f.unmount("savedata"), 0u);   // one running game per save folder: the first mount must let go
   fs::Fs f2;
   f2.set_save_root(root.string());
   CHECK_EQ(f2.mount_save("savedata", kUid), 0u);
@@ -1200,6 +1332,12 @@ static void test_services() {
   config().screenshot_dir = (g_tmp / "shots").string();
   std::vector<uint8_t> px(1280 * 720 * 4, 0x80);
   call("_ZN2nn5album14SaveScreenshotEPKvmNS0_9ImageSizeENS0_16ImageOrientationENS0_17AlbumReportOptionE", {P(px.data()), px.size(), 0, 0, 0});
+  for (int i = 0; i < 500; ++i) {   // the PNG is encoded and written on a worker thread
+    bool done = false;
+    for (auto& e : stdfs::directory_iterator(config().screenshot_dir)) done = stdfs::file_size(e.path()) > 8;
+    if (done) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
   int pngs = 0;
   for (auto& e : stdfs::directory_iterator(config().screenshot_dir)) {
     std::string d = slurp(e.path());
@@ -1522,6 +1660,11 @@ int main(int argc, char** argv) {
       {"fs.rom", test_fs_rom},
       {"fs.overlay", test_fs_overlay},
       {"save.roundtrip", test_save_roundtrip},
+      {"save.open_handle_commit", test_save_open_handle_commit},
+      {"save.single_instance", test_save_single_instance},
+      {"save.single_instance_released", test_save_single_instance_released},
+      {"paths.nonascii_appdata", test_nonascii_appdata},
+      {"save.drain_for_exit", test_save_drain_for_exit},
       {"save.crash_midwrite", test_save_crash_midwrite},
       {"save.crash_commit", test_save_crash_commit_stages},
       {"save.backups", test_save_backups},

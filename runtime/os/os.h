@@ -46,6 +46,8 @@ void os_adopt_main_thread(Cpu *c, uint64_t tt, int prio);
 // audio device waits). Must be paired, may nest. A host thread that is not a guest thread may call both freely.
 void os_host_block_begin(void);
 void os_host_block_end(void);
+void os_io_begin(void);   // the same around blocking host I/O and retry sleeps, unless SNAP_SCHED_LEGACY=hostblock
+void os_io_end(void);
 uint64_t os_current_thread_type(void);   // guest ThreadType* of the calling thread, 0 if none
 
 // ---- polling hooks for the lifter and the runtime (proposed wiring in runtime/os/PROPOSED_SHARED_CHANGES.md)
@@ -82,6 +84,8 @@ typedef struct OsStats {
     uint64_t pi_boosts, fiber_switches, spin_yields;
     int max_cores_in_use;
     uint64_t core_wake_rescues;   // core waits ended by the safety-net timeout instead of a handoff (a lost wakeup; should stay 0)
+    uint64_t core_starved;        // core waits longer than SNAP_OS_STARVE_MS (50) while another core was free (should stay 0)
+    uint64_t migrate_requests, migrations, yield_any;   // holders asked to move to a free core / moved; yields to any thread
 } OsStats;
 void os_get_stats(OsStats *out);
 

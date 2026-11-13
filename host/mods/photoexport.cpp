@@ -6,7 +6,7 @@
 // <photos>\photo_<date>_<time>_<n>.png (Windows Imaging Component, lossless) plus a .json sidecar with the size, the game's
 // JPEG byte size and its CRC32 (the gallery links an export to its album entry through that CRC).
 //
-//   SNAP_PHOTO_EXPORT=0     disables the export (default on; the overrides are then not registered at all).
+//   SNAP_PHOTO_EXPORT=1|0   enables / disables the export (default per hle/visual_defaults.h: off, on with SNAP_PROFILE=enhanced; when off the overrides are not registered at all).
 //   SNAP_PHOTO_DIR=<dir>    output folder (default %APPDATA%\SnapRecomp\photos; test runs should set it).
 //   SNAP_PHOTO_MIN_W=<n>    smallest width that counts as a photo (default 640; thumbnails are smaller).
 //   SNAP_PHOTO_LOG=1        logs every encoder call (format, size, stride) to stderr.
@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "loader.h"
+#include "hle/visual_defaults.h"   // default on/off (SNAP_PROFILE)
 
 #pragma comment(lib, "windowscodecs")
 
@@ -194,7 +195,7 @@ void h_encode(Cpu *c) {
 
 namespace loader {
 void snap_photoexport_install() {
-    const char *e = getenv("SNAP_PHOTO_EXPORT");
+    const char *e = snapdef::get("SNAP_PHOTO_EXPORT");   // unset = the shared defaults table (off in the original profile)
     if (e && (e[0] == '0' || e[0] == 'n' || e[0] == 'N' || e[0] == 'f' || e[0] == 'F')) return;
     g_log = getenv("SNAP_PHOTO_LOG") && getenv("SNAP_PHOTO_LOG")[0] != '0';
     if (const char *m = getenv("SNAP_PHOTO_MIN_W")) { int v = atoi(m); if (v > 0) g_min_w = v; }

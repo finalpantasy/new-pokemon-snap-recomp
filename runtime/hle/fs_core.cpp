@@ -15,6 +15,11 @@
 
 #include "hle_config.h"
 
+// runtime/os releases the caller's virtual core around blocking reads. These no-op weak defaults keep builds without
+// runtime/os (tests/hle) linking; snap_boot links the real ones from os_kernel.cpp.
+extern "C" __attribute__((weak)) void os_io_begin(void) {}
+extern "C" __attribute__((weak)) void os_io_end(void) {}
+
 #ifdef _WIN32
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -190,6 +195,9 @@ struct OpenFile {
   HostFile hf;
   bool writable = false;
   std::string mount;
+  std::string rel;          // save mounts: path inside the mount, so a write after a commit re-marks the file dirty
+  struct Save* save = nullptr;  // owned by the mount; kept alive by keep below
+  std::shared_ptr<void> keep;   // the owning Mount: a write that outlives unmount/remount still has a valid save for mark_dirty
   std::mutex mu;  // serializes write / resize on this handle
 };
 struct OpenDir {
@@ -208,6 +216,7 @@ struct Save {
   stdfs::path root;
   uint64_t cur = 0;
   int keep = 5;
+  std::string lock_key;  // key of the folder lock in Fs::Impl::locks (empty: none)
   std::set<std::string> dirty, deleted, dirs;  // dirs: directories created since the last commit
 
   stdfs::path gens() const { return root / "gens"; }
@@ -437,7 +446,23 @@ struct Fs::Impl {
   std::string save_root;
   int save_backups = 5;
   std::function<void(const char*)> hook;
+  std::map<std::string, void*> locks;  // save root -> open ".snap.lock" handle holding an exclusive byte lock (one running game per save folder)
 
+  ~Impl() {
+#ifdef _WIN32
+    for (auto& kv : locks) CloseHandle((HANDLE)kv.second);
+#endif
+  }
+  // Drops the folder lock once no save mount uses it any more (unmount, remount).
+  void release_lock(const std::string& key) {
+#ifdef _WIN32
+    if (key.empty()) return;
+    for (auto& kv : mounts) if (kv.second->save && kv.second->save->lock_key == key) return;
+    if (auto it = locks.find(key); it != locks.end()) { CloseHandle((HANDLE)it->second); locks.erase(it); }
+#else
+    (void)key;
+#endif
+  }
   std::shared_ptr<Mount> find_mount(const std::string& name) {
     auto it = mounts.find(name);
     return it == mounts.end() ? nullptr : it->second;
@@ -505,8 +530,40 @@ uint32_t Fs::mount_save(const std::string& name, const uint64_t uid[2]) {
   m->save = std::make_unique<Save>();
   m->save->root = to_path(p_->save_root) / to_path(uid_dir_name(uid));
   std::error_code ec;
+  // Same name mounted again: the old mount stays untouched until the new one can no longer fail (lock, directory); only then is it
+  // dropped (its open handles die with it; Save::open wipes working/ anyway). The new mount takes over the same folder lock.
+#ifdef _WIN32
+  // One running game per save folder. Save::open deletes working/ and every newer generation, which would wreck a second live
+  // process on the same folder, so refuse before touching anything. Per save root (parallel test runs use their own roots);
+  // the lock dies with the process, so a crash never leaves a stale one.
+  {
+    stdfs::path root = to_path(p_->save_root);
+    stdfs::create_directories(root, ec);
+    const std::string key = from_path(root);
+    m->save->lock_key = key;
+    if (!p_->locks.count(key)) {
+      HANDLE h = CreateFileW((root / ".snap.lock").c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      OVERLAPPED ov{};
+      if (h == INVALID_HANDLE_VALUE) {
+        log("fs: cannot open the save lock file in %s (error %lu); continuing without the single-instance guard", key.c_str(), GetLastError());
+      } else if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)) {
+        DWORD e = GetLastError();
+        CloseHandle(h);
+        log("fs: save folder %s is in use by another running copy of the game (lock error %lu); not mounting it", key.c_str(), e);
+        return e == ERROR_LOCK_VIOLATION ? kResultTargetLocked : kResultUsableSpaceNotEnough;
+      } else {
+        p_->locks[key] = h;
+      }
+    }
+  }
+#endif
   stdfs::create_directories(m->save->root, ec);
   if (ec) { log("fs: cannot create save directory %s: %s", from_path(m->save->root).c_str(), ec.message().c_str()); return kResultUsableSpaceNotEnough; }
+  if (auto old = p_->mounts.find(name); old != p_->mounts.end()) {
+    for (auto f = p_->files.begin(); f != p_->files.end();) { if (f->second->mount == name) f = p_->files.erase(f); else ++f; }
+    p_->mounts.erase(old);   // OpenFile::keep holds the Save of a handle a writer still has in flight
+  }
   m->save->open(p_->save_backups);
   p_->mounts[name] = m;
   if (trace_flags & kTraceFs) log("fs: mounted %s: save %s generation %llu", name.c_str(), from_path(m->save->root).c_str(), (unsigned long long)m->save->cur);
@@ -520,7 +577,9 @@ uint32_t Fs::unmount(const std::string& name) {
   for (auto f = p_->files.begin(); f != p_->files.end();) {
     if (f->second->mount == name) f = p_->files.erase(f); else ++f;
   }
+  const std::string lock_key = it->second->save ? it->second->save->lock_key : std::string();
   p_->mounts.erase(it);  // uncommitted save changes are dropped, as on hardware
+  p_->release_lock(lock_key);
   return kSuccess;
 }
 
@@ -577,6 +636,7 @@ uint32_t Fs::open_file(FileId* out, const std::string& path, int mode) {
   std::string mount, rel;
   split_path(path, &mount, &rel);
   of->mount = mount;
+  if (want_write && r.m->kind == Mount::SaveData) { of->rel = r.rel; of->save = r.m->save.get(); of->keep = r.m; }
   stdfs::path host = r.host;
   if (want_write) {
     if (r.m->kind == Mount::SaveData) {
@@ -612,7 +672,8 @@ uint32_t Fs::read_file(FileId f, int64_t off, void* buf, size_t n, size_t* out) 
   if (off < 0) return kResultOutOfRange;
   if (n == 0) { if (out) *out = 0; return kSuccess; }
   int64_t got;
-  if (snap_perf::on) {   // perf pass 3: file reads hold the caller's virtual core (no os_host_block); time them
+  os_io_begin();   // the read releases the caller's virtual core (os review finding 9; SNAP_SCHED_LEGACY=hostblock keeps it)
+  if (snap_perf::on) {   // perf pass 3: time file reads
     const uint64_t t0 = snap_perf::now_ns();
     got = of->hf.read_at(off, buf, n);
     snap_perf::wait_add(snap_perf::WT_FS, snap_perf::now_ns() - t0);
@@ -620,10 +681,20 @@ uint32_t Fs::read_file(FileId f, int64_t off, void* buf, size_t n, size_t* out) 
   } else {
     got = of->hf.read_at(off, buf, n);
   }
+  os_io_end();
   if (trace_flags & kTraceFs) log("fs: read file %llu off %lld n %zu -> %lld", (unsigned long long)f, (long long)off, n, (long long)got);
   if (got < 0) return kResultTargetLocked;
   if (out) { *out = (size_t)got; return kSuccess; }
   return (size_t)got == n ? kSuccess : kResultOutOfRange;
+}
+
+// A handle that stays open across Commit keeps writing to the working copy; do_commit cleared the dirty set, so every write
+// re-marks its file (after the write, so a commit that runs in between still sees the file dirty next time). Lock order: of->mu, then p->mu
+// (commit holds p->mu and never takes of->mu).
+static void mark_dirty(Fs::Impl* p, OpenFile& of) {
+  if (!of.save) return;
+  std::lock_guard<std::mutex> g(p->mu);
+  of.save->dirty.insert(of.rel);
 }
 
 uint32_t Fs::write_file(FileId f, int64_t off, const void* buf, size_t n, bool flush) {
@@ -636,6 +707,7 @@ uint32_t Fs::write_file(FileId f, int64_t off, const void* buf, size_t n, bool f
   // The host grows it either way: the game only ever writes inside the size it created.
   if (n && !of->hf.write_at(off, buf, n)) return kResultUsableSpaceNotEnough;
   if (flush) of->hf.flush();
+  mark_dirty(p_.get(), *of);
   if (trace_flags & kTraceFs) log("fs: write file %llu off %lld n %zu", (unsigned long long)f, (long long)off, n);
   return kSuccess;
 }
@@ -662,7 +734,9 @@ uint32_t Fs::set_file_size(FileId f, int64_t size) {
   if (!of->writable) return kResultWriteNotPermitted;
   if (size < 0) return kResultOutOfRange;
   std::lock_guard<std::mutex> g(of->mu);
-  return of->hf.set_size(size) ? kSuccess : kResultUsableSpaceNotEnough;
+  if (!of->hf.set_size(size)) return kResultUsableSpaceNotEnough;
+  mark_dirty(p_.get(), *of);
+  return kSuccess;
 }
 
 uint32_t Fs::get_entry_type(int* out, const std::string& path) {
@@ -892,6 +966,20 @@ uint32_t Fs::commit(const std::string& mount) {
   uint32_t rc = m->save->do_commit(hook);
   if (trace_flags & kTraceFs) log("fs: commit %s -> generation %llu (result %#x)", mount.c_str(), (unsigned long long)m->save->cur, rc);
   return rc;
+}
+
+bool Fs::drain_for_exit(int ms) {
+#ifdef _WIN32
+  const ULONGLONG end = GetTickCount64() + (ULONGLONG)(ms > 0 ? ms : 0);
+  while (!p_->mu.try_lock()) {
+    if (GetTickCount64() >= end) return false;
+    Sleep(5);
+  }
+  return true;
+#else
+  (void)ms;
+  return true;
+#endif
 }
 
 uint32_t Fs::get_free_space(int64_t* out, const std::string& mount) {

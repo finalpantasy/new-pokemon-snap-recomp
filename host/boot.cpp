@@ -176,8 +176,18 @@ static uint8_t *g_short_string;   // a guest std::string "hi" in libc++'s short 
 // A host function with xsputn/overflow's calling convention whose body is `std::string::at(7)` on a 2-character string: the
 // guest libc++ throws a real std::out_of_range ("basic_string") through __cxa_throw. It tail-calls with the caller's x30 and
 // sp intact, so the guest unwinder sees the lifted frame that called it (a host frame has no unwind data).
+// Mode 1 (g_eh_nested) throws through the inline hook path instead: rt_inline_hook with the caller's return address (as at a
+// function-entry hook), whose hook calls string::at through call_guest_nested. The exception must leave the hook by
+// GuestResume and reach the same guest catch handler (recomp/gen.py inline_hook, host/loader.cpp rt_inline_hook).
+extern "C" void rt_inline_hook(Cpu *c, uint64_t ra, void (*fn)(Cpu *c));   // host/loader.cpp
+static bool g_eh_nested;
+static void nested_at(Cpu *c) {
+    call_guest_nested(c, G("_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE2atEm"), {(uint64_t)g_short_string, 7});
+    fprintf(stderr, "eh: nested call returned without the exception\n");
+}
 static void thrower(Cpu *c, Thunk *) {
     g_throw_count++;
+    if (g_eh_nested) { rt_inline_hook(c, c->x[30], nested_at); return; }
     c->x[0] = (uint64_t)g_short_string;
     c->x[1] = 7;
     c->pc = G("_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE2atEm");
@@ -215,7 +225,9 @@ static int test_eh(Cpu *c) {
         {"ostream::operator<<(long)", "_ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEElsEl", {(uint64_t)os, 99}},
         {"ostream::flush()", "_ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE5flushEv", {(uint64_t)os}},
     };
+    for (int mode = 0; mode < 2; mode++)
     for (auto &cs : cases) {
+        g_eh_nested = mode == 1;
         uint64_t f = lookup(cs.sym);
         if (!f) { fprintf(stderr, "eh: %s: symbol missing, skipped\n", cs.name); continue; }
         *rdstate = 0;
@@ -231,10 +243,11 @@ static int test_eh(Cpu *c) {
         bool thrown = g_throw_count > before;
         bool caught = (*rdstate & 1) != 0;   // badbit set by the guest catch handler
         bool ok = thrown && caught && c->sp == sp0 && !c->resuming;
-        fprintf(stderr, "eh: %-32s thrown=%d caught(badbit)=%d sp restored=%d resuming=%llu -> %s\n", cs.name, thrown, caught,
-                c->sp == sp0, (unsigned long long)c->resuming, ok ? "PASS" : "FAIL");
+        fprintf(stderr, "eh: %-32s%s thrown=%d caught(badbit)=%d sp restored=%d resuming=%llu -> %s\n", cs.name,
+                g_eh_nested ? " (hook)" : "", thrown, caught, c->sp == sp0, (unsigned long long)c->resuming, ok ? "PASS" : "FAIL");
         if (!ok) fails++;
     }
+    g_eh_nested = false;
     // many throw/catch cycles: no leak of the resume state and a stable stack pointer
     uint64_t sp0 = c->sp, before = g_throw_count;
     for (int i = 0; i < 2000; i++) {
@@ -483,9 +496,10 @@ static void snap_capture_window(HWND h) {
     fprintf(stderr, "[host] window captured to %s (%dx%d)\n", pathn, w, ht);
 }
 
+extern "C" void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT wr = 0; if (snap_window_proc(h, m, w, l, &wr)) return wr; }   // host/window_opts.cpp: F11, focus, mute, remembered placement
-    if (m == WM_CLOSE || m == WM_DESTROY) { fflush(stderr); ExitProcess(0); }
+    if (m == WM_CLOSE || m == WM_DESTROY) { fflush(stderr); snap_fs_drain_for_exit(5000); ExitProcess(0); }   // waits (5 s) for a save commit in progress
     if (m == WM_TIMER) { snap_capture_window(h); return 0; }
     return DefWindowProcW(h, m, w, l);
 }
@@ -658,27 +672,37 @@ static DWORD WINAPI watchdog(LPVOID) {
             } while (Thread32Next(snap, &te));
             if (snap != INVALID_HANDLE_VALUE) CloseHandle(snap);
         }
-        if (c) {   // saved frame words at sp+16..: the usual AArch64 prologue pair (x19, x30) and the next pair
-            uint64_t *f = (uint64_t *)c->sp;
-            trace("    sp=%#llx [sp+16]=%#llx [sp+24]=%s", (unsigned long long)c->sp, (unsigned long long)f[2], symbolize(f[3]).c_str());
+        // Guest pointers here come from a running (stalled) thread's registers and may point at unmapped memory; the process-wide crash filter would
+        // treat a fault in this thread as a crash. ReadProcessMemory on the own process fails cleanly instead of faulting.
+        auto safe_read = [](uint64_t addr, void *out, size_t n) {
+            SIZE_T got = 0;
+            return ReadProcessMemory(GetCurrentProcess(), (const void *)addr, out, n, &got) && got == n;
+        };
+        uint64_t fw[4];
+        if (c && safe_read(c->sp, fw, sizeof fw)) {   // saved frame words at sp+16..: the usual AArch64 prologue pair (x19, x30) and the next pair
+            trace("    sp=%#llx [sp+16]=%#llx [sp+24]=%s", (unsigned long long)c->sp, (unsigned long long)fw[2], symbolize(fw[3]).c_str());
         }
-        if (c && c->x[0] - 0x7000000000ull < 0x1000000000ull) {   // a guest pointer in x0: dump the object and its vtable
-            uint64_t *o = (uint64_t *)c->x[0];
-            trace("    [x0] = %#llx %#llx %#llx %#llx", (unsigned long long)o[0], (unsigned long long)o[1], (unsigned long long)o[2], (unsigned long long)o[3]);
-            if (o[0] - 0x7000000000ull < 0x1000000000ull) {
-                uint64_t *vt = (uint64_t *)o[0];
-                trace("    vtable %s: %s %s %s", symbolize(o[0]).c_str(), symbolize(vt[5]).c_str(), symbolize(vt[6]).c_str(), symbolize(vt[4]).c_str());
+        uint64_t ow[4];
+        if (c && c->x[0] - 0x7000000000ull < 0x1000000000ull && safe_read(c->x[0], ow, sizeof ow)) {   // a guest pointer in x0: dump the object and its vtable
+            trace("    [x0] = %#llx %#llx %#llx %#llx", (unsigned long long)ow[0], (unsigned long long)ow[1], (unsigned long long)ow[2], (unsigned long long)ow[3]);
+            uint64_t vw[7];
+            if (ow[0] - 0x7000000000ull < 0x1000000000ull && safe_read(ow[0], vw, sizeof vw)) {
+                trace("    vtable %s: %s %s %s", symbolize(ow[0]).c_str(), symbolize(vw[5]).c_str(), symbolize(vw[6]).c_str(), symbolize(vw[4]).c_str());
             }
         }
     }
 }
 
 extern "C" void loader_enable_fntrace();
+void snap_sampler_start(const int *frame);   // runtime\os\sampler.cpp
+void snap_sampler_flush();
+namespace nvn { extern int g_presentCount; }
 static int cmd_run(Cpu *c) {
     loader_enable_fntrace();
     g_main_cpu = c;
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_main_thread_handle, 0, FALSE, DUPLICATE_SAME_ACCESS);
     CreateThread(nullptr, 0, watchdog, nullptr, 0, nullptr);
+    snap_sampler_start(&nvn::g_presentCount);   // SNAP_SAMPLE=1: sampling CPU profiler (runtime\os\sampler.cpp), off by default
     double t0 = now_s();
     trace("boot: sdk and main loaded");
     // the main thread: a Horizon thread with a Thread Local Region; the ELF thread pointer goes into TLR+0x1f0
@@ -927,6 +951,7 @@ int main(int argc, char **argv) {
     if (WaitForSingleObject(h, wait_ms) == WAIT_TIMEOUT) {
         fprintf(stderr, "boot: timeout after %s s, exiting\n", g_o.timeout_s.c_str());
         fflush(stderr);
+        snap_sampler_flush();   // final SNAP_SAMPLE profile (no-op when off)
         TerminateProcess(GetCurrentProcess(), 4);
     }
     DWORD rc = 1;

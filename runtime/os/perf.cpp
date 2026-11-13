@@ -43,7 +43,8 @@ static const char* kCtrName[C_COUNT] = {"replay", "qsubmit", "pace", "acquire", 
 static const char* kValName[V_COUNT] = {"draws", "submits", "cmds", "poolsync_bytes", "poolsync_calls", "uploads", "upload_bytes",
                                         "hash_bytes", "hash_calls", "pipes_created", "scratch_allocs", "desc_sets", "barriers", "shaders",
                                         "pipes_skipped", "upload_pref", "upload_pref_img",
-                                        "pref_miss_none", "pref_miss_fail", "pref_miss_hash", "pref_miss_late"};
+                                        "pref_miss_none", "pref_miss_fail", "pref_miss_hash", "pref_miss_late",
+                                        "pref_miss_drop", "pref_skip_kind", "pref_skip_nosrc", "pref_skip_budget"};
 
 static FILE *g_frames, *g_threads, *g_events;
 static std::mutex g_ev_mu;

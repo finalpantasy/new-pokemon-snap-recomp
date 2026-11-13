@@ -17,7 +17,7 @@ namespace nvn {
 
 using Boolean = uint8_t;           // [CALL 0x90d6xx] callers test the result with `tst w0, #0xff`
 using TextureHandle = uint64_t;    // texture id | sampler id << 20  (unverified for ids > 0xfffff)
-using CommandHandle = uint64_t;    // opaque; we return a CmdList* [CALL 0x903e0x: stored as a 64-bit slot]
+using CommandHandle = uint64_t;    // opaque; an id into the command list table (nvn_life.cpp) [CALL 0x903e0x: stored as a 64-bit slot]
 using NativeWindow = void*;
 using GenericProc = void (*)(void);
 

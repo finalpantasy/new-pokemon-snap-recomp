@@ -1,32 +1,27 @@
 # fixture: post_tutorial
-# Florio photo run from the post_tutorial fixture (lab hub, tutorials done; see analysis\save\fields.md "Story stage").
-# Run: powershell -File host\run_boot.ps1 -Route florio_photos -Timeout 590 -ShotAt 30 -ShotEvery 10 -ShotMax 56
-# 1) Slow A taps: title, update notices, lab hub "Research", course map (Florio is the only open course), course start.
-# 2) In the course A is the shutter: a fast A tap shoots whatever is under the pointer; the film counter (72) runs out and ends the
-#    expedition early, which leads to photo selection and the professor's evaluation (A also confirms there).
-# 3) A slow right-stick yaw wobble keeps Pokemon near the pointer; ZL (zoom) held now and then.
-# 4) From f15000 (photo selection began by p11433 in run 1-20261112_070819, later on a loaded PC): a 900-present cycle of Plus (submit), Up (Yes in
-#    "Is this all you want to show?"; default is No) and A, then A taps for the evaluation dialogue; B at the cycle end closes a pause menu or help page opened by mistake.
-# Result (run 0-20261112_072924): Lental Map -> Florio -> 72 shots -> "May I see your favorite photos?" -> photo selection; every photo
-# was "not clearly visible" (thumbnails black), so Plus led to "Finish without showing photos?" Yes -> Retry Menu -> album save.
-# The professor's scoring screen is NOT reached yet: it needs at least one selectable photo (photo evaluation path).
-repeat @f300 @f12000 120 8 A
-repeat @f6000 @f12000 24 4 A
-repeat @f6000 @f11000 600 200 ZL
-repeat @f6000 @f11000 400 60 rx=0.25
-repeat @f6200 @f11000 400 60 rx=-0.25
-repeat @f15000 @f60000 900 10 Plus
-repeat @f15100 @f60000 900 10 Up
-repeat @f15200 @f60000 900 10 A
-repeat @f15300 @f60000 900 8 A
-repeat @f15350 @f60000 900 8 A
-repeat @f15400 @f60000 900 8 A
-repeat @f15450 @f60000 900 8 A
-repeat @f15500 @f60000 900 8 A
-repeat @f15550 @f60000 900 8 A
-repeat @f15600 @f60000 900 8 A
-repeat @f15650 @f60000 900 8 A
-repeat @f15700 @f60000 900 8 A
-repeat @f15750 @f60000 900 8 A
-repeat @f15800 @f60000 900 8 A
-repeat @f15860 @f60000 900 8 B
+# Florio photo run from the post_tutorial fixture (lab hub, tutorials done; see analysis\save\fields.md "Story stage"), driven by game
+# state ("wait" lines, host\README.md "Waiting on game state"; 2026-11-13). Shoots the 72 photos, then submits none: Plus at photo
+# select, Yes in "Finish without showing photos?", then the Retry Menu and the album save. For the scored path use florio_eval.
+# Run: powershell -File host\run_boot.ps1 -Route florio_photos -Timeout 590 -ShotAt 280 -ShotEvery 10 -ShotMax 40
+# Pass: the log has "wait '!ui=photo_submit' met" and "end of route reached"; the last dumps show what follows (Retry Menu).
+# 1) Slow A taps: title, lab hub "Research", Lental Map (Florio is the only open course), course start.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+# 2) Riding: fast shutter taps, slow right-stick yaw wobble, ZL now and then, until the film is used up.
+repeat @f0 @f30000 24 4 A
+repeat @f0 @f6000 600 200 ZL
+repeat @f0 @f30000 400 60 rx=0.25
+repeat @f200 @f30000 400 60 rx=-0.25
+wait film<=0 timeout=300
+# 3) Rest of the ride, course end and the professor's lines.
+repeat @f120 @f60000 90 8 A
+wait ui=photo_submit:FolderSelect timeout=400
+# 4) Plus (Evaluate Photos) with nothing picked, Up (Yes; the default is No), A. No more taps: A on the Retry Menu would start
+#    the course again. The route ends 20 s after photo select closes.
+@f150 8 Plus
+@f230 8 Up
+@f310 8 A
+wait !ui=photo_submit timeout=60
+end @f1200

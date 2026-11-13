@@ -49,7 +49,7 @@ class Index {
 
 // Mods root: SNAP_MODS_DIR, else %APPDATA%\SnapRecomp\mods.
 std::string default_root();
-// Reads <root>/mods.json (priority order, "enabled" flags; without the file every folder with a pack.json is enabled,
+// Reads <root>/mods.json (priority order, "enabled" flags; without the file nothing is enabled except the packs the game needs (native-options),
 // in name order), each pack.json, and indexes the files of enabled packs. Problems go to `warnings`.
 void load(const std::string& root, Index& out, std::vector<std::string>& warnings);
 

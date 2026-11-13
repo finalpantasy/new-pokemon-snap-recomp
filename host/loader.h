@@ -101,8 +101,15 @@ GuestThread *new_thread(size_t stack_size = 4u << 20);
 
 // Call a guest function from host code. Aborts if an exception or longjmp escapes to the host (resuming set).
 uint64_t call_guest(Cpu *c, uint64_t fn, std::initializer_list<uint64_t> args = {});
-// Same, but for use inside a host override that was itself called from lifted code: x30 and the pc are preserved.
+// Same, but for use inside a host override or inline hook that was itself called from lifted code. The guest state the
+// callee may change is restored afterwards (x0-x30, sp, pc, NZCV, v0-v31, FPCR/FPSR, the exclusive monitor), so a
+// hook between any two instructions sees the Cpu as it left it; the return value is the callee's x0. Inside an inline
+// hook (rt_inline_hook) the callee returns to the hook site's address rather than HOST_SENTINEL, so a guest exception
+// or longjmp reaches the hooked function's landing pad: call_guest_nested then throws GuestResume, which unwinds the
+// hook and leaves c->resuming set for the generated site. Elsewhere it aborts as call_guest does.
 uint64_t call_guest_nested(Cpu *c, uint64_t fn, std::initializer_list<uint64_t> args = {});
+struct GuestResume {};   // thrown by call_guest_nested inside an inline hook; caught by rt_inline_hook only
+constexpr uint64_t HOOK_RA_TAG = 1ull << 63;   // c->pc during an inline hook: tag | return address (0: none)
 
 // Initializers in rtld's order: sdk DT_INIT + init_array, then main DT_INIT + init_array. Each runs on `c`. Returns the
 // number run; stops at max_inits if non-zero. log: print each one.

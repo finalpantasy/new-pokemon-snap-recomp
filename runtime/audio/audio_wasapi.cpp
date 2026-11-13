@@ -24,6 +24,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -50,11 +52,22 @@ class Notify : public IMMNotificationClient {
   }
   HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR) override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR, DWORD) override { SetEvent(ev_); return S_OK; }
+  // Only the render endpoint in use matters (a USB mic, a headset's capture side or an idle second card must not rebuild the stream and
+  // signal the game). With no endpoint open (cur_ empty) any render device becoming active is worth a retry.
+  HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR id, DWORD state) override {
+    std::lock_guard<std::mutex> g(mu_);
+    if (!id) return S_OK;
+    if (!cur_.empty()) { if (cur_ == id) SetEvent(ev_); }
+    else if (state == DEVICE_STATE_ACTIVE) SetEvent(ev_);
+    return S_OK;
+  }
+  void set_current(const wchar_t* id) { std::lock_guard<std::mutex> g(mu_); cur_ = id ? id : L""; }
   HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR, const PROPERTYKEY) override { return S_OK; }
  private:
   std::atomic<ULONG> ref_{1};
   HANDLE ev_;
+  std::mutex mu_;
+  std::wstring cur_;   // id of the render endpoint the stream is built on
 };
 
 void make_format(WAVEFORMATEXTENSIBLE& w, uint32_t rate, uint32_t ch) {
@@ -266,11 +279,12 @@ class WasapiBackend : public Backend {
     make_format(wf, fmt_.rate, ch);
     s.ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     const DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-    bool done = false;
+    bool done = false, triedLowLat = false;
     lowLat_ = false;
     if (!std::getenv("SNAP_AUDIO_NO_LOWLAT") && fmt_.bufferMs == 0) {
       IAudioClient3* a3 = nullptr;
       if (SUCCEEDED(s.ac->QueryInterface(IID_PPV_ARGS(&a3)))) {
+        triedLowLat = true;
         UINT32 defP = 0, fund = 0, minP = 0, maxP = 0;
         if (SUCCEEDED(a3->GetSharedModeEnginePeriod(&wf.Format, &defP, &fund, &minP, &maxP)) &&
             SUCCEEDED(a3->InitializeSharedAudioStream(flags, minP, &wf.Format, nullptr))) {
@@ -280,10 +294,17 @@ class WasapiBackend : public Backend {
       }
     }
     if (!done) {
+      if (triedLowLat) {   // a client whose InitializeSharedAudioStream failed cannot be initialized again: take a fresh one
+        safe_release(s.ac);
+        IMMDevice* d2 = nullptr;
+        if (FAILED(en->GetDefaultAudioEndpoint(eRender, eConsole, &d2))) return false;
+        hr = d2->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&s.ac);
+        safe_release(d2);
+        if (FAILED(hr)) return false;
+      }
       const REFERENCE_TIME dur = fmt_.bufferMs ? (REFERENCE_TIME)fmt_.bufferMs * 10000 : 0;
       hr = s.ac->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, dur, 0, &wf.Format, nullptr);
       if (FAILED(hr)) {
-        // A failed Initialize leaves the client unusable; reactivate once without the event mode being the issue.
         std::fprintf(stderr, "[audio] WASAPI Initialize failed 0x%08lx\n", (unsigned long)hr);
         return false;
       }
@@ -332,6 +353,13 @@ class WasapiBackend : public Backend {
       int mode = fmt_.mode;
       uint32_t ch = fmt_.channels;
       bool ok = false, spatialOpen = false;
+      {  // remember which endpoint this build uses (device-state notifications for other endpoints are ignored)
+        IMMDevice* cd = nullptr; LPWSTR cid = nullptr;
+        if (en && SUCCEEDED(en->GetDefaultAudioEndpoint(eRender, eConsole, &cd)) && SUCCEEDED(cd->GetId(&cid))) nc->set_current(cid);
+        else nc->set_current(nullptr);
+        if (cid) CoTaskMemFree(cid);
+        safe_release(cd);
+      }
       if (en && mode == SNAP_AUDIO_OUT_SPATIAL) {
         if (open_spatial(en, sp)) { ok = true; spatialOpen = true; }
         else {

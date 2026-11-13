@@ -10,9 +10,16 @@
 #include <cstring>
 
 #include "nvn_internal.h"
+#include "nvn_aa.h"   // AaForgetTexture
 #include "nvn_hdr.h"   // HDR10 output (SNAP_HDR=1)
+#include "nvn_pace.h"   // [pace] frame clock for the limiter and the guest vsync (SNAP_PACE=legacy restores the old limiter)
 #include "upscale/upscale_nvn.h"   // [upscale] DLSS / FSR / XeSS (SNAP_UPSCALER)
 #include "os/perf.h"   // SNAP_PERF instrumentation (off unless the env var is set)
+// runtime/os: give the virtual core back while pacing. Standalone nvn builds (tests/nvn) have no os layer: the alternatename
+// pragmas bind the no-op fallbacks below when os_kernel.cpp is not linked.
+extern "C" { void os_host_block_begin(void); void os_host_block_end(void); void nvn_os_block_noop(void) {} }
+#pragma comment(linker, "/alternatename:os_host_block_begin=nvn_os_block_noop")
+#pragma comment(linker, "/alternatename:os_host_block_end=nvn_os_block_noop")
 #include "ui/ui_present.h"   // controls overlay hook (runtime/ui); the stub below keeps nvn-only builds linking
 extern "C" void snap_ui_present_none(const SnapUiFrame*) {}
 #pragma comment(linker, "/alternatename:snap_ui_present=snap_ui_present_none")
@@ -266,6 +273,12 @@ bool Host::Init(bool wantValidation) {
   VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   f13.synchronization2 = VK_TRUE;
   f13.dynamicRendering = VK_TRUE;
+  {   // translator patch 0010 (SNAP_XLATE_REV=3) turns KIL into OpDemoteToHelperInvocation; the feature is harmless when no module uses it
+    VkPhysicalDeviceVulkan13Features qd{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 qd2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &qd};
+    vkGetPhysicalDeviceFeatures2(phys, &qd2);
+    f13.shaderDemoteToHelperInvocation = qd.shaderDemoteToHelperInvocation;
+  }
   VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
   f12.timelineSemaphore = VK_TRUE;
   f12.pNext = &f13;
@@ -330,6 +343,7 @@ bool Host::Init(bool wantValidation) {
     }
     fprintf(stderr, "[nvn] maxwell checks: provokingVertexLast=%d customBorderColor=%d subgroupPin=0x%x\n", (int)g_provokingLast, (int)g_customBorder, (unsigned)g_sgPinStages);
   }
+  snap_pace::AppendDeviceExt(phys, dext, &f11);   // [pace] VK_KHR_present_id + present_wait (queue depth cap)
   UpscaleDeviceExtensions(this, dext, &en.pNext, &f11, &f12, &f13);   // [upscale] backend extensions and features
   VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   dci.pNext = &en;
@@ -340,6 +354,7 @@ bool Host::Init(bool wantValidation) {
   if (vkCreateDevice(phys, &dci, nullptr, &device) != VK_SUCCESS) { LogError("vkCreateDevice failed"); return false; }
   vkGetDeviceQueue(device, family, 0, &queue);
   snap_hdr::LoadDeviceFuncs(device);
+  snap_pace::DeviceCreated(device);   // [pace]
   UpscaleDeviceCreated(this);   // [upscale]
   VkPipelineCacheCreateInfo pci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
   VKCHK(vkCreatePipelineCache(device, &pci, nullptr, &pipelineCache));
@@ -365,6 +380,7 @@ void Host::Shutdown() {
   if (device) vkDeviceWaitIdle(device);
   if (device) UpscaleDestroy(this);   // [upscale]
   if (device) DestroyHostExtras(this);
+  if (device) GraveDrain(this);   // [nvnfix] retired textures, samplers, pools, programs (the device is idle)
   if (device) { TexPrefetchShutdown(); ScratchPoolDrain(this); }   // [perf] staged prefetch images, recycled scratch buffers
   if (pipelineCache) vkDestroyPipelineCache(device, pipelineCache, nullptr);
   if (device) vkDestroyDevice(device, nullptr);
@@ -551,8 +567,12 @@ VkImageView TextureImpl::View(const TexView* v, bool sampled, int shaderType, co
   // [perf] binary key (snprintf was most of this function's cost; called per sampled texture per draw). The 0x01 lead byte keeps it
   // apart from RenderView's text keys ("R...") in the shared map.
   // 15 bytes so it stays in the string's small buffer (no heap allocation per lookup).
+  // [nvnfix] RGBX / BGRX formats map to full RGBA Vulkan formats: a sampled view reads alpha as 1, as the X channel does on the
+  // hardware (bit 0x40 of kb[1]; view types are < 0x40). Storage views keep the identity swizzle (Vulkan requires it).
+  const int nvnFmt = ((v->flags & 4) && vf != fi) ? v->format : b.format;
+  const bool xAlpha = sampled && (nvnFmt == FMT_RGBX8_SRGB || nvnFmt == FMT_BGRX8 || nvnFmt == FMT_BGRX8_SRGB);
   char kb[15];
-  kb[0] = 1; kb[1] = (char)((sampled ? 0x80 : 0) | ((unsigned)vt & 0x7f)); kb[2] = (char)(uint8_t)asp;
+  kb[0] = 1; kb[1] = (char)((sampled ? 0x80 : 0) | (xAlpha ? 0x40 : 0) | ((unsigned)vt & 0x3f)); kb[2] = (char)(uint8_t)asp;
   const uint32_t vkf = (uint32_t)vf->vk; memcpy(kb + 3, &vkf, 4);
   const uint16_t lv[4] = {(uint16_t)r.lb, (uint16_t)r.ln, (uint16_t)r.yb, (uint16_t)r.yn}; memcpy(kb + 7, lv, 8);
   const std::string key(kb, sizeof kb);
@@ -563,6 +583,7 @@ VkImageView TextureImpl::View(const TexView* v, bool sampled, int shaderType, co
   ci.viewType = vt;
   ci.format = vf->vk;
   ci.subresourceRange = {asp, r.lb, r.ln, r.yb, r.yn};
+  if (xAlpha) { ci.components.a = VK_COMPONENT_SWIZZLE_ONE; LifeCount(LS_X_ALPHA_VIEWS); }
   VkImageView iv = VK_NULL_HANDLE;
   if (vkCreateImageView(host->device, &ci, nullptr, &iv) != VK_SUCCESS) { LogError("vkCreateImageView failed"); return VK_NULL_HANDLE; }
   views[key] = iv; viewTypes[iv] = ci.viewType;
@@ -591,6 +612,7 @@ void DestroyTexture(TextureImpl* t) {
   if (!t) return;
   TexPrefetchForget(t);   // [perf] a prefetch job may be reading its guest data
   UpscaleForgetTexture(t);   // [upscale]
+  AaForgetTexture(t);   // drops the AA step's cached UNORM views of this image (the graveyard calls this once the GPU is done with it)
   if (t->bcShadow) { DestroyTexture(t->bcShadow); t->bcShadow = nullptr; }
   if (t->xferShadow) { DestroyTexture(t->xferShadow); t->xferShadow = nullptr; }
   if (t->host && t->host->device) {
@@ -606,16 +628,23 @@ void DestroyTexture(TextureImpl* t) {
 // memory (preferring DEVICE_LOCAL, i.e. resizable BAR) and are updated by memcpy from the guest pointer at
 // MemoryPoolFlushMappedRange. GPU-only pools use DEVICE_LOCAL. Backing is created lazily (first flush / first
 // buffer bind) because the game also creates many pools that only hold texture storage.
+// [nvnfix] Loader threads (MemoryPoolFlushMappedRange, BufferFlushMappedRange) and the replay thread (ResolveBuf) can get here
+// together. Creation is serialized and p->buffer is published last, so a thread that sees it non-null also sees bound memory and
+// p->mapped (it used to be set before the allocation: a second thread could use an unbound buffer, or both allocated).
 bool EnsureBacking(PoolImpl* p) {
-  if (p->buffer) return true;
+  if (__atomic_load_n(&p->buffer, __ATOMIC_ACQUIRE)) return true;
+  static std::mutex initMu;
+  std::lock_guard<std::mutex> initLk(initMu);
+  if (p->buffer) { LifeCount(LS_BACKING_RACE); return true; }
   Host* h = p->host;
   VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   bi.size = p->size;
   bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
              VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-  if (vkCreateBuffer(h->device, &bi, nullptr, &p->buffer) != VK_SUCCESS) { p->buffer = VK_NULL_HANDLE; return false; }
-  VkMemoryRequirements mr; vkGetBufferMemoryRequirements(h->device, p->buffer, &mr);
+  VkBuffer buffer = VK_NULL_HANDLE;
+  if (vkCreateBuffer(h->device, &bi, nullptr, &buffer) != VK_SUCCESS) return false;
+  VkMemoryRequirements mr; vkGetBufferMemoryRequirements(h->device, buffer, &mr);
   uint32_t type = UINT32_MAX;
   if (p->Cpu()) {
     const VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -629,15 +658,16 @@ bool EnsureBacking(PoolImpl* p) {
   mai.memoryTypeIndex = type;
   if (type == UINT32_MAX || vkAllocateMemory(h->device, &mai, nullptr, &p->memory) != VK_SUCCESS) {
     LogError("pool backing allocation failed (%llu bytes)", (unsigned long long)p->size);
-    vkDestroyBuffer(h->device, p->buffer, nullptr); p->buffer = VK_NULL_HANDLE; p->memory = VK_NULL_HANDLE; return false;
+    vkDestroyBuffer(h->device, buffer, nullptr); p->memory = VK_NULL_HANDLE; return false;
   }
-  vkBindBufferMemory(h->device, p->buffer, p->memory, 0);
+  vkBindBufferMemory(h->device, buffer, p->memory, 0);
   if (h->memProps.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
     void* m = nullptr;
     vkMapMemory(h->device, p->memory, 0, VK_WHOLE_SIZE, 0, &m);
     p->mapped = static_cast<uint8_t*>(m);
     if (p->mapped && p->storage) memcpy(p->mapped, p->storage, (size_t)p->size);
   }
+  __atomic_store_n(&p->buffer, buffer, __ATOMIC_RELEASE);
   return true;
 }
 // ---- synthetic GPU address space ----------------------------------------------------------------------------------
@@ -749,8 +779,30 @@ static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
   const uint64_t pb = off & ~0xFFFull, pe = std::min<uint64_t>((end + 0xFFF) & ~0xFFFull, p->size);
   ULONG_PTR n = (ULONG_PTR)((pe - pb) >> 12); DWORD gran = 0;
   if (!n) return true;
+  // [cpuprof 2026-11-13] ~640 ranges per course frame each paid a GetWriteWatch syscall (~1.2 ms of the 4.3 ms replay). Take one
+  // whole-pool snapshot without reset per replay epoch; a range none of whose pages were dirty at the snapshot needs no syscall (the
+  // guest wrote it before the submit or not at all; a write after the snapshot stays dirty for the next epoch, like a write after the
+  // per-range reset did). Ranges with a dirty page still use GetWriteWatch with reset below, which also returns later writes.
+  static const bool kSnap = [] { const char* e = getenv("SNAP_POOLSYNC_SNAPSHOT"); return !(e && *e == '0'); }();
+  if (kSnap) {
+    if (p->wwSnapEpoch != g_replayEpoch) {
+      p->wwSnapEpoch = g_replayEpoch;
+      ULONG_PTR m = (ULONG_PTR)(p->size >> 12); DWORD g = 0;
+      addrs.resize((size_t)std::max<ULONG_PTR>(m, 1));
+      p->wwBits.assign((size_t)((p->size >> 12) + 63) / 64, 0);
+      if (GetWriteWatch(0, p->storage, (SIZE_T)p->size, addrs.data(), &m, &g) != 0) p->wwSnapEpoch = 0;   // per-range syscalls this epoch
+      else for (ULONG_PTR i = 0; i < m; i++) { const uint64_t pg = ((uintptr_t)addrs[i] - base) >> 12; p->wwBits[pg >> 6] |= 1ull << (pg & 63); }
+    }
+    if (p->wwSnapEpoch == g_replayEpoch) {
+      bool any = false;
+      for (uint64_t pg = pb >> 12; pg < (pe >> 12) && !any; pg++) any = (p->wwBits[pg >> 6] >> (pg & 63)) & 1;
+      if (!any) return true;
+    }
+  }
   addrs.resize((size_t)n);
   if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, (uint8_t*)p->storage + pb, (SIZE_T)(pe - pb), addrs.data(), &n, &gran) != 0) { p->ww = -1; return false; }
+  if (kSnap && p->wwSnapEpoch == g_replayEpoch)   // [cpuprof] these pages are reset and copied now
+    for (uint64_t pg = pb >> 12; pg < (pe >> 12); pg++) p->wwBits[pg >> 6] &= ~(1ull << (pg & 63));
   uint64_t copied = 0;
   for (ULONG_PTR i = 0; i < n;) {   // addresses come back in ascending order: coalesce runs of adjacent pages
     const uint64_t rb = (uint64_t)((uintptr_t)addrs[i] - base);
@@ -847,7 +899,7 @@ VkCommandBuffer QueueImpl::AcquireCb() {
   ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   ai.commandBufferCount = 1;
   VkCommandBuffer cb = VK_NULL_HANDLE;
-  vkAllocateCommandBuffers(host->device, &ai, &cb);
+  if (vkAllocateCommandBuffers(host->device, &ai, &cb) != VK_SUCCESS) { LogError("vkAllocateCommandBuffers failed (out of memory?)"); return VK_NULL_HANDLE; }   // [nvnfix] callers skip the work
   return cb;
 }
 void QueueImpl::Reap(bool wait_all) {
@@ -862,7 +914,7 @@ void QueueImpl::Reap(bool wait_all) {
   size_t keep = 0;
   for (auto& r : inflight) {
     if (r.value <= done) {
-      freeCbs.push_back(r.cb); delete r.list;
+      freeCbs.push_back(r.cb); ListRelease(r.list);   // [nvnfix] the submit's reference (a re-submitted list lives on)
       for (auto dp : r.pools) { vkResetDescriptorPool(host->device, dp, 0); freePools.push_back(dp); }
       for (auto& sb : r.scratch) ReleaseScratch(host, sb);   // [perf] recycled (or destroyed as before)
     }
@@ -1042,6 +1094,20 @@ static void EmitScissor(ReplayCtx& cx, int i) {
   vkCmdSetScissor(cx.cb, (uint32_t)i, 1, &r);
 }
 
+// [nvnfix] review_nvn.md 11 (measurement): NVN clears honor the scissor, ours clear the whole subresource. Counts clears made while
+// scissor 0 is set smaller than the target level (guest pixels), to see whether the game relies on scissored clears.
+static void CountScissoredClear(const ReplayCtx& cx, const TextureImpl* t, const TexView* v) {
+  if (!(cx.scHave & 1)) return;
+  const SubRange rr = RtRange(t, v);
+  const int lw = std::max(1, t->b.width >> rr.lb), lh = std::max(1, t->b.height >> rr.lb);
+  const int* s = cx.scGuest[0];
+  if (s[0] > 0 || s[1] > 0 || s[0] + s[2] < lw || s[1] + s[3] < lh) {
+    LifeCount(LS_CLEAR_SCISSORED);
+    static int logged = 0;
+    if (logged++ < 6 && getenv("SNAP_NVN_STATS")) fprintf(stderr, "[nvnstats] scissored clear: target %dx%d level %u fmt 0x%x scissor %d,%d %dx%d\n", t->b.width, t->b.height, rr.lb, t->b.format, s[0], s[1], s[2], s[3]);
+  }
+}
+
 static void Replay(ReplayCtx& cx, const CmdList& list) {
   Host* h = cx.h;
   VkCommandBuffer cb = cx.cb;
@@ -1071,6 +1137,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         EndRendering(cx);
         TextureImpl* t = (c.i[0] >= 0 && c.i[0] < 8) ? rt[c.i[0]] : nullptr;
         if (!t || !t->EnsureImage()) { Log("ClearColor with no usable render target %d", c.i[0]); break; }
+        CountScissoredClear(cx, t, cx.rtHasView[c.i[0]] ? &cx.rtView[c.i[0]] : nullptr);   // [nvnfix] SNAP_NVN_STATS
         if ((c.i[1] & 0xF) != 0xF) { if (c.i[1] & 0xF) DoMaskedClear(cx, t, cx.rtHasView[c.i[0]] ? &cx.rtView[c.i[0]] : nullptr, c.i[1] & 0xF, c.f); break; }
         t->uploaded = true;
         const SubRange rr = RtRange(t, cx.rtHasView[c.i[0]] ? &cx.rtView[c.i[0]] : nullptr);   // only the bound mip level / layers
@@ -1088,6 +1155,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         EndRendering(cx);
         TextureImpl* t = rt[8];
         if (!t || !t->EnsureImage()) { Log("ClearDepthStencil with no depth target"); break; }
+        CountScissoredClear(cx, t, cx.rtHasView[8] ? &cx.rtView[8] : nullptr);   // [nvnfix] SNAP_NVN_STATS
         VkImageAspectFlags asp = 0;
         if (c.i[0] && (t->fi->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) asp |= VK_IMAGE_ASPECT_DEPTH_BIT;     // depthMask
         if (c.i[2] && (t->fi->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) asp |= VK_IMAGE_ASPECT_STENCIL_BIT;  // stencilMask
@@ -1186,6 +1254,7 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
     if (!l) continue;
     if (g_hooks.on_submit) g_hooks.on_submit(g_hooks.user, k, (int)l->cmds.size());
     VkCommandBuffer cb = q->AcquireCb();
+    if (!cb) { ListRelease(l); continue; }   // [nvnfix] allocation failed (logged): drop this list, not the process
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cb, &bi);
@@ -1352,6 +1421,7 @@ bool WindowImpl::Recreate() {
     acquireSems.push_back(s); acquireValue.push_back(0);
   }
   needRecreate = false;
+  snap_pace::SwapchainCreated(swapchain, hwnd);   // [pace] present ids restart on the new swapchain
   Log("swapchain %ux%u images=%u fmt=%d mode=%d", ext.width, ext.height, n, (int)scFormat, (int)mode);
   if (snap_hdr::Requested()) fprintf(stderr, "hdr: swapchain %ux%u fmt=%d colorspace=%d %s (peak %.0f nits, paper white %.0f nits, mode %s)\n", ext.width, ext.height, (int)scFormat, (int)pick.colorSpace,
                                      hdr ? (snap_hdr::IsScrgb() ? "scRGB active" : "HDR10 ST2084 active") : "SDR (fallback)", snap_hdr::Peak(), snap_hdr::Paper(), snap_hdr::ModeName());
@@ -1373,7 +1443,8 @@ void DestroyWindow(WindowImpl* w) {
 
 // Frame limiter for present intervals >= 1: absolute schedule on the steady clock, high-resolution timer for the
 // bulk of the wait and a short spin for the rest. Resyncs when the game falls more than one period behind.
-static void Pace(WindowImpl* w) {
+// [pace] SNAP_PACE=legacy only; the default model is snap_pace::Release (nvn_pace.cpp).
+static void PaceLegacy(WindowImpl* w) {
   if (g_paceHz <= 0 || w->presentInterval <= 0) { w->nextPresentNs = 0; return; }
   using namespace std::chrono;
   int64_t period = (int64_t)(1e9 * w->presentInterval / g_paceHz);
@@ -1393,14 +1464,39 @@ static void Pace(WindowImpl* w) {
   while (duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count() < w->nextPresentNs) YieldProcessor();
 }
 
+// [pace] Frame limiter. Default: one frame clock locked to the display's vblanks when the refresh is a whole multiple of the
+// rate (else a steady-clock grid), shared with the guest vsync event (nvn_pace.h). SNAP_PACE=legacy: PaceLegacy above.
+static void Pace(WindowImpl* w) {
+  snap_pace::PaceMark(false);   // SNAP_PACE_LOG
+  if (snap_pace::Legacy()) PaceLegacy(w);
+  else {
+    int64_t period = 0;
+    if (g_paceHz > 0 && w->presentInterval > 0) {
+      period = (int64_t)(1e9 * w->presentInterval / g_paceHz);
+      if (const int cap = snap_window_frame_cap(); cap > 0) period = std::max(period, (int64_t)(1e9 / cap));   // hook request 3
+    }
+    snap_pace::Release(w->hwnd, w->swapchain, period, g_paceHz > 0 ? (int64_t)(1e9 / g_paceHz) : 0);
+  }
+  snap_pace::PaceMark(true);
+}
+
 int g_fdBurst = 0;
 static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   Host* h = q->host;
   if (slot < 0 || slot >= (int)w->tex.size()) { LogError("present of invalid slot %d", slot); return false; }
-  TextureImpl* src = w->tex[slot];
-  if (!src->EnsureImage()) return false;
+  TextureImpl* src = w->tex[slot];   // [nvnfix] EnsureImage moved under queueMutex below: a replay may create the same image
   struct PerfFrame { QueueImpl* q; ~PerfFrame() { if (snap_perf::on) PerfFrameMark(q, (uint64_t)g_presentCount); } } perfFrame{q};   // one CSV row per present (SNAP_PERF)
-  { snap_perf::Scope perfScope(snap_perf::C_PACE); Pace(w); }
+  {
+    // Load pass (2026-11-13): the frame limiter is a wait (vsync on the Switch), so the presenting JobWorker gives its virtual
+    // core back while it sleeps; loader threads pinned to that core (ResourceUncompress p31) ran only between frames before,
+    // which made loading screens CPU-starved. SNAP_PACE_RELEASE_CORE=0 keeps the core (old). SNAP_NVN_RELEASE_CORE=1 still
+    // releases it around the whole present (bridge).
+    static const bool kPaceRelease = [] { const char* e = getenv("SNAP_PACE_RELEASE_CORE"); return !(e && e[0] == '0'); }();
+    snap_perf::Scope perfScope(snap_perf::C_PACE);
+    if (kPaceRelease) os_host_block_begin();
+    Pace(w);
+    if (kPaceRelease) os_host_block_end();
+  }
   // Test switch (off by default): SNAP_STRESS_PRESENT_MS=<ms>[:<from>:<to>] sleeps that long per present (only for presents from..to
   // if given), like the very slow runs (4-7 presents/s) in which crash B1 (GPU arena 7 full) happened.
   {
@@ -1408,9 +1504,12 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     static const bool on = [] { const char* e = getenv("SNAP_STRESS_PRESENT_MS"); if (e) sscanf(e, "%d:%d:%d", &ms, &from, &to); return ms > 0; }();
     if (on && g_presentCount >= from && g_presentCount <= to) Sleep((DWORD)ms);
   }
-  std::lock_guard<std::mutex> lk(h->queueMutex);
+  std::unique_lock<std::mutex> lk(h->queueMutex);   // [pace] unique_lock: dropped around the acquire waits below
+  if (!src->EnsureImage()) return false;
   q->Reap(false);
   OwnPoolReap(q);   // fallback buffer pools retired by BufferFinalize (B1 safety net)
+  GraveReap(q);     // [nvnfix] finalized textures, samplers, pools, programs whose last possible use has completed
+  LifeStatsTick();  // [nvnfix] SNAP_NVN_STATS=1
   g_presentCount++;
   UpscaleOnPresent();   // [upscale]
   if (g_hooks.on_present) g_hooks.on_present(g_hooks.user, slot, src->b.width, src->b.height);
@@ -1419,6 +1518,11 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   // The acquire semaphore must have no pending wait: gate reuse on the timeline value of the submit that waited it.
   if (w->needRecreate && !w->Recreate()) return false;
   const uint32_t ak = w->acquireNext++ % (uint32_t)w->acquireSems.size();
+  // [pace] The timeline wait and vkAcquireNextImageKHR block on the GPU and the display but touch no queue, so the default model
+  // drops the queue lock around them (other threads keep submitting); Recreate (vkDeviceWaitIdle) retakes it. Legacy holds it.
+  const bool dropLock = !snap_pace::Legacy();
+  if (dropLock) lk.unlock();
+  snap_pace::Stamp(snap_pace::M_ACQ_BEGIN);
   if (w->acquireValue[ak]) {
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wi.semaphoreCount = 1; wi.pSemaphores = &q->timeline; wi.pValues = &w->acquireValue[ak];
@@ -1426,7 +1530,12 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     vkWaitSemaphores(h->device, &wi, UINT64_MAX);
   }
   for (int attempt = 0; attempt < 3; attempt++) {
-    if (w->needRecreate && !w->Recreate()) return false;
+    if (w->needRecreate) {
+      if (dropLock) lk.lock();
+      const bool ok = w->Recreate();
+      if (dropLock) lk.unlock();
+      if (!ok) return false;
+    }
     VkResult r;
     { snap_perf::Scope perfScope(snap_perf::C_ACQUIRE); r = vkAcquireNextImageKHR(h->device, w->swapchain, UINT64_MAX, w->acquireSems[ak], VK_NULL_HANDLE, &idx); }
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) { if (r == VK_SUBOPTIMAL_KHR) w->needRecreate = true; break; }
@@ -1434,6 +1543,8 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     LogError("vkAcquireNextImageKHR failed: %d", (int)r);
     return false;
   }
+  snap_pace::Stamp(snap_pace::M_ACQ_END);
+  if (dropLock) lk.lock();
 
   VkCommandBuffer cb = q->AcquireCb();
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -1608,8 +1719,12 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &w->renderDone[idx];
   pi.swapchainCount = 1; pi.pSwapchains = &w->swapchain; pi.pImageIndices = &idx;
+  pi.pNext = snap_pace::PresentChain(w->swapchain);   // [pace] present id for the queue depth cap
   VkResult pr;
+  snap_pace::Stamp(snap_pace::M_QP_BEGIN);
   { snap_perf::Scope perfScope(snap_perf::C_PRESENT); pr = vkQueuePresentKHR(h->queue, &pi); }
+  snap_pace::Stamp(snap_pace::M_QP_END);
+  snap_pace::Presented(w->swapchain, pr);
   if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) w->needRecreate = true;
   else if (pr < 0) LogError("vkQueuePresentKHR failed: %d", (int)pr);
   w->acquireValue[ak] = v;

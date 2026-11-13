@@ -2,6 +2,7 @@
 #include "hle_config.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -14,6 +15,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <knownfolders.h>
+#include <shlobj.h>
 #endif
 
 namespace hle {
@@ -31,10 +34,28 @@ static std::string join(const std::string& a, const char* b) {
 #endif
 }
 
+#ifdef _WIN32
+// %APPDATA% as UTF-8. getenv returns the ANSI code page, which the u8path users (fs_core, settings, profiles) would misread for a
+// non-ASCII user name; _wgetenv (or the known-folder API when the variable is missing) is exact.
+std::string appdata_utf8() {
+  std::wstring w;
+  if (const wchar_t* e = _wgetenv(L"APPDATA"); e && *e) w = e;
+  else {
+    PWSTR p = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &p)) && p) w = p;
+    if (p) CoTaskMemFree(p);
+  }
+  if (w.empty()) return ".";
+  int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+  std::string s((size_t)(n > 0 ? n : 0), '\0');
+  if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+  return s;
+}
+#endif
+
 std::string default_data_root() {
 #ifdef _WIN32
-  const char* a = std::getenv("APPDATA");
-  return std::string(a ? a : ".") + "\\SnapRecomp";
+  return appdata_utf8() + "\\SnapRecomp";
 #else
   const char* h = std::getenv("HOME");
   return std::string(h ? h : ".") + "/.local/share/SnapRecomp";
@@ -86,7 +107,7 @@ bool load_config(const std::string& path_in) {
     else path = join(join(default_data_root(), "config"), "hle.json");
   }
   bool ok = true;
-  std::ifstream f(path, std::ios::binary);
+  std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
   if (f) {
     std::stringstream ss;
     ss << f.rdbuf();
@@ -111,6 +132,7 @@ bool load_config(const std::string& path_in) {
       if (auto* v = j.get("region")) c.region = v->str(c.region);
       if (auto* v = j.get("docked")) c.docked = v->boolean(c.docked);
       if (auto* v = j.get("display_version")) c.display_version = v->str(c.display_version);
+      if (auto* v = j.get("player_name")) { if (!v->str().empty()) c.player_name = v->str(); }
       if (auto* v = j.get("headless")) c.headless = v->boolean(c.headless);
       if (auto* v = j.get("input_map")) c.input_map_path = v->str();
       if (auto* v = j.get("screenshot_dir")) c.screenshot_dir = v->str();
@@ -121,6 +143,7 @@ bool load_config(const std::string& path_in) {
   }
   if (const char* e = std::getenv("SNAP_ROMFS")) if (*e) c.romfs_root = e;
   if (const char* e = std::getenv("SNAP_SAVE_ROOT")) if (*e) c.save_root = e;
+  if (const char* e = std::getenv("SNAP_PLAYER_NAME")) if (*e) c.player_name = e;
   if (const char* e = std::getenv("SNAP_SAVE_DIR")) if (*e) c.save_root = e;   // wins over SNAP_SAVE_ROOT; default %APPDATA%\SnapRecomp\save
   if (const char* e = std::getenv("SNAP_HLE_HEADLESS")) if (*e && *e != '0') c.headless = true;
   g_save_explicit = !c.save_root.empty();

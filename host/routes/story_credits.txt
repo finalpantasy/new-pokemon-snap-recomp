@@ -1,0 +1,4 @@
+# fixture: post_tutorial
+# Story credits probe (2026-11-13, story worker): same save as story_end (scenario bits 0-26 and 32, flag byte 3e2d). Fast A taps (every 50 presents) get through the
+# final cutscene sooner so the staff roll can run to its end inside the 10 minute cap; no Skip (Plus) press.
+repeat @f300 @f26000 50 6 A

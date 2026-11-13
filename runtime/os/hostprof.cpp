@@ -62,6 +62,7 @@ struct HostProf {
     void run() {
         const DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
         std::unordered_map<DWORD, HANDLE> threads;
+        std::unordered_map<DWORD, ULONG64> cycles;
         double next_scan = 0, next_dump = 10;
         bool final_done = false;
         for (;;) {
@@ -92,6 +93,12 @@ struct HostProf {
             }
             for (auto &kv : threads) {
                 if (n >= cap) break;
+                ULONG64 cyc = 0;   // only threads that ran since the last sample (blocked threads would all land in ntdll waits)
+                QueryThreadCycleTime(kv.second, &cyc);
+                ULONG64 &last = cycles[kv.first];
+                const bool ran = cyc - last > 20000;
+                last = cyc;
+                if (!ran) continue;
                 if (SuspendThread(kv.second) == (DWORD)-1) continue;
                 CONTEXT c{};
                 c.ContextFlags = CONTEXT_CONTROL;

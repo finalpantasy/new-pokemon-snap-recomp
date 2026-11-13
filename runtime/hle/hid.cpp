@@ -6,6 +6,7 @@
 //   GetSixAxisSensorStates(buf, 16, handle) with a 0x60-byte state stride (0x4c15ec) and angular velocity at +0x1c.
 // All four GetNpadState variants write a 0x28-byte state: {s64 samplingNumber; u64 buttons; s32 lx, ly, rx, ry; u32 attributes}.
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "hle.h"
@@ -170,8 +171,14 @@ void hid_send_vibration_value(Cpu* c) {  // (const VibrationDeviceHandle&, const
   const float* v = ptr<const float>(arg(c, 1));
   if (trace_flags & kTraceHid) log("hid: SendVibrationValue");
   if (input::rumble_log_enabled()) log("rumble: SendVibrationValue handle=%#x ampLow=%.3f freqLow=%.1f ampHigh=%.3f freqHigh=%.1f from main+%#llx", load<uint32_t>(ptr<void>(arg(c, 0))), v[0], v[1], v[2], v[3], (unsigned long long)(c->x[30] - 0x7100000000ull));
-  float low = std::clamp(v[0], 0.0f, 1.0f), high = std::clamp(v[2], 0.0f, 1.0f);
-  input::hub().rumble(low, high);
+  // Two actuators (handle low byte 1 = left, 2 = right) feed one pad: remember each one's amplitudes and send the stronger of
+  // the two per motor, so a left-then-right call pair per frame does not flip the motors between two values. NaN counts as 0.
+  const auto amp = [](float a) { return std::isfinite(a) ? std::clamp(a, 0.0f, 1.0f) : 0.0f; };
+  static float s_low[2] = {0, 0}, s_high[2] = {0, 0};
+  const uint32_t h = load<uint32_t>(ptr<void>(arg(c, 0)));
+  const int idx = ((h & 0xff) == 2) ? 1 : 0;
+  s_low[idx] = amp(v[0]); s_high[idx] = amp(v[2]);
+  input::hub().rumble(std::max(s_low[0], s_low[1]), std::max(s_high[0], s_high[1]));
   input::script_event("vibration");   // first call: the lab cutscene hands over the camera (scripted-input anchor, host/skip_intro.txt)
 }
 

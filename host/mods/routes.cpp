@@ -3,13 +3,15 @@
 // Two inline hooks (recomp/snap_gen.py MAIN_INLINE_HOOKS) read the Lumen UI layer; the course rail, the film counter and the
 // dialogue window come from hooks that already exist (host/mods/neofilm.cpp, host/mods/skips.cpp) and call the same sink.
 //
-//   main+0x6c1d90  rt_gm_route_ui_event     entry of the std::function operator() that the Lumen player calls for every event of a
-//                                        UI scene built on the scene base class (ctor 0x6c1a30: main_menu, map_select, common_navi,
-//                                        zukan_map, initial_setting, extra_shooting, pause_menu, evaluation, option, photo_edit,
-//                                        result_reward, sns_window, photo_submit, ...). x1 = int* event (5 = state changed,
-//                                        8 = focus moved, 10 = decide, 11/19 = cancel, 22 = per-frame update), x2 = Player**,
-//                                        x3 = std::string* state, x4 = std::string* element. The player (vtable main+0xc92020,
-//                                        built by 0x77cc40) holds its scene name, the .lm/.drp base name, at +0x10.
+//   main+0x6c1d90  rt_gm_route_ui_event     entry of the std::function operator() of the UI scene base class (ctor 0x6c1a30), which
+//                                        forwards each Lumen player event to scene->vtable[2]. The player dispatch (lr main+0x782008)
+//                                        reaches it for every scene seen so far (title, main_menu, map_select, photo_submit, myphoto,
+//                                        option, pause_menu, ...). x1 = int* event, x2 = Player**, x3 = std::string* state,
+//                                        x4 = std::string* element. Events seen (run 2-20261113_144339): 1 scene built (hidden),
+//                                        2 opened (first state), 3 closed, 5 state entered, 6 state ready, 7 input on, 16 focus,
+//                                        18 + 10 decide (A), 21 + 12 decide done, 22 per-frame (carries a new state the frame the
+//                                        layout moves to it). The player (vtable main+0xc92020, built by 0x77cc40) holds its scene
+//                                        name, the .lm/.drp base name, at +0x10.
 //   main+0x79a6d0  rt_gm_route_ui_setstate  entry of Player::SetState (player vtable +0x140): x0 = player, x1 = page descriptor,
 //                                        state name std::string at desc+0x18. Covers scenes outside the base class too.
 //
@@ -17,6 +19,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include "loader.h"
@@ -52,27 +55,12 @@ bool read_str(uint64_t s, char* out, size_t cap) {
     return true;
 }
 
-// scene name of a player (cached per player pointer; players live as long as their scene)
-struct NameCache { uint64_t player; char name[40]; };
-NameCache g_names[96];
-int g_nnames;
-SRWLOCK g_lock = SRWLOCK_INIT;
-
-const char* player_name(uint64_t player) {
-    AcquireSRWLockShared(&g_lock);
-    for (int i = 0; i < g_nnames; i++)
-        if (g_names[i].player == player) { const char* r = g_names[i].name; ReleaseSRWLockShared(&g_lock); return r; }
-    ReleaseSRWLockShared(&g_lock);
-    char nm[40] = "?";
-    if (player && !IsBadReadPtr((void*)player, 0x30) && *(const uint64_t*)player == kPlayerVt) read_str(player + 0x10, nm, sizeof nm);
-    if (!nm[0]) strcpy(nm, "?");
-    AcquireSRWLockExclusive(&g_lock);
-    int k = g_nnames < 96 ? g_nnames++ : 95;
-    g_names[k].player = player;
-    memcpy(g_names[k].name, nm, sizeof nm);
-    const char* r = g_names[k].name;
-    ReleaseSRWLockExclusive(&g_lock);
-    return r;
+// scene name of a player, read on every call: players are freed with their scene and the allocator reuses the address for the next
+// scene (a pointer-keyed cache named photo select "online_report" in run 2-20261113_144339)
+void player_name(uint64_t player, char* nm, size_t cap) {
+    nm[0] = 0;
+    if (player && !IsBadReadPtr((void*)player, 0x30) && *(const uint64_t*)player == kPlayerVt) read_str(player + 0x10, nm, cap);
+    if (!nm[0]) snprintf(nm, cap, "?");
 }
 
 }  // namespace
@@ -87,7 +75,9 @@ extern "C" void rt_gm_route_ui_event(Cpu* c) {
     read_str(c->x[3], st, sizeof st);
     el[0] = 0;
     if (ev != 22) read_str(c->x[4], el, sizeof el);
-    hle::input::route_ui(player, player_name(player), st, ev, el, c->x[30]);
+    char nm[40];
+    player_name(player, nm, sizeof nm);
+    hle::input::route_ui(player, nm, st, ev, el, c->x[30]);
 }
 
 extern "C" void rt_gm_route_ui_setstate(Cpu* c) {
@@ -95,5 +85,7 @@ extern "C" void rt_gm_route_ui_setstate(Cpu* c) {
     uint64_t player = c->x[0], desc = c->x[1];
     char st[64];
     if (!read_str(desc + 0x18, st, sizeof st)) return;
-    hle::input::route_ui(player, player_name(player), st, -1, "", c->x[30]);
+    char nm[40];
+    player_name(player, nm, sizeof nm);
+    hle::input::route_ui(player, nm, st, -1, "", c->x[30]);
 }

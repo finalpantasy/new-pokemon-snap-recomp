@@ -364,10 +364,25 @@ void open_pull(Cpu* c, uint64_t handler, uint64_t player, int t, const Row& r) {
     snprintf(st, sizeof st, "PcPull%d_%d", t, r.slot);
     uint64_t desc = new_desc(c, handler, t % 5, st);
     row_vars(c, desc, t, r);
-    for (size_t k = 1; k <= r.ch.size(); k++) add_entry(c, desc, "PcI" + std::to_string(k));
-    set_state(c, player, desc);   // (no entry for CancelArea: listed, it takes the cursor whenever the mouse is over the screen)
-    int cur = choice_of(r, get_value(r));
-    mark(c, player, st, "PcI" + std::to_string(cur >= 0 ? cur + 1 : 1), true);
+    add_entry(c, desc, "PulldownMenu");   // the game's own list widget (type 6): Up/Down inside it, items report PulldownMenuItemNN
+    set_state(c, player, desc);
+}
+
+// Decide on a pulldown row, before the player switches to the popup state: as the game's list helper does at the same
+// point (main+0x776c80), register the items with player->vtable[0x148](player, &popup state, &"PulldownMenuItemNN", true).
+// (The game then calls player->vtable[0x1f0](player, &"PulldownMenuItemNN") for the current value (0x776bb0); here the
+// player focuses the list header a frame after SetState anyway, so the cursor starts above item 1; the current value is
+// marked lb_active.)
+void prepare_pull(Cpu* c, uint64_t player, int t, const Row& r) {
+    char st[32];
+    snprintf(st, sizeof st, "PcPull%d_%d", t, r.slot);
+    GStr sname{std::string(st)};
+    for (size_t k = 1; k <= r.ch.size(); k++) {
+        char n[32];
+        snprintf(n, sizeof n, "PulldownMenuItem%02zu", k);
+        GStr item{std::string(n)};
+        call_guest_nested(c, vfn(player, 0x148), {player, sname.p(), item.p(), 1ull});
+    }
 }
 
 // A slider moved: draw its dots and number at once (the game's own sliders do the same through these two player calls).
@@ -444,8 +459,8 @@ extern "C" void rt_ui_opt_event(Cpu* c) {
         else if (const Row* r = find_row(t, atoi(st.c_str() + st.find('_') + 1))) open_pull(c, handler, player, t, *r);
     } else if (pull) {
         const Row* r = find_row(t, atoi(st.c_str() + st.find('_') + 1));
-        if (r && ev == 10 && e.compare(0, 3, "PcI") == 0) {   // an item: set it; the item element returns to the tab
-            size_t k = (size_t)atoi(e.c_str() + 3);
+        if (r && ev == 10 && e.compare(0, 16, "PulldownMenuItem") == 0) {   // an item: set it; the list returns to the tab
+            size_t k = (size_t)atoi(e.c_str() + 16);
             if (k >= 1 && k <= r->ch.size()) set_value(*r, r->ch[k - 1].first);
         }
     } else if (ev == 8 && e.compare(0, 3, "PcT") == 0) {   // a slider's knob or mute button got the focus
@@ -474,6 +489,8 @@ extern "C" void rt_ui_opt_event(Cpu* c) {
         } else if (sscanf(e.c_str(), "PcT%dS%d%c%d", &tt, &slot, &kind, &k) == 4 && kind == 'C') {
             const Row* r = find_row(tt, slot);
             if (r && k >= 1 && k <= (int)r->ch.size()) set_value(*r, r->ch[(size_t)k - 1].first);
+        } else if (sscanf(e.c_str(), "PcT%dS%d%c", &tt, &slot, &kind) == 3 && kind == 'P') {   // a pulldown row: its popup opens next
+            if (const Row* r = find_row(tt, slot)) prepare_pull(c, player, tt, *r);
         }
     }
     memcpy(c->x, s.x, sizeof s.x);

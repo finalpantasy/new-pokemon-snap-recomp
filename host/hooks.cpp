@@ -42,7 +42,8 @@ void rt_hook_setjmp(Cpu *c) {
 
 void rt_hook_longjmp(Cpu *c) {
     const uint64_t *jb = (const uint64_t *)c->x[0];
-    uint64_t val = c->x[1] ? c->x[1] : 1;
+    const uint32_t w1 = (uint32_t)c->x[1];   // longjmp(jmp_buf, int): musl tests w1, and setjmp's result is an int in w0
+    const uint64_t val = w1 ? w1 : 1;
     for (int i = 0; i < 10; i++) c->x[19 + i] = jb[i];
     c->x[29] = jb[10];
     c->x[30] = jb[11];
@@ -118,7 +119,7 @@ static void h_strlen(Cpu *c) { c->x[0] = strlen((const char *)gp(c->x[0])); }
 namespace loader {
 void snap_lodanim_install();
 void snap_skips_install();         // host/mods/skips.cpp (SNAP_SKIP_CUTSCENES, SNAP_FAST_EVAL, discovery recorder)
-void snap_photoexport_install();   // host/mods/photoexport.cpp (SNAP_PHOTO_EXPORT, on by default)
+void snap_photoexport_install();   // host/mods/photoexport.cpp (SNAP_PHOTO_EXPORT; default from hle/visual_defaults.h)
 void snap_neofilm_install();   // host/mods/neofilm.cpp (SNAP_NEO_SPEED, SNAP_FILM, dev tracer)
 void install_libc_overrides() {
     // No malloc/free/calloc/realloc/aligned_alloc/memalign overrides: main defines the first five (the nu heap, main+0x4e2f60..)

@@ -1,0 +1,79 @@
+diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+index 79383ec..611dfff 100644
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -505,7 +505,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+         private static OperationResult GenerateDiscard(CodeGenContext context, AstOperation operation)
+         {
+-            context.Kill();
++            // Maxwell KIL keeps the pixel running as a helper invocation: its quad neighbours still get valid derivatives
++            // for implicit-LOD samples after the discard. OpKill would terminate the invocation and leave them undefined.
++            context.AddCapability(Capability.DemoteToHelperInvocationEXT);
++            context.AddExtension("SPV_EXT_demote_to_helper_invocation");
++            context.DemoteToHelperInvocationEXT();
+             return OperationResult.Invalid;
+         }
+ 
+diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+index e156144..1d8209e 100644
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+@@ -176,7 +176,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+             // Functions must always end with a return.
+             if (function.MainBlock.Last is not AstOperation operation ||
+-                (operation.Inst != Instruction.Return && operation.Inst != Instruction.Discard))
++                operation.Inst != Instruction.Return)
+             {
+                 context.Return();
+             }
+@@ -371,8 +371,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                         // We only need a branch if the last instruction didn't
+                         // already cause the program to exit or jump elsewhere.
+                         bool lastIsCf = e.Block.Last is AstOperation lastOp &&
+-                            (lastOp.Inst == Instruction.Discard ||
+-                             lastOp.Inst == Instruction.LoopBreak ||
++                            (lastOp.Inst == Instruction.LoopBreak ||
+                              lastOp.Inst == Instruction.LoopContinue ||
+                              lastOp.Inst == Instruction.Return);
+ 
+diff --git a/src/Ryujinx.Graphics.Shader/Decoders/Decoder.cs b/src/Ryujinx.Graphics.Shader/Decoders/Decoder.cs
+index 45250a4..17ad7bf 100644
+--- a/src/Ryujinx.Graphics.Shader/Decoders/Decoder.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/Decoder.cs
+@@ -500,7 +500,9 @@ namespace Ryujinx.Graphics.Shader.Decoders
+ 
+         public static bool IsUnconditionalBranch(ref InstOp op)
+         {
+-            return IsUnconditional(ref op) && op.Props.HasFlag(InstProps.Bra);
++            // KIL (discard) never leaves the program: execution continues with the next instruction, as a helper invocation
++            // (OpDemoteToHelperInvocation, see CodeGen/Spirv/Instructions.cs), so it always has a fall-through successor.
++            return IsUnconditional(ref op) && op.Props.HasFlag(InstProps.Bra) && op.Name != InstName.Kil;
+         }
+ 
+         private static bool IsUnconditional(ref InstOp op)
+diff --git a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/BasicBlock.cs b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/BasicBlock.cs
+index d3eae31..9741d60 100644
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/BasicBlock.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/BasicBlock.cs
+@@ -80,7 +80,6 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
+                 case Instruction.Branch:
+                 case Instruction.BranchIfFalse:
+                 case Instruction.BranchIfTrue:
+-                case Instruction.Discard:
+                 case Instruction.Return:
+                     return true;
+                 default:
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/ControlFlowGraph.cs b/src/Ryujinx.Graphics.Shader/Translation/ControlFlowGraph.cs
+index 1df45a4..5a954c2 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/ControlFlowGraph.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ControlFlowGraph.cs
+@@ -164,7 +164,6 @@ namespace Ryujinx.Graphics.Shader.Translation
+                 switch (operation.Inst)
+                 {
+                     case Instruction.Branch:
+-                    case Instruction.Discard:
+                     case Instruction.Return:
+                         return true;
+                 }

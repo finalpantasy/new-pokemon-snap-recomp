@@ -1,10 +1,14 @@
 # fixture: unlock_all
-# Check for the unlock_all fixture (verified 2026-11-12): A taps from the title (title appears about present 3000; taps before it are lost)
-# through the lab hub "Research" entry and the research-reward "You got a frame" cards, then stop on the Lental Map (about present 7500).
-# A at f7600 opens the Florio course panel (shows Research Level), X at f8300 opens the research level picker.
-# Also run with -SaveFixture unlock_routes (2026-11-13): no reward cards, title -> New area unlocked -> map -> Florio panel (Day/Night/Illumina Spot), then the A taps start the course; use -ShotAt 50.
-# Run: powershell -File host\run_boot.ps1 -Route unlock_all_check -Timeout 190 -ShotAt 125 -ShotEvery 3 -ShotMax 24
-# Under load the first 200 s can pass with few presents; the frame times keep the route in step, so raise -Timeout instead.
-repeat @f3100 @f7250 40 4 A
-@f7600 6 A
-@f8300 6 X
+# Check for the unlock_all fixture (verified 2026-11-12): A taps from the title through the lab hub "Research" entry and the
+# research-reward "You got a frame" cards to the Lental Map; then A opens the Florio course panel (shows Research Level) and X opens
+# the research level picker. Game-state waits (host\README.md "Waiting on game state") replace the old present times.
+# Also run with -SaveFixture unlock_routes (2026-11-13): no reward cards, title -> New area unlocked -> map -> Florio panel.
+# Run: powershell -File host\run_boot.ps1 -Route unlock_all_check -Timeout 300 -ShotAt 20 -ShotEvery 5 -ShotMax 60
+# Pass: the log has "wait 'ui=map_select:CourseSelect' met", then "end of route reached"; the last dumps show the level picker.
+wait ui=title timeout=150
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=200
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=30
+@f120 6 X
+end @f600

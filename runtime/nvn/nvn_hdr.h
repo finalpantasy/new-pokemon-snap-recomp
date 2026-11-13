@@ -8,6 +8,7 @@
 // (default 200), SNAP_HDR_EXPAND (0..1, default 0.3).
 #pragma once
 #include <vulkan/vulkan.h>
+#include "nvn_vkcount.h"
 
 #include <vector>
 

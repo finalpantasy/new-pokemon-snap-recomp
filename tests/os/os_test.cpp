@@ -9,6 +9,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <algorithm>
+#include <random>
+#include <immintrin.h>
 
 #include "../../runtime/os/os.h"
 #include "../../runtime/os/os_layout.h"
@@ -838,6 +841,410 @@ static void test_getinfo(Cpu *c) {
     CHECK(os_svc(c, 0x26) == 1 && c->x[0] == 0, "Break notification-only returns");
 }
 
+// =========================================================================================== scheduler review (2026-11-13)
+// Stress tests for analysis/core/review_os.md. Each reproduces one finding: run with SNAP_SCHED_LEGACY=<part> (or against
+// the old sources) to see the failure, without it to see the fix. OS_TEST_ONLY=<name substring> runs only matching tests.
+#define S_LECLR "_ZN2nn2os15ClearLightEventEPNS0_14LightEventTypeE"
+#define S_TESIG "_ZN2nn2os16SignalTimerEventEPNS0_14TimerEventTypeE"
+#define S_TECLR "_ZN2nn2os15ClearTimerEventEPNS0_14TimerEventTypeE"
+#define S_UNLINK "_ZN2nn2os21UnlinkMultiWaitHolderEPNS0_19MultiWaitHolderTypeE"
+#define S_ICSENTER "_ZN2nn2os6detail36InternalCriticalSectionImplByHorizon5EnterEv"
+#define S_ICSLEAVE "_ZN2nn2os6detail36InternalCriticalSectionImplByHorizon5LeaveEv"
+#define S_ICVSIG "_ZN2nn2os6detail38InternalConditionVariableImplByHorizon6SignalEv"
+#define S_ICVTW "_ZN2nn2os6detail38InternalConditionVariableImplByHorizon9TimedWaitEPNS1_23InternalCriticalSectionERKNS1_13TimeoutHelperE"
+#define S_AAR "_ZN2nn2os21AllocateAddressRegionEPmm"
+#define S_FAR "_ZN2nn2os17FreeAddressRegionEm"
+
+extern "C" void os_time_pause(int on);   // os_kernel.cpp (host/window_opts.cpp focus pause)
+static bool sched_legacy() { const char *e = getenv("SNAP_SCHED_LEGACY"); return e && *e; }
+static uint64_t core_waits_now() { OsStats s; os_get_stats(&s); return s.core_waits; }
+static void wait_core_waits(uint64_t base, uint64_t n) {   // host wait until n more core waits began
+    while (core_waits_now() < base + n) std::this_thread::yield();
+}
+static double pct(std::vector<double> v, double p) {
+    if (v.empty()) return 0;
+    std::sort(v.begin(), v.end());
+    return v[std::min(v.size() - 1, (size_t)(p * (double)v.size()))];
+}
+#ifdef OS_TEST_OLD   // building against the pre-review sources (scratch "before" binary): no new stats fields
+#define STARVED(s) 0ull
+#define MIGREQ(s) 0ull
+#define MIGS(s) 0ull
+#define YANY(s) 0ull
+#else
+#define STARVED(s) (s).core_starved
+#define MIGREQ(s) (s).migrate_requests
+#define MIGS(s) (s).migrations
+#define YANY(s) (s).yield_any
+#endif
+
+// ---- finding 1: a pinned waiter behind a holder that could move to a free core
+static std::atomic<int> g_mg_b_on{0}, g_mg_b_stop{0}, g_mg_h_on{0}, g_mg_l_flag{0}, g_mg_gate{0};
+static std::atomic<double> g_mg_lat{0};
+static std::chrono::steady_clock::time_point g_mg_t0;
+static void th_mg_b(Cpu *c) { g_mg_b_on = 1; while (!g_mg_b_stop) _mm_pause(); }   // holds core 1, never polls
+static void th_mg_h(Cpu *c) {   // JobWorker-like: may run anywhere, spins on what L produces
+    g_mg_h_on = 1;
+    auto t0 = std::chrono::steady_clock::now();
+    while (!g_mg_l_flag && ms_since(t0) < 300) {
+        if (g_mg_gate) os_spin_gate(c, 0x1234);
+        else _mm_pause();
+    }
+}
+static void th_mg_l(Cpu *c) { g_mg_lat = ms_since(g_mg_t0); g_mg_l_flag = 1; }
+static void test_migrate(Cpu *c) {
+    const int ROUNDS = sched_legacy() ? 6 : 250;
+    uint64_t me = call(c, S_CURT);
+    int old = (int)call(c, S_PRIO, me);
+    call(c, S_CHPRIO, me, 5ull);   // the main thread holds core 0
+    OsStats s0;
+    os_get_stats(&s0);
+    for (int gate = 0; gate < 2; gate++) {
+        std::vector<double> lat;
+        int slow = 0;
+        g_mg_gate = gate;
+        for (int r = 0; r < ROUNDS; r++) {
+            g_mg_b_on = 0; g_mg_b_stop = 0; g_mg_h_on = 0; g_mg_l_flag = 0;
+            GThread b = spawn(c, th_mg_b, 0, 5, 1);
+            while (!g_mg_b_on) std::this_thread::yield();
+            GThread h = spawn(c, th_mg_h, 0, 16, 2, false);
+            call(c, S_SETMASK, h.tt, 0ull, 7ull);   // ideal 0, may run anywhere: takes core 2 (0 and 1 are held)
+            call(c, S_START, h.tt);
+            while (!g_mg_h_on) std::this_thread::yield();
+            uint64_t w0 = core_waits_now();
+            GThread l = spawn(c, th_mg_l, 0, 31, 2);   // loader: pinned to core 2
+            wait_core_waits(w0, 1);
+            g_mg_t0 = std::chrono::steady_clock::now();
+            join(c, l);   // this blocks the main thread: core 0 is free from here
+            lat.push_back(g_mg_lat.load());
+            if (g_mg_lat > 50) slow++;
+            join(c, h);
+            g_mg_b_stop = 1;
+            join(c, b);
+        }
+        CHECK(slow == 0, "migrate (%s): %d of %d rounds the pinned p31 waiter ran > 50 ms after core 0 freed (max %.1f ms)",
+              gate ? "spin gate" : "no poll", slow, ROUNDS, pct(lat, 1.0));
+        printf("  migrate %-9s: %d rounds, L ran after median %.2f ms, p99 %.2f, max %.2f ms\n", gate ? "spin gate" : "no poll", ROUNDS,
+               pct(lat, 0.5), pct(lat, 0.99), pct(lat, 1.0));
+    }
+    OsStats s1;
+    os_get_stats(&s1);
+    printf("  migrate: starved +%llu, migrate requests +%llu, migrations +%llu, overflow +%llu\n",
+           (unsigned long long)(STARVED(s1) - STARVED(s0)), (unsigned long long)(MIGREQ(s1) - MIGREQ(s0)),
+           (unsigned long long)(MIGS(s1) - MIGS(s0)), (unsigned long long)(s1.overflow_grants - s0.overflow_grants));
+    if (!sched_legacy())
+        CHECK(STARVED(s1) == STARVED(s0), "%llu core waits starved with a free core", (unsigned long long)(STARVED(s1) - STARVED(s0)));
+    call(c, S_CHPRIO, me, (uint64_t)old);
+}
+
+// ---- finding 2: a better spinner on the core a worse lock holder needs
+static uint64_t g_ya_lock;
+static std::atomic<int> g_ya_locked{0}, g_ya_w_spin{0}, g_ya_ok{0};
+static std::atomic<double> g_ya_ms{0};
+static bool ya_try(uint64_t a) {
+    uint32_t z = 0;
+    return __atomic_compare_exchange_n((uint32_t *)(uintptr_t)a, &z, 1u, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+}
+static void th_ya_l(Cpu *c) {   // p23: takes the busy lock, reaches a poll point (GetSystemTick) inside it
+    while (!ya_try(g_ya_lock)) os_spin_gate(c, 0x5670);
+    g_ya_locked = 1;
+    auto t0 = std::chrono::steady_clock::now();
+    while (!g_ya_w_spin && ms_since(t0) < 1000) call(c, S_TICK);
+    __atomic_store_n((uint32_t *)(uintptr_t)g_ya_lock, 0u, __ATOMIC_RELEASE);
+}
+static void th_ya_w(Cpu *c) {   // p16, same core: spins on the lock through the gate
+    g_ya_w_spin = 1;
+    auto t0 = std::chrono::steady_clock::now();
+    bool ok = true;
+    while (!ya_try(g_ya_lock)) {
+        os_spin_gate(c, 0x5678);
+        if (ms_since(t0) > 300) { ok = false; break; }
+    }
+    g_ya_ms = ms_since(t0);
+    if (ok) __atomic_store_n((uint32_t *)(uintptr_t)g_ya_lock, 0u, __ATOMIC_RELEASE);
+    g_ya_ok = ok;
+}
+static void test_yield_any(Cpu *c) {
+    const int ROUNDS = sched_legacy() ? 5 : 300;
+    g_ya_lock = obj(0x10);
+    int fails = 0;
+    std::vector<double> ms;
+    OsStats s0;
+    os_get_stats(&s0);
+    for (int r = 0; r < ROUNDS; r++) {
+        g_ya_locked = 0; g_ya_w_spin = 0; g_ya_ok = 0;
+        GThread l = spawn(c, th_ya_l, 0, 23, 1);
+        while (!g_ya_locked) std::this_thread::yield();
+        GThread w = spawn(c, th_ya_w, 0, 16, 1);
+        join(c, w);
+        join(c, l);
+        if (!g_ya_ok) fails++;
+        ms.push_back(g_ya_ms.load());
+    }
+    OsStats s1;
+    os_get_stats(&s1);
+    CHECK(fails == 0, "yield to any: %d of %d rounds the p16 spinner never got the lock held by the p23 thread", fails, ROUNDS);
+    printf("  yield to any: %d rounds, %d stuck; lock after median %.2f ms, max %.2f; yield_any +%llu\n", ROUNDS, fails, pct(ms, 0.5),
+           pct(ms, 1.0), (unsigned long long)(YANY(s1) - YANY(s0)));
+}
+
+// ---- finding 3: the end of a priority-inheritance boost must let an outranking core waiter in at once
+static uint64_t g_ub_mx;
+static std::atomic<int> g_ub_locked{0}, g_ub_go{0}, g_ub_f_ran{0};
+static std::atomic<double> g_ub_lat{0};
+static std::chrono::steady_clock::time_point g_ub_t0;
+static void th_ub_h(Cpu *c) {   // p31 on core 1: owns the mutex, polls (GetSystemTick) the whole time
+    call(c, S_LOCK, g_ub_mx);
+    g_ub_locked = 1;
+    while (!g_ub_go) call(c, S_TICK);
+    g_ub_t0 = std::chrono::steady_clock::now();
+    call(c, S_UNLOCK, g_ub_mx);   // boost ends: p1 -> p31
+    auto t0 = std::chrono::steady_clock::now();
+    while (!g_ub_f_ran && ms_since(t0) < 200) call(c, S_TICK);
+}
+static void th_ub_x(Cpu *c) { call(c, S_LOCK, g_ub_mx); call(c, S_UNLOCK, g_ub_mx); }   // p1 on core 2
+static void th_ub_f(Cpu *c) { g_ub_lat = ms_since(g_ub_t0); g_ub_f_ran = 1; }      // p8 on core 1
+static void test_unboost(Cpu *c) {
+    const int ROUNDS = 60;
+    g_ub_mx = obj(0x20);
+    call(c, S_MXINIT, g_ub_mx, 0ull, 0ull);
+    std::vector<double> lat;
+    for (int r = 0; r < ROUNDS; r++) {
+        g_ub_locked = 0; g_ub_go = 0; g_ub_f_ran = 0;
+        GThread h = spawn(c, th_ub_h, 0, 31, 1);
+        while (!g_ub_locked) std::this_thread::yield();
+        GThread x = spawn(c, th_ub_x, 0, 1, 2);
+        while ((int)call(c, S_CURPRIO, h.tt) != 1) std::this_thread::yield();
+        uint64_t w0 = core_waits_now();
+        GThread f = spawn(c, th_ub_f, 0, 8, 1);
+        wait_core_waits(w0, 1);
+        g_ub_go = 1;
+        join(c, f);
+        join(c, x);
+        join(c, h);
+        lat.push_back(g_ub_lat.load());
+    }
+    double med = pct(lat, 0.5), p90 = pct(lat, 0.9);
+    CHECK(med < 3 && p90 < 8, "unboost: core waiter ran median %.2f ms / p90 %.2f ms after the boost ended (want < 3 / < 8)", med, p90);
+    printf("  unboost: %d rounds, p8 waiter ran after median %.2f ms, p90 %.2f, max %.2f ms\n", ROUNDS, med, p90, pct(lat, 1.0));
+}
+
+// ---- finding 4: MultiWait link -> WaitAny -> unlink against a signaller (g_linked 0 -> 1 fast path)
+static uint64_t g_mr_ev;
+static std::atomic<int> g_mr_go{-1}, g_mr_done{-1}, g_mr_stop{0};
+static void th_mr_sig(Cpu *c) {
+    std::mt19937 rng(1234);
+    for (int r = 0; !g_mr_stop; r++) {
+        while (g_mr_go.load() != r) { if (g_mr_stop) return; _mm_pause(); }
+        for (int i = (int)(rng() % 400); i > 0; i--) _mm_pause();
+        call(c, S_EVSIG, g_mr_ev);
+        g_mr_done = r;
+    }
+}
+static void test_mw_race(Cpu *c) {
+    const int ROUNDS = getenv("OS_TEST_MW_ROUNDS") ? atoi(getenv("OS_TEST_MW_ROUNDS")) : 100000;
+    uint64_t mw = obj(0x30), h = obj(0x40);
+    g_mr_ev = obj(0x28);
+    call(c, S_EVINIT, g_mr_ev, 0ull, 0ull);   // manual clear
+    call(c, S_MWINIT, mw);
+    call(c, S_HEV, h, g_mr_ev);
+    g_mr_go = -1; g_mr_done = -1; g_mr_stop = 0;
+    GThread s = spawn(c, th_mr_sig, 0, 16, 1);
+    int lost = 0;
+    auto t0 = std::chrono::steady_clock::now();
+    for (int r = 0; r < ROUNDS; r++) {
+        call(c, S_EVCLR, g_mr_ev);
+        g_mr_go = r;
+        call(c, S_LINK, mw, h);
+        if (call(c, S_TWAITANY, mw, 100 * MS) == 0) lost++;
+        call(c, S_UNLINK, h);
+        while (g_mr_done.load() != r) _mm_pause();
+    }
+    g_mr_stop = 1;
+    join(c, s);
+    call(c, S_HFIN, h);
+    call(c, S_MWFIN, mw);
+    CHECK(lost == 0, "multiwait: %d of %d waits ended by timeout with the event signalled (lost wakeup)", lost, ROUNDS);
+    printf("  multiwait race: %d rounds in %.0f ms, %d lost\n", ROUNDS, ms_since(t0), lost);
+}
+
+// ---- finding 5: guest ticks must never go backwards around focus pauses
+static void test_time_mono(Cpu *c) {
+    std::atomic<int> stop{0};
+    std::atomic<long long> back{0};
+    std::thread tog([&] { while (!stop) { os_time_pause(1); os_time_pause(0); } });
+    std::vector<std::thread> rd;
+    for (int i = 0; i < 3; i++)
+        rd.emplace_back([&] {
+            uint64_t last = 0;
+            for (int k = 0; k < 400000; k++) {
+                uint64_t t = os_ticks();
+                if (t < last) back++;
+                last = std::max(last, t);
+            }
+        });
+    for (auto &t : rd) t.join();
+    stop = 1;
+    tog.join();
+    CHECK(back == 0, "ticks went backwards %lld times around pause toggles", back.load());
+    printf("  time monotonic: 1.2M reads against pause toggles, %lld backwards\n", back.load());
+}
+
+// ---- finding 6: InternalConditionVariable::TimedWait with a saturated target tick waits instead of timing out
+static uint64_t g_cf_cv, g_cf_cs, g_cf_target;
+static std::atomic<int> g_cf_ret{-1};
+static void th_cf(Cpu *c) {
+    call(c, S_ICSENTER, g_cf_cs);
+    g_cf_ret = (int)call(c, S_ICVTW, g_cf_cv, g_cf_cs, g_cf_target);
+    call(c, S_ICSLEAVE, g_cf_cs);
+}
+static void test_cv_far(Cpu *c) {
+    g_cf_cv = obj(0x10); g_cf_cs = obj(0x10); g_cf_target = obj(0x10);
+    *(uint64_t *)(uintptr_t)g_cf_target = ~0ull;   // TimeoutHelper end tick saturated
+    g_cf_ret = -1;
+    GThread t = spawn(c, th_cf, 0, 16, 1);
+    call(c, S_SLEEP, 50 * MS);
+    int early = g_cf_ret.load();
+    call(c, S_ICSENTER, g_cf_cs);
+    call(c, S_ICVSIG, g_cf_cv);
+    call(c, S_ICSLEAVE, g_cf_cs);
+    join(c, t);
+    CHECK(early == -1, "TimedWait(UINT64_MAX) returned %d at once (treated as expired)", early);
+    CHECK(g_cf_ret == 1, "TimedWait(UINT64_MAX) result after signal %d (want 1 NoTimeout)", g_cf_ret.load());
+    printf("  cv far target: returned early %s, after signal %d\n", early == -1 ? "no" : "YES", g_cf_ret.load());
+}
+
+// ---- finding 8: start/destroy and join/destroy races (build with -fsanitize=address for the strict check)
+static uint64_t g_dr_tt;
+static std::atomic<int> g_dr_go{0}, g_dr_rel{0}, g_dr_in{0};
+// (a) even rounds: the destroyer starts once StartThread has marked the thread started (TT_STATE leaves Initialized) and races the rest of
+// StartThread. (b) odd rounds: a joiner and the destroyer both wait for a running thread, which is then released.
+static void th_dr_destroy(Cpu *c) {
+    while (!g_dr_go || gld8(g_dr_tt + TT_STATE) == TS_INITIALIZED) _mm_pause();
+    g_dr_in++;
+    call(c, S_DESTROY, g_dr_tt);
+}
+static void th_dr_join(Cpu *c) {
+    while (!g_dr_go || gld8(g_dr_tt + TT_STATE) == TS_INITIALIZED) _mm_pause();
+    g_dr_in++;
+    call(c, S_WAITT, g_dr_tt);
+}
+static void th_dr_noop(Cpu *c) {}
+static void th_dr_hold(Cpu *c) { while (!g_dr_rel) call(c, S_SLEEP, 1 * MS); }
+static void test_destroy_race(Cpu *c) {
+    const int ROUNDS = 1500;
+    auto t0 = std::chrono::steady_clock::now();
+    for (int r = 0; r < ROUNDS; r++) {
+        const bool b = r & 1;
+        GThread t = spawn(c, b ? th_dr_hold : th_dr_noop, 0, 16, r % 3, false);
+        g_dr_tt = t.tt;
+        g_dr_go = 0; g_dr_rel = 0; g_dr_in = 0;
+        GThread d = spawn(c, th_dr_destroy, 0, 16, (r + 1) % 3);
+        GThread j{0};
+        if (b) j = spawn(c, th_dr_join, 0, 31, (r + 1) % 3);   // same core as the destroyer, lower priority: it runs after it
+        g_dr_go = 1;
+        call(c, S_START, t.tt);
+        if (b) {
+            while (g_dr_in < 2) call(c, S_SLEEP, 1 * MS);
+            call(c, S_SLEEP, 2 * MS);   // both are blocked on the join
+            g_dr_rel = 1;
+        }
+        join(c, d);
+        if (b) join(c, j);
+    }
+    printf("  destroy race: %d rounds in %.0f ms, no crash\n", ROUNDS, ms_since(t0));
+}
+
+// ---- finding 11: manual-clear TimerEvent / LightEvent: Signal then Clear must still release a waiter
+static uint64_t g_ep_obj;
+static std::atomic<int> g_ep_kind{0}, g_ep_waiting{0}, g_ep_done{0};
+static void th_ep(Cpu *c) {
+    g_ep_waiting = 1;
+    if (g_ep_kind == 0) call(c, S_TEWAIT, g_ep_obj);
+    else call(c, S_LETWAIT, g_ep_obj, 2000 * MS);
+    g_ep_done = 1;
+}
+static void test_event_pulse(Cpu *c) {
+    const int ROUNDS = 20;
+    for (int kind = 0; kind < 2; kind++) {
+        int lost = 0;
+        for (int r = 0; r < ROUNDS; r++) {
+            g_ep_obj = obj(0x60);
+            if (kind == 0) call(c, S_TEINIT, g_ep_obj, 0ull);    // manual clear
+            else call(c, S_LEINIT, g_ep_obj, 0ull, 0ull);        // manual clear
+            g_ep_kind = kind; g_ep_waiting = 0; g_ep_done = 0;
+            GThread w = spawn(c, th_ep, 0, 16, 1);
+            while (!g_ep_waiting) std::this_thread::yield();
+            call(c, S_SLEEP, 5 * MS);   // w is blocked
+            if (kind == 0) { call(c, S_TESIG, g_ep_obj); call(c, S_TECLR, g_ep_obj); }
+            else { call(c, S_LESIG, g_ep_obj); call(c, S_LECLR, g_ep_obj); }
+            auto t0 = std::chrono::steady_clock::now();
+            while (!g_ep_done && ms_since(t0) < 100) call(c, S_SLEEP, 1 * MS);
+            if (!g_ep_done) {
+                lost++;
+                if (kind == 0) call(c, S_TESIG, g_ep_obj); else call(c, S_LESIG, g_ep_obj);   // release it
+            }
+            join(c, w);
+        }
+        CHECK(lost == 0, "%s: %d of %d Signal+Clear pulses lost", kind ? "LightEvent" : "TimerEvent", lost, ROUNDS);
+        printf("  %s pulse: %d rounds, %d lost\n", kind ? "LightEvent" : "TimerEvent", ROUNDS, lost);
+    }
+}
+
+// ---- finding 13: linking a signalled holder into a MultiWait that is being waited on
+static uint64_t g_lw_mw;
+static std::atomic<double> g_lw_ms{0};
+static std::atomic<int> g_lw_in{0};
+static void th_lw(Cpu *c) {
+    g_lw_in = 1;
+    auto t0 = std::chrono::steady_clock::now();
+    call(c, S_TWAITANY, g_lw_mw, 2000 * MS);
+    g_lw_ms = ms_since(t0);
+}
+static void test_link_wake(Cpu *c) {
+    uint64_t ea = obj(0x28), eb = obj(0x28), ha = obj(0x40), hb = obj(0x40);
+    g_lw_mw = obj(0x30);
+    call(c, S_EVINIT, ea, 0ull, 0ull);
+    call(c, S_EVINIT, eb, 1ull, 0ull);   // already signalled
+    call(c, S_MWINIT, g_lw_mw);
+    call(c, S_HEV, ha, ea);
+    call(c, S_HEV, hb, eb);
+    call(c, S_LINK, g_lw_mw, ha);
+    g_lw_in = 0;
+    GThread w = spawn(c, th_lw, 0, 16, 1);
+    while (!g_lw_in) std::this_thread::yield();
+    call(c, S_SLEEP, 20 * MS);
+    call(c, S_LINK, g_lw_mw, hb);
+    join(c, w);
+    call(c, S_UNLINKALL, g_lw_mw);
+    call(c, S_HFIN, ha); call(c, S_HFIN, hb); call(c, S_MWFIN, g_lw_mw);
+    CHECK(g_lw_ms < 200, "WaitAny noticed a signalled holder linked during the wait after %.0f ms", g_lw_ms.load());
+    printf("  link during WaitAny: woke after %.1f ms\n", g_lw_ms.load());
+}
+
+// ---- finding 9: a VAMM retry backoff must not hold the virtual core (run with SNAP_FAULT_VAMM=0:7 OS_TEST_ONLY=vamm)
+static std::atomic<int> g_vb_in{0}, g_vb_ran_during{0}, g_vb_a_done{0};
+static void th_vb_a(Cpu *c) {
+    uint64_t out = obj(0x10);
+    g_vb_in = 1;
+    uint64_t r = call(c, S_AAR, out, 0x200000ull);
+    if (r == 0) call(c, S_FAR, *(uint64_t *)(uintptr_t)out);
+    g_vb_a_done = 1;
+}
+static void th_vb_b(Cpu *c) { g_vb_ran_during = !g_vb_a_done; }
+static void test_vamm_block(Cpu *c) {
+    if (!getenv("SNAP_FAULT_VAMM")) { printf("  vamm block: skipped (needs SNAP_FAULT_VAMM=0:7)\n"); return; }
+    g_vb_in = 0; g_vb_ran_during = 0; g_vb_a_done = 0;
+    GThread a = spawn(c, th_vb_a, 0, 16, 1);
+    while (!g_vb_in) std::this_thread::yield();
+    call(c, S_SLEEP, 10 * MS);   // a is inside the retry backoff (1+2+4+..+64 ms)
+    GThread b = spawn(c, th_vb_b, 0, 16, 1);
+    join(c, b);
+    join(c, a);
+    CHECK(g_vb_ran_during == 1, "a p16 thread pinned to the same core waited for the whole VAMM retry backoff");
+    printf("  vamm block: same-core thread ran during the retry: %s\n", g_vb_ran_during ? "yes" : "NO");
+}
+
 int main(int argc, char **argv) {
     OsConfig cfg{};
     cfg.trace = argc > 1 && !strcmp(argv[1], "-v");
@@ -858,10 +1265,18 @@ int main(int argc, char **argv) {
         {"core handoff", test_core_handoff},
         {"stress 10K", test_stress},
         {"svcGetInfo", test_getinfo},
+        // scheduler review 2026-11-13 (analysis/core/review_os.md)
+        {"sched migrate", test_migrate},     {"sched yield any", test_yield_any},
+        {"sched unboost", test_unboost},     {"sched mw race", test_mw_race},
+        {"sched time mono", test_time_mono}, {"sched cv far", test_cv_far},
+        {"sched destroy race", test_destroy_race}, {"sched event pulse", test_event_pulse},
+        {"sched link wake", test_link_wake}, {"sched vamm block", test_vamm_block},
     };
+    const char *only = getenv("OS_TEST_ONLY");   // run only tests whose name contains this
     int reps = argc > 2 ? atoi(argv[2]) : 1;
     for (int r = 0; r < reps; r++)
         for (auto &t : tests) {
+            if (only && *only && !strstr(t.name, only)) continue;
             if (r > 0 && (t.fn == test_threads || t.fn == test_producer_consumer || t.fn == test_fibers ||
                           t.fn == test_wake_order || t.fn == test_memory || t.fn == test_core_handoff || t.fn == test_stress))
                 continue;   // these use one-shot globals

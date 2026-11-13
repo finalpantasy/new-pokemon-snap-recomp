@@ -1,18 +1,20 @@
 # fixture: post_tutorial
 # AVT (audio/video/text worker, 2026-11-13): hub Settings (gear) > Sound tab, Music slider to 0 with Left taps, then SE, then Voice.
-# No mods, so the "options" anchor never fires: frame timed. Up+A cycle twice (opens Settings at ~f1800), A closes the info popup.
-# Run: powershell -File build\avt_run.ps1 -Route avt_sound -Fixture post_tutorial -Cap build\avt_caps\sound -Timeout 420
+# Needs the native-options pack (the "options" anchor comes from host/mods/nativeopt.cpp): SNAP_MODS_DIR=<mods root holding native-options>,
+# SNAP_NATIVE_OPT_SETTINGS=<settings.cfg>. Entry as native_options_tabs.txt.
+# Run: powershell -File build\avt_run.ps1 -Route avt_sound -Fixture post_tutorial -Cap build\avt_caps\sound -Timeout 540
 repeat @f200 @f1400 100 8 ZL
-repeat @f1500 @f1900 240 2 Up
-repeat @f1530 @f1900 240 2 A
-@f2300 8 A
-@f2600 8 R
-@f2700 8 R
-@f2800 8 R
-repeat @f3000 @f3600 50 12 Left
-@f3900 8 Down
-repeat @f4000 @f4600 50 12 Left
-@f4900 8 Down
-repeat @f5000 @f5600 50 12 Left
-@f6000 8 B
-@f6300 8 B
+repeat @f1500 @f30000 240 8 Up
+repeat @f1530 @f30000 240 8 A
+anchor options
+@f120 8 A
+@f300 8 R
+@f370 8 R
+@f440 8 R
+repeat @f700 @f1300 50 12 Left
+@f1500 8 Down
+repeat @f1600 @f2200 50 12 Left
+@f2400 8 Down
+repeat @f2500 @f3100 50 12 Left
+@f3400 8 B
+@f3600 8 B

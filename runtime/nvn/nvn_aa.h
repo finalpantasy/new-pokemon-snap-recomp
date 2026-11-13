@@ -7,11 +7,16 @@
 
 namespace nvn {
 struct ReplayCtx;
+struct TextureImpl;
 enum { AA_FXAA = 0, AA_OFF = 1, AA_SMAA = 2 };
 extern int g_aaMode;        // what replaces the game's FXAA
 extern float g_aaSharpen;   // contrast adaptive sharpening strength, 0 = off
-// Parses SNAP_AA / SNAP_SHARPEN once. Returns the render scale SNAP_AA=ssaa2 asks for (2x the window height / 1080), or 0.
+// Parses SNAP_AA / SNAP_SHARPEN once. Returns the render scale SNAP_AA=ssaa2 asks for (2x the window height / 1080, capped at 3.0 and 8192 px), or 0.
 float AaParseEnv();
+// Window client height in pixels (SNAP_WINDOW_H, window.json, else 720). Used by ssaa2 and by the upscaler.
+int HostWindowHeight();
+// Called from DestroyTexture (nvn_vk.cpp): drops the cached UNORM views of this texture image.
+void AaForgetTexture(const struct TextureImpl* t);
 // Fragment shader fixups, called on a translated fragment module (key = first 12 hex digits of its cache key): turns the game's FXAA off by
 // forcing its edge test to fail, so the tonemap shaders write the plain tonemapped color. No-op for other shaders and for SNAP_AA=fxaa.
 void AaPatchFragment(std::vector<uint32_t>& words, const char* key12);

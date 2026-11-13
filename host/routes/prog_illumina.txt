@@ -1,0 +1,58 @@
+# fixture: unlock_routes
+# Florio Illumina Spot (prog worker 2026-11-13), from the course sweep template (core_<course>.txt), driven by game state (host\README.md "Waiting on game state").
+# Copy it, then fill in the two marked blocks: the Lental Map D-pad path to the course marker and the Down taps for the entry
+# (Day / Night / ...); see analysis\core\mk_routes.py for each course's path and entry.
+# Run: $env:SNAP_NEO_SPEED=3; powershell -File host\run_boot.ps1 -Route core_<course> -Timeout 590 -ShotAt 110 -ShotEvery 6 -ShotMax 80
+# 1) Title, lab hub, reward cards: A taps until the map shows its course markers.
+wait ui=title timeout=150
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=200
+# 2) >>> D-pad path to the course marker, one press per 180 presents (none for Florio, where the cursor starts), e.g.:
+# @f90 6 Right
+# @f270 6 Down
+# then A opens the course panel; the @f of this A is 90 after the last path press.
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=30
+# 3) Illumina Spot is entry 2 (Day, Night, Illumina): two Downs.
+@f90 6 Down
+@f180 6 Down
+@f270 6 A
+wait ride timeout=240
+# 4) The ride: shutter taps with a slow yaw wobble. The same A taps then advance the course-end and professor lines.
+repeat @f0 @f60000 24 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit:FolderSelect timeout=420
+# 5) Photo select (as florio_eval): Right, A opens the folder, A picks the shown photo; twice. Then Plus, Up (Yes), A.
+@f150 8 Right
+@f230 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+# A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
+# open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders
+# (run 1-20261113_160836 timed out on a refused Pichu photo).
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Right
+@f140 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+# A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
+# open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders
+# (run 1-20261113_160836 timed out on a refused Pichu photo).
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Plus
+@f140 8 Up
+@f220 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation: A taps through the comments and the score; the run ends after the evaluation closes.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

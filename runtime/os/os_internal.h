@@ -37,7 +37,7 @@ uint32_t mem_get_info(uint32_t type, uint64_t *out);
 
 enum Wait : int { W_NONE, W_LOCK, W_CVAR, W_KEY, W_JOIN, W_MULTI, W_SLEEP };
 // keyed wait queues: a key is the guest address plus the queue kind in the top byte (guest addresses are < 2^48)
-enum KeyKind : uint64_t { K_CVAR = 1, K_LIGHT = 2, K_JOIN = 3, K_MULTI = 4, K_RW = 5, K_TIMER = 6 };
+enum KeyKind : uint64_t { K_CVAR = 1, K_LIGHT = 2, K_JOIN = 3, K_MULTI = 4, K_RW = 5, K_TIMER = 6, K_JOINERS = 7 };
 static inline uint64_t mkkey(KeyKind k, uint64_t addr) { return addr | ((uint64_t)k << 56); }
 
 struct Fiber;
@@ -62,13 +62,17 @@ struct Thread {
     std::atomic<int> preempt{0};
     bool waiting_core = false;
     bool core_kicked = false;        // a core handoff notify arrived since the waiter last checked (rescue accounting)
+    uint64_t core_wait_since = 0;    // now_us() when the current core wait began (watchdog dump, starvation detector)
+    uint64_t humble_until = 0;       // after a yield to any thread: do not preempt lower-priority holders before this (now_us)
+    int joiners = 0;                 // threads inside thread_wait_exit on this thread (thread_destroy waits for them to leave)
     // current wait (under G)
     std::condition_variable cv;
     int wkind = W_NONE;
     uint64_t wkey = 0, waddr = 0, wseq = 0;
     uint32_t wtag = 0, wresult = 0;
     bool woken = false;
-    Thread *waker = nullptr;                 // the guest thread that last woke this one (nullptr: a host thread); perf only
+    char waker_name[24] = {};                // name and priority of the thread that last woke this one (perf only; a copy,
+    int waker_prio = -1;                     // since the waker may be destroyed before the wait is reported)
     Thread *lock_owner = nullptr;            // W_LOCK: the thread whose lock we wait for
     std::vector<Thread *> lock_waiters;      // threads in W_LOCK on locks we own (priority inheritance)
     // lifecycle
@@ -96,16 +100,31 @@ struct Config {
     int app_cores = 3;   // load pass: cores app_cores..num_cores-1 are spare cores (SNAP_OS_SPARE_CORES) any thread may use, whatever its mask
     uint32_t overcommit_us = 2000, rr_slice_us = 10000;
     uint32_t core_rescue_ms = 20;   // an untimed core wait rechecks this often (safety net; counted in core_wake_rescues)
+    uint32_t legacy = 0;            // SNAP_SCHED_LEGACY: LG_* bits that restore the pre-2026-11-13 scheduler paths
+    uint32_t starve_ms = 50;        // SNAP_OS_STARVE_MS: a core wait this long while a core is free counts in core_starved
+    int starve_log = 0;             // SNAP_OS_STARVE_LOG=1: also log each such wait
+    uint32_t yield_any_us = 1000;   // SNAP_OS_YIELD_ANY_US: after a yield to any thread, how long the yielder does not preempt it
     size_t host_stack = 256ull << 20, fiber_host_stack = 64ull << 20;
     uint64_t tp_init_var = 0, tp_destroy_var = 0, tick_base = OS_TICK_FREQUENCY * 10;
     int trace = 0;
 };
 extern Config g_cfg;
-
+// SNAP_SCHED_LEGACY=1|all, or a comma list of the names below: old behavior for that part (review_os.md, 2026-11-13).
+enum : uint32_t {
+    LG_MIGRATE = 1,      // "migrate": no core migration for pinned waiters (finding 1)
+    LG_YIELD_ANY = 2,    // "yield": spin gate and svcSleepThread(-2) yield only to equal or better priority (finding 2)
+    LG_UNBOOST = 4,      // "unboost": a holder whose priority gets worse does not notify core waiters (finding 3)
+    LG_DEADLINE = 8,     // "deadline": the overflow deadline is armed once per core wait (finding 10)
+    LG_HOST_BLOCK = 16,  // "hostblock": VAMM retry sleeps and file reads keep the virtual core (finding 9)
+    LG_EVENTS = 32,      // "events": manual-clear TimerEvent/LightEvent waiters re-check only the flag (finding 11)
+};
+static inline bool legacy(uint32_t bit) { return (g_cfg.legacy & bit) != 0; }
 struct Stats {
     std::atomic<uint64_t> threads_started{0}, threads_exited{0}, lock_contended{0}, cv_waits{0}, core_waits{0},
         preempt_requests{0}, preempt_yields{0}, overflow_grants{0}, pi_boosts{0}, fiber_switches{0}, spin_yields{0},
-        core_wake_rescues{0};   // a core waiter found a free core on its safety-net timeout: a missed handoff (should stay 0)
+        core_wake_rescues{0},   // a core waiter found a free core on its safety-net timeout: a missed handoff (should stay 0)
+        core_starved{0},        // core waits longer than starve_ms while another core was free (finding 1 detector)
+        migrate_requests{0}, migrations{0}, yield_any{0};
     std::atomic<int> max_cores_in_use{0};
 };
 extern Stats g_stats;
@@ -166,7 +185,8 @@ void thread_start(Thread *t);
 void thread_wait_exit(Thread *t);
 void thread_destroy(Thread *t);
 void sleep_ns(Thread *t, int64_t ns);
-void yield_thread(Thread *t);
+void yield_thread(Thread *t);            // svcSleepThread(0/-1): give the core to an equal or better waiter
+void yield_any(Thread *t);               // svcSleepThread(-2), YieldToAnyThread: give the core to any waiter that can use it
 void set_core_mask(Thread *t, int ideal, uint64_t mask);
 int guest_core_number(const Thread *t);   // under G: the core the guest sees (0..app_cores-1, also on a spare or overflow core)
 void change_priority(Thread *t, int prio);

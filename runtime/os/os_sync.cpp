@@ -223,7 +223,9 @@ void ov_SignalLightEvent(Cpu *c) {
         else gst32a(e + LE_WORD, 2);
     } else {
         gst32a(e + LE_WORD, 2);
-        keyq_wake_all(k, R_OK);
+        // Manual clear: every waiter woken here returns signalled, even if ClearLightEvent runs before it re-checks the
+        // word (finding 11). Legacy: waiters re-check the word and can lose a Signal-then-Clear pulse.
+        keyq_wake_all(k, legacy(LG_EVENTS) ? R_OK : LIGHT_HANDOFF);
     }
 }
 bool light_wait(uint64_t e, int64_t ns) {
@@ -448,14 +450,20 @@ void ov_StopTimerEvent(Cpu *c) { Lock lk(G); gst<uint8_t>(c->x[0] + TE_TIMER_STA
 void ov_SignalTimerEvent(Cpu *c) {
     Lock lk(G);
     gst8a(c->x[0] + TE_SIGNALED, 1);
+    gst<uint64_t>(c->x[0] + TE_BROADCAST, gld<uint64_t>(c->x[0] + TE_BROADCAST) + 1);
     timer_notify(c->x[0]);
 }
 void ov_ClearTimerEvent(Cpu *c) { Lock lk(G); timer_update(c->x[0]); gst8a(c->x[0] + TE_SIGNALED, 0); }
 bool timer_wait(uint64_t t, bool try_only) {
     Thread *me = self();
     Lock lk(G);
+    // Manual clear: a signal (broadcast count bump) since this wait began counts even if ClearTimerEvent ran before the
+    // woken waiter re-checked (finding 11; Horizon's TimerEvent compares the broadcast counter the same way).
+    const bool manual = gld<uint8_t>(t + TE_CLEAR_MODE) != 1 && !legacy(LG_EVENTS);
+    const uint64_t gen = gld<uint64_t>(t + TE_BROADCAST);
     for (;;) {
         timer_update(t);
+        if (manual && gld<uint64_t>(t + TE_BROADCAST) != gen) return true;
         if (gld8a(t + TE_SIGNALED)) {
             if (gld<uint8_t>(t + TE_CLEAR_MODE) == 1) gst8a(t + TE_SIGNALED, 0);
             return true;
@@ -627,7 +635,11 @@ void ov_FinalizeMultiWaitHolder(Cpu *c) {
     unlink_locked(c->x[0]);
     gst<uint64_t>(c->x[0] + MH_KIND, HK_NONE);
 }
-void ov_LinkMultiWaitHolder(Cpu *c) { Lock lk(G); link_locked(c->x[0], c->x[1]); }
+void ov_LinkMultiWaitHolder(Cpu *c) {
+    Lock lk(G);
+    link_locked(c->x[0], c->x[1]);
+    keyq_wake_all(mkkey(K_MULTI, c->x[0]), R_OK);   // a WaitAny already in progress re-checks the new holder (finding 13)
+}
 void ov_UnlinkMultiWaitHolder(Cpu *c) { Lock lk(G); unlink_locked(c->x[0]); }
 void ov_UnlinkAllMultiWaitHolder(Cpu *c) {
     Lock lk(G);
@@ -740,14 +752,16 @@ void ov_CvWait(Cpu *c) { cv_wait(c->x[0], c->x[1], NS_INFINITE); }
 // InternalConditionVariable::TimedWait(cs, const TimeoutHelper&): the helper holds the absolute target tick
 // (sdk+0x33eb18..0x33eb38). Returns ConditionVariableStatus: 0 Timeout, 1 NoTimeout.
 void ov_CvTimedWait(Cpu *c) {
-    int64_t left = (int64_t)(gld<uint64_t>(c->x[2]) - os_ticks());
-    if (left <= 0) {
+    // Unsigned compare: a saturated (UINT64_MAX) or far target tick is a long wait, not an expired one (finding 6).
+    const uint64_t target = gld<uint64_t>(c->x[2]), now = os_ticks();
+    if (target <= now) {
         cs_leave(c->x[1]);
         cs_enter(c->x[1]);
         c->x[0] = 0;
         return;
     }
-    c->x[0] = cv_wait(c->x[0], c->x[1], tick_to_ns(left)) == R_TIMEOUT ? 0 : 1;
+    const uint64_t left = std::min<uint64_t>(target - now, (uint64_t)INT64_MAX);
+    c->x[0] = cv_wait(c->x[0], c->x[1], tick_to_ns((int64_t)left)) == R_TIMEOUT ? 0 : 1;
 }
 void ov_SdkCvWait(Cpu *c) { cv_wait(c->x[0], c->x[1], NS_INFINITE); }
 void ov_SdkCvTimedWait(Cpu *c) {   // returns true when signalled (sdk+0x3413f0)
@@ -784,6 +798,9 @@ void mw_notify_locked(uint64_t obj) {
         if (uint64_t mw = gld<uint64_t>(h + MH_MULTIWAIT)) keyq_wake_all(mkkey(K_MULTI, mw), R_OK);
 }
 void mw_notify(uint64_t obj) {
+    // The caller just stored the object's signalled state. Without a full fence that store can still sit in the store
+    // buffer when g_linked is read, while a linker (locked increment) reads the old state: a lost wakeup (finding 4).
+    std::atomic_thread_fence(std::memory_order_seq_cst);
     if (g_linked.load(std::memory_order_acquire) == 0) return;
     Lock lk(G);
     mw_notify_locked(obj);

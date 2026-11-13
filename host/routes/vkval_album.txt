@@ -1,0 +1,10 @@
+# fixture: qa_post_florio
+# vkval: lab hub -> Lab -> slow A taps through the lab dialogue into the lab menu (first entry, Photodex), logging scene names (SNAP_ROUTE_LOG=1)
+# to find the album scenes. Run: SNAP_ROUTE_LOG=1 powershell -File host\run_boot.ps1 -Route vkval_album -BuildDir build\w\vkval -Timeout 560
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=240
+@f200 8 Down
+@f400 8 A
+repeat @f800 @f30000 200 8 A
+wait ui=photo_edit timeout=300
+end 200

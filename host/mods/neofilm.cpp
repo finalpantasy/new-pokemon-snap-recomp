@@ -149,7 +149,7 @@ void tracer_thread() {
 // The play HUD object keeps the photo counter at [this+0x2b8] (int, 72 on most courses). Its live per-frame update is main+0x393c90, which
 // decrements it per shot (`ldr w8,[x26,#0x2b8]; subs w10,w8,#1; ... str w10,[x26,#0x2b8]`, main+0x393d98..0x393f84) and ends the expedition at
 // 0. (Module offsets are real vaddrs; scripts/elf_xref.py `func` prints addresses shifted by 0x1000, use knobs_lib.dis.) The initial value is
-// written elsewhere (main+0x37fa48 and 0x3807fc looked right but never ran), so rt_gm_film_c, hooked at main+0x393d9c, overwrites the counter
+// written elsewhere (main+0x37fa48 and 0x3807fc looked right but never ran), so rt_gm_film_c, hooked at main+0x393d98 (before the load), overwrites the counter
 // with SNAP_FILM once per HUD object, the first time it still reads 72.
 int g_film;           // 0 = off
 bool g_film_log;
@@ -233,7 +233,8 @@ extern "C" void snap_neo_observe(uint64_t a, uint64_t lr, uint64_t x0) {
     (void)lr;
     if (g_camfn && a == g_camfn) g_camobj = x0;
 }
-// Live HUD update main+0x393c90, hooked before `subs w10, w8, #1` at main+0x393d9c (x26 = HUD, w8 = counter).
+// Live HUD update main+0x393c90, hooked before `ldr w8, [x26, #0x2b8]` at main+0x393d98 (x26 = HUD), so this frame's
+// `subs w10, w8, #1` already sees a rewritten counter (hooked one instruction later, a shot in that frame stored 71).
 extern "C" void rt_gm_film_c(Cpu *c) {
     static uint64_t addr[8];
     static int last[8];

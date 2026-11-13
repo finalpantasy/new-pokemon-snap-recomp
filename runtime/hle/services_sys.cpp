@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <random>
 #include <thread>
@@ -21,6 +22,17 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#endif
+
+// [pace] runtime/nvn/nvn_pace.cpp: the guest vsync follows the same frame clock as the host limiter. Builds without the NVN
+// layer fall back to the stubs (wait returns 0 = keep the local 60 Hz loop).
+extern "C" int snap_pace_vsync_wait(int64_t* last);
+extern "C" void snap_pace_vsync_note();
+extern "C" int snap_pace_vsync_wait_none(int64_t*) { return 0; }
+extern "C" void snap_pace_vsync_note_none() {}
+#ifdef _MSC_VER
+#pragma comment(linker, "/alternatename:snap_pace_vsync_wait=snap_pace_vsync_wait_none")
+#pragma comment(linker, "/alternatename:snap_pace_vsync_note=snap_pace_vsync_note_none")
 #endif
 
 namespace hle {
@@ -375,6 +387,7 @@ void diag_abort(Cpu* c) {
 }
 
 // ---- nn::album
+constexpr uint32_t kResultAlbumSaveFailed = result(3, 1);   // host-chosen: the screenshot file could not be created
 void album_save_screenshot(Cpu* c) {
   const uint8_t* data = ptr<const uint8_t>(arg(c, 0));
   size_t size = (size_t)arg(c, 1);
@@ -392,16 +405,27 @@ void album_save_screenshot(Cpu* c) {
   }
   std::string dir = config().screenshot_dir.empty() ? config().data_root + "/screenshots" : config().screenshot_dir;
   std::error_code ec;
-  std::filesystem::create_directories(dir, ec);
+  std::filesystem::create_directories(std::filesystem::u8path(dir), ec);
   static std::atomic<int> counter{0};
   char name[64];
   std::snprintf(name, sizeof name, "/snap_%llu_%03d.png", (unsigned long long)now_unix_seconds(), counter++);
-  std::string png = encode_png_rgba(data, w, h);
-  if (FILE* f = std::fopen((dir + name).c_str(), "wb")) {
-    std::fwrite(png.data(), 1, png.size(), f);
-    std::fclose(f);
-    log("album: saved %s%s (%ux%u)", dir.c_str(), name, w, h);
+  // Open the target now so a bad folder or full disk is reported to the game; encode and write on a worker thread (the PNG encode of a
+  // 1080p frame is slow enough to hitch the guest thread). The pixels are copied first: the guest reuses the buffer after the call.
+  auto file = std::make_shared<std::ofstream>(std::filesystem::u8path(dir + name), std::ios::binary | std::ios::trunc);
+  if (ec || !*file) {
+    log("album::SaveScreenshot: cannot create %s%s", dir.c_str(), name);
+    ret(c, kResultAlbumSaveFailed);
+    return;
   }
+  auto px = std::make_shared<std::vector<uint8_t>>(data, data + size);
+  const std::string shown = dir + name;
+  std::thread([file, px, w, h, shown] {
+    std::string png = encode_png_rgba(px->data(), w, h);
+    file->write(png.data(), (std::streamsize)png.size());
+    file->close();
+    if (*file) log("album: saved %s (%ux%u)", shown.c_str(), w, h);
+    else log("album: write failed for %s", shown.c_str());
+  }).detach();
   ret(c, 0);
 }
 
@@ -424,11 +448,23 @@ void swkbd_show_keyboard(Cpu* c) {
   if (!once) { once = true; log("swkbd::ShowKeyboard: String ptr %p cap %d (host answers with a fixed name)", (void*)out, cap); }
   if (!out) { ret(c, kResultSwkbdCanceled); return; }
   input::script_event("swkbd");
-  const char* nm = std::getenv("SNAP_PLAYER_NAME");
-  if (!nm || !*nm) nm = "Ash";
+  const std::string& nm8 = config().player_name.empty() ? std::string("Ash") : config().player_name;   // default "Ash"
   int n = 0;
-  int lim = cap > 1 && cap < 64 ? cap - 1 : 8;
-  for (; nm[n] && n < lim; ++n) out[n] = (char16_t)(uint8_t)nm[n];
+  int lim = cap == 1 ? 0 : (cap > 1 && cap < 64 ? cap - 1 : 8);   // a 1-char buffer only has room for the terminator
+  for (size_t i = 0; i < nm8.size() && n < lim;) {   // UTF-8 to UTF-16 (a code point above the BMP needs two units)
+    const uint8_t b = (uint8_t)nm8[i];
+    uint32_t cp = b; int len = 1;
+    if (b >= 0xF0) { cp = b & 7; len = 4; }
+    else if (b >= 0xE0) { cp = b & 15; len = 3; }
+    else if (b >= 0xC0) { cp = b & 31; len = 2; }
+    if (i + (size_t)len > nm8.size()) break;
+    for (int k = 1; k < len; ++k) cp = (cp << 6) | ((uint8_t)nm8[i + (size_t)k] & 63);
+    i += (size_t)len;
+    if (cp >= 0x10000) {
+      if (n + 2 > lim) break;
+      cp -= 0x10000; out[n++] = (char16_t)(0xD800 + (cp >> 10)); out[n++] = (char16_t)(0xDC00 + (cp & 0x3ff));
+    } else out[n++] = (char16_t)cp;
+  }
   out[n] = 0;
   ret(c, 0);
 }
@@ -472,11 +508,21 @@ void vi_get_display_vsync_event(Cpu* c) {
   v.event = ev;
   v.run = true;
   v.th = std::thread([&v] {
+    int64_t last = 0;
+    if (snap_pace_vsync_wait(&last)) {   // [pace] default: ticks of the shared frame clock (display vblanks when locked)
+      os_hooks().signal_system_event(v.event);
+      while (v.run && snap_pace_vsync_wait(&last)) os_hooks().signal_system_event(v.event);
+      return;
+    }
+    // SNAP_PACE=legacy: free-running 60 Hz. SNAP_VSYNC_HZ=<hz> is a test knob (does the game pace itself on this event?).
+    const char* hzEnv = getenv("SNAP_VSYNC_HZ");
+    const std::chrono::nanoseconds period(hzEnv && atof(hzEnv) > 1 ? (int64_t)(1e9 / atof(hzEnv)) : (int64_t)16667000);
     auto next = std::chrono::steady_clock::now();
     while (v.run) {
-      next += std::chrono::microseconds(16667);
+      next += period;
       std::this_thread::sleep_until(next);
       os_hooks().signal_system_event(v.event);
+      snap_pace_vsync_note();
     }
   });
   ret(c, 0);

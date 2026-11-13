@@ -1,0 +1,5 @@
+# fixture: post_tutorial
+# Story ending, skip path (2026-11-13): same save as story_end. Fast A taps to the credits (they start at about present 7000-8000), Plus ("Skip") at 9000, then A taps through the post-credits talk and the autosave.
+repeat @f300 @f8500 50 6 A
+@f9000 8 Plus
+repeat @f9150 @f26000 100 6 A

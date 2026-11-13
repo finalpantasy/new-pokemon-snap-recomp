@@ -165,12 +165,14 @@ void load(const std::string& root, Index& out, std::vector<std::string>& warn) {
         }
       }
     }
-  } else {
-    std::vector<std::string> names;
-    for (auto& d : fs::directory_iterator(root, ec))
-      if (d.is_directory(ec) && fs::exists(d.path() / "pack.json", ec)) names.push_back(d.path().filename().string());
-    std::sort(names.begin(), names.end());
-    for (auto& n : names) order.push_back({n, true});
+  }
+  // Without a mods.json nothing is enabled (the owner parked texture and mod packs; before 2026-11-13 every folder with a pack.json was).
+  // Packs the game itself needs are the exception and are on unless mods.json lists them as disabled: "native-options" is the PC tabs of the
+  // game's Settings screen that host/play.ps1 builds (host/mods/nativeopt.cpp reads its rows.txt only while that pack is active).
+  for (const char* req : {"native-options"}) {
+    bool listed = false;
+    for (auto& o : order) if (o.first == req) listed = true;
+    if (!listed && fs::exists(fs::path(root) / req / "pack.json", ec)) order.push_back({req, true});
   }
   for (auto& [id, en] : order) {
     Pack p;
