@@ -168,6 +168,7 @@ Boolean MemoryPoolInitialize(void* pool, const void* b) {
   auto* p = new PoolImpl();
   p->host = h; p->storage = pb->storage; p->size = pb->size; p->flags = pb->flags; p->guest = pool;
   h->RegisterPool(p);
+  Log("MemoryPoolInitialize pool=%p storage=%p size=0x%llx flags=0x%x", pool, pb->storage, (unsigned long long)pb->size, pb->flags);
   Bind(pool, MAGIC_POOL, p);
   return 1;
 }

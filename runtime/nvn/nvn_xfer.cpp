@@ -48,7 +48,123 @@ void HostReadBarrier(VkCommandBuffer cb) {
   VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
   vkCmdPipelineBarrier2(cb, &di);
 }
+
+// ---- render scale (SNAP_RENDER_SCALE, ssaa2, the upscalers' scene scale) ----
+// A scaled texture's VkImage is HW() x HH() texels while every guest copy region is in guest texels. Before this, copies used guest
+// regions on the scaled image: below scale 1 they ran past the image (the photo/album thumbnail readbacks after the score screen),
+// which lost the device; above 1 they read or wrote only the top-left part. NVN_NO_XFER_SCALE=1 restores that old behavior (A/B).
+bool XferScaleOn() { static const bool on = getenv("NVN_NO_XFER_SCALE") == nullptr; return on; }
+bool Scaled(const TextureImpl* t) { return t->hostW != 0 || t->hostH != 0; }
+// Guest box at `level` -> image texels (render scale applied, edges rounded). Layers and 3D depth are never scaled.
+CopyRegion ToImage(const TextureImpl* t, uint32_t level, const CopyRegion& r) {
+  if (!Scaled(t) || !XferScaleOn()) return r;
+  const double gw = std::max(1, t->b.width >> level), gh = std::max(1, t->b.height >> level);
+  const double sx = t->LevelW(level) / gw, sy = t->LevelH(level) / gh;
+  const int x0 = (int)std::lround(r.x * sx), y0 = (int)std::lround(r.y * sy);
+  const int x1 = (int)std::lround((r.x + r.w) * sx), y1 = (int)std::lround((r.y + std::max(r.h, 1)) * sy);
+  CopyRegion o = r;
+  o.x = x0; o.y = y0; o.w = std::max(1, x1 - x0); o.h = std::max(1, y1 - y0);
+  return o;
+}
+// True when x/y/w/h (and z/d for 3D) fit the image level. Otherwise logs it and clamps it (unless NVN_NO_XFER_SCALE); false = skip.
+bool FitBox(const TextureImpl* t, uint32_t level, CopyRegion& r, const char* what) {
+  const int lw = (int)t->LevelW(level), lh = (int)t->LevelH(level);
+  const bool is3d = t->b.target == TT_3D;
+  const int ld = is3d ? std::max(1, std::max(t->b.depth, 1) >> level) : 1;
+  const int h = std::max(r.h, 1), d = std::max(r.d, 1);
+  const bool badLevel = level >= std::max(t->imgLevels, 1u);
+  const bool bad = badLevel || r.x < 0 || r.y < 0 || r.w <= 0 || r.x + r.w > lw || r.y + h > lh || (is3d && (r.z < 0 || r.z + d > ld));
+  if (!bad) return true;
+  static std::atomic<int> logged{0};
+  if (logged.fetch_add(1) < 40)
+    LogError("%s: region (%d,%d,%d %dx%dx%d) level %u runs past the %dx%d image (guest %dx%d, scale %.2f, %u levels, tex %p fmt 0x%x)%s",
+             what, r.x, r.y, r.z, r.w, h, d, level, lw, lh, t->b.width, t->b.height, t->scale, t->imgLevels, (const void*)t, t->b.format,
+             XferScaleOn() ? ", clamped" : ", NOT clamped (NVN_NO_XFER_SCALE)");
+  if (!XferScaleOn()) return true;
+  if (badLevel) return false;
+  r.x = std::max(r.x, 0); r.y = std::max(r.y, 0);
+  r.w = std::min(r.w, lw - r.x); r.h = std::min(h, lh - r.y);
+  if (is3d) { r.z = std::max(r.z, 0); r.d = std::min(d, ld - r.z); }
+  return r.w > 0 && r.h > 0 && (!is3d || r.d > 0);
+}
+bool BlitOk(const TextureImpl* t, bool* linear) {
+  if (!t->fi || t->fi->bw != 1 || t->b.samples > 1) return false;
+  VkFormatProperties fp{};
+  vkGetPhysicalDeviceFormatProperties(t->host->phys, t->fi->vk, &fp);
+  const auto f = fp.optimalTilingFeatures;
+  if (linear) *linear = t->fi->kind == 0 && (t->fi->aspect & VK_IMAGE_ASPECT_COLOR_BIT) && (f & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+  return (f & VK_FORMAT_FEATURE_BLIT_SRC_BIT) && (f & VK_FORMAT_FEATURE_BLIT_DST_BIT);
+}
+// Unscaled stand-in (guest level-0 size, one level, the texture's layers) for guest-resolution copies; lives as long as the texture,
+// so it is never destroyed while a submitted command buffer may still use it.
+TextureImpl* XferShadow(TextureImpl* t) {
+  if (t->xferShadow) return t->xferShadow;
+  auto* s = new TextureImpl();
+  s->host = t->host;
+  s->b = TextureBuilder{};
+  const bool layered = t->imgLayers > 1;
+  s->b.device = t->b.device; s->b.target = layered ? TT_2D_ARRAY : TT_2D;
+  s->b.width = t->b.width; s->b.height = std::max(t->b.height, 1); s->b.depth = layered ? (int)t->imgLayers : 1; s->b.levels = 1;
+  s->b.format = t->b.format; s->b.samples = 1;
+  if (!s->EnsureImage()) { delete s; return nullptr; }
+  t->xferShadow = s;
+  static int n = 0;
+  if (n++ < 8) Log("render scale: %dx%d texture %p (scale %.2f, fmt 0x%x) gets a guest-size stand-in for guest-resolution copies", t->b.width, t->b.height, (void*)t, t->scale, t->b.format);
+  return s;
+}
+VkImageBlit BlitBoxes(VkImageAspectFlags sa, uint32_t sl, VkImageAspectFlags da, uint32_t dl, uint32_t layer, uint32_t layers,
+                      const CopyRegion& s, const CopyRegion& d) {
+  VkImageBlit ib{};
+  ib.srcSubresource = {sa, sl, layer, layers};
+  ib.dstSubresource = {da, dl, layer, layers};
+  ib.srcOffsets[0] = {s.x, s.y, 0}; ib.srcOffsets[1] = {s.x + s.w, s.y + std::max(s.h, 1), 1};
+  ib.dstOffsets[0] = {d.x, d.y, 0}; ib.dstOffsets[1] = {d.x + d.w, d.y + std::max(d.h, 1), 1};
+  return ib;
+}
 }  // namespace
+
+bool XferFitCopy(const TextureImpl* t, VkBufferImageCopy& bc, const char* what) {
+  CopyRegion r{bc.imageOffset.x, bc.imageOffset.y, bc.imageOffset.z, (int)bc.imageExtent.width, (int)bc.imageExtent.height, (int)bc.imageExtent.depth};
+  const CopyRegion before = r;
+  if (!FitBox(t, bc.imageSubresource.mipLevel, r, what)) return false;
+  if (r.x != before.x || r.y != before.y || r.z != before.z || r.w != before.w || r.h != before.h || r.d != before.d) {
+    if (!bc.bufferRowLength) bc.bufferRowLength = bc.imageExtent.width;   // keep the guest row / slice layout of the buffer
+    if (!bc.bufferImageHeight) bc.bufferImageHeight = bc.imageExtent.height;
+    const uint32_t bw = std::max<uint32_t>(t->fi->bw, 1), bh = std::max<uint32_t>(t->fi->bh, 1);
+    const uint64_t rowB = (uint64_t)((bc.bufferRowLength + bw - 1) / bw) * t->fi->bytes, sliceB = rowB * ((bc.bufferImageHeight + bh - 1) / bh);
+    bc.bufferOffset += (uint64_t)((r.x - before.x) / (int)bw) * t->fi->bytes + (uint64_t)((r.y - before.y) / (int)bh) * rowB + (uint64_t)(r.z - before.z) * sliceB;
+    bc.imageOffset = {r.x, r.y, r.z};
+    bc.imageExtent = {(uint32_t)r.w, (uint32_t)r.h, (uint32_t)std::max(r.d, 1)};
+  }
+  return true;
+}
+
+bool XferUploadScaled(ReplayCtx& cx, TextureImpl* t, VkBuffer src, const VkBufferImageCopy& gc) {
+  bool linear = false;
+  if (!Scaled(t) || !XferScaleOn() || !BlitOk(t, &linear)) return false;
+  const uint32_t level = gc.imageSubresource.mipLevel;
+  if (level >= std::max(t->imgLevels, 1u)) return false;
+  TextureImpl* s = XferShadow(t);
+  if (!s) return false;
+  // guest region of this level, in the stand-in's level 0 (a guest level-l region fits the level-0 size)
+  VkBufferImageCopy sc = gc;
+  sc.imageSubresource.mipLevel = 0;
+  sc.imageOffset.z = 0; sc.imageExtent.depth = 1;
+  if (!XferFitCopy(s, sc, "CopyBufferToTexture (stand-in)")) return true;
+  const CopyRegion g{sc.imageOffset.x, sc.imageOffset.y, 0, (int)sc.imageExtent.width, (int)std::max(sc.imageExtent.height, 1u), 1};
+  CopyRegion hr = ToImage(t, level, g);
+  if (!FitBox(t, level, hr, "CopyBufferToTexture (scaled target)")) return true;
+  EndRendering(cx);
+  Transition(cx.cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  vkCmdCopyBufferToImage(cx.cb, src, s->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &sc);
+  Transition(cx.cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  Transition(cx.cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  const VkImageBlit ib = BlitBoxes(AspectOf(s), 0, AspectOf(t), level, gc.imageSubresource.baseArrayLayer, gc.imageSubresource.layerCount, g, hr);
+  vkCmdBlitImage(cx.cb, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ib,
+                 linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+  if (XferLog()) fprintf(stderr, "[xfer] scaled upload tex=%p %dx%d scale %.2f: guest (%d,%d %dx%d) -> image (%d,%d %dx%d) lvl=%u\n", (void*)t, t->b.width, t->b.height, t->scale, g.x, g.y, g.w, g.h, hr.x, hr.y, hr.w, hr.h, level);
+  return true;
+}
 
 void DoCopyTextureToBuffer(ReplayCtx& cx, const Cmd& c) {
   TextureImpl* t = c.tex[0];
@@ -63,7 +179,7 @@ void DoCopyTextureToBuffer(ReplayCtx& cx, const Cmd& c) {
   if (!t->uploaded) UploadStaticTexture(cx, t);
   else RefreshDynamicTexture(cx, t);
   uint32_t level, layer; ViewSub(v, c.i[0] != 0, &level, &layer);
-  if (XferLog()) fprintf(stderr, "[xfer] CopyTextureToBuffer tex=%p fmt=%x %dx%d tgt=%d region(%d,%d,%d %dx%dx%d) lvl=%u dst=0x%llx uploaded=%d\n", (void*)t, t->b.format, t->b.width, t->b.height, t->b.target, r.x, r.y, r.z, r.w, r.h, r.d, level, (unsigned long long)c.a[0], (int)t->uploaded);
+  if (XferLog()) fprintf(stderr, "[xfer] CopyTextureToBuffer tex=%p fmt=%x %dx%d (image %ux%u scale %.2f) tgt=%d region(%d,%d,%d %dx%dx%d) lvl=%u dst=0x%llx uploaded=%d\n", (void*)t, t->b.format, t->b.width, t->b.height, t->HW(), t->HH(), t->scale, t->b.target, r.x, r.y, r.z, r.w, r.h, r.d, level, (unsigned long long)c.a[0], (int)t->uploaded);
   const bool layered = IsLayered(t->b.target);
   const uint32_t bw = std::max<uint32_t>(t->fi->bw, 1), bh = std::max<uint32_t>(t->fi->bh, 1);
   const uint32_t w = (uint32_t)r.w, hgt = (uint32_t)std::max(r.h, 1), dep = (uint32_t)std::max(r.d, 1);
@@ -73,11 +189,30 @@ void DoCopyTextureToBuffer(ReplayCtx& cx, const Cmd& c) {
   if (!map) return;
   EndRendering(cx);
   Transition(cx.cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  TextureImpl* src = t;
+  uint32_t srcLevel = level;
+  bool linear = false;
+  if (Scaled(t) && XferScaleOn() && level < std::max(t->imgLevels, 1u) && BlitOk(t, &linear)) {
+    // scaled source: resample the region into the guest-size stand-in, then copy that (the guest gets guest-resolution texels)
+    if (TextureImpl* s = XferShadow(t)) {
+      CopyRegion hr = ToImage(t, level, r), g{0, 0, 0, (int)w, (int)hgt, 1};
+      if (FitBox(t, level, hr, "CopyTextureToBuffer (scaled source)") && FitBox(s, 0, g, "CopyTextureToBuffer (stand-in)")) {
+        Transition(cx.cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const VkImageBlit ib = BlitBoxes(AspectOf(t), level, AspectOf(s), 0, layer + (layered ? (uint32_t)r.z : 0), layered ? dep : 1, hr, g);
+        vkCmdBlitImage(cx.cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ib,
+                       linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+        Transition(cx.cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        if (XferLog()) fprintf(stderr, "[xfer]   scaled source: image (%d,%d %dx%d) -> stand-in %ux%u\n", hr.x, hr.y, hr.w, hr.h, w, hgt);
+        src = s; srcLevel = 0;
+      }
+    }
+  }
   VkBufferImageCopy bc{};
-  bc.imageSubresource = {AspectOf(t), level, layer + (layered ? (uint32_t)r.z : 0), layered ? dep : 1};
-  bc.imageOffset = {r.x, r.y, layered ? 0 : r.z};
+  bc.imageSubresource = {AspectOf(src), srcLevel, layer + (layered ? (uint32_t)r.z : 0), layered ? dep : 1};
+  bc.imageOffset = src == t ? VkOffset3D{r.x, r.y, layered ? 0 : r.z} : VkOffset3D{0, 0, 0};
   bc.imageExtent = {w, hgt, layered ? 1 : dep};
-  vkCmdCopyImageToBuffer(cx.cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &bc);
+  if (!XferFitCopy(src, bc, "CopyTextureToBuffer")) return;   // scratch stays with the command buffer; the guest bytes are left as they were
+  vkCmdCopyImageToBuffer(cx.cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &bc);
   HostReadBarrier(cx.cb);
   Readback rb;
   rb.map = map; rb.dst = static_cast<uint8_t*>(pool->storage) + off; rb.size = std::min<uint64_t>(size, pool->size - off); rb.kind = 0;
@@ -124,7 +259,10 @@ void DoCopyTextureToTexture(ReplayCtx& cx, const Cmd& c) {
   memcpy(&sr, b, sizeof sr); memcpy(&sv, b + sizeof sr, sizeof sv); b += sizeof sr + sizeof sv;
   memcpy(&dr, b, sizeof dr); memcpy(&dv, b + sizeof dr, sizeof dv);
   uint32_t sl, sy, dl, dy; ViewSub(sv, c.i[0] & 1, &sl, &sy); ViewSub(dv, c.i[0] & 2, &dl, &dy);
-  if (XferLog()) fprintf(stderr, "[xfer] CopyTextureToTexture src=%p f%x %dx%d (uploaded=%d) region(%d,%d,%d %dx%dx%d) -> dst=%p f%x %dx%d region(%d,%d,%d %dx%dx%d) flags=%d\n", (void*)s, s->b.format, s->b.width, s->b.height, (int)s->uploaded, sr.x, sr.y, sr.z, sr.w, sr.h, sr.d, (void*)d, d->b.format, d->b.width, d->b.height, dr.x, dr.y, dr.z, dr.w, dr.h, dr.d, c.i[1]);
+  if (XferLog()) fprintf(stderr, "[xfer] CopyTextureToTexture src=%p f%x %dx%d scale %.2f (uploaded=%d) region(%d,%d,%d %dx%dx%d) -> dst=%p f%x %dx%d scale %.2f region(%d,%d,%d %dx%dx%d) flags=%d\n", (void*)s, s->b.format, s->b.width, s->b.height, s->scale, (int)s->uploaded, sr.x, sr.y, sr.z, sr.w, sr.h, sr.d, (void*)d, d->b.format, d->b.width, d->b.height, d->scale, dr.x, dr.y, dr.z, dr.w, dr.h, dr.d, c.i[1]);
+  // guest regions -> image texels of each side (render scale), then fitted to the images
+  sr = ToImage(s, sl, sr); dr = ToImage(d, dl, dr);
+  if (!FitBox(s, sl, sr, "CopyTextureToTexture (source)") || !FitBox(d, dl, dr, "CopyTextureToTexture (destination)")) return;
   const bool sLay = IsLayered(s->b.target), dLay = IsLayered(d->b.target);
   if (!s->uploaded) UploadStaticTexture(cx, s);
   else RefreshDynamicTexture(cx, s);
@@ -137,7 +275,15 @@ void DoCopyTextureToTexture(ReplayCtx& cx, const Cmd& c) {
   const bool wantFilter = (c.i[1] & 1) != 0;
   const VkImageAspectFlags sa = AspectOf(s), da = AspectOf(d);
   const uint32_t sdep = sLay ? (uint32_t)std::max(sr.d, 1) : 1, ddep = dLay ? (uint32_t)std::max(dr.d, 1) : 1;
-  if (sameSize && sameFmt && !(c.i[1] & (4 | 8 | 16))) {
+  const bool canBlit = BlitOk(s, nullptr) && BlitOk(d, nullptr);
+  if (!canBlit && !(sameSize && sameFmt) && XferScaleOn()) {   // blits need BLIT_SRC/DST (no block-compressed or multisampled images)
+    static int n = 0;
+    if (n++ < 16) LogError("CopyTextureToTexture: %dx%d f%x -> %dx%d f%x needs a blit the formats do not support; %s", sr.w, sr.h, s->b.format, dr.w, dr.h, d->b.format,
+                           sameFmt ? "copying the overlap" : "skipped");
+    if (!sameFmt) return;
+    sr.w = dr.w = std::min(sr.w, dr.w); sr.h = dr.h = std::min(std::max(sr.h, 1), std::max(dr.h, 1));
+  }
+  if (sr.w == dr.w && sr.h == dr.h && sr.d == dr.d && sameFmt && !(c.i[1] & (4 | 8 | 16))) {
     VkImageCopy ic{};
     ic.srcSubresource = {s->fi->aspect, sl, sy + (sLay ? (uint32_t)sr.z : 0), sdep};
     ic.dstSubresource = {d->fi->aspect, dl, dy + (dLay ? (uint32_t)dr.z : 0), ddep};
@@ -210,7 +356,7 @@ void QueueShaderWriteback(ReplayCtx& cx, PoolImpl* pool, uint64_t off, uint64_t 
   rb.map = pool->mapped + off; rb.dst = static_cast<uint8_t*>(pool->storage) + off;
   rb.expect.assign(rb.dst, rb.dst + size);
   static const bool xl = getenv("NVN_XFER_LOG") != nullptr;
-  if (xl) { static int n = 0; if (n++ < 200) fprintf(stderr, "[xfer] shader write-back queued pool %p (size 0x%llx) off=0x%llx size=0x%llx\n", (void*)pool, (unsigned long long)pool->size, (unsigned long long)off, (unsigned long long)size); }
+  if (xl) { static int n = 0; if (n++ < 20000) fprintf(stderr, "[xfer] shader write-back queued pool %p (size 0x%llx) off=0x%llx size=0x%llx dst=%p p%d\n", (void*)pool, (unsigned long long)pool->size, (unsigned long long)off, (unsigned long long)size, (void*)rb.dst, g_presentCount); }
   cx.readbacks->push_back(std::move(rb));
 }
 

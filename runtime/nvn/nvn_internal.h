@@ -194,6 +194,7 @@ struct TextureImpl {
   uint32_t imgLevels = 1, imgLayers = 1;   // of the VkImage (set by EnsureImage)
   VkImageCreateFlags ci_flags = 0;         // flags the VkImage was created with
   TextureImpl* bcShadow = nullptr;
+  TextureImpl* xferShadow = nullptr;   // scaled texture: guest-size stand-in for guest-resolution copies (nvn_xfer.cpp), freed with it
   uint32_t bcSubLevel = 0, bcSubLayer = 0;  // on a bcShadow: the level / layer of the BC texture it stands in for          // block-compressed render target: the uncompressed stand-in drawn into (RedirectCompressedTargets)
   bool EnsureImage();
   uint32_t LevelW(uint32_t l) const { return std::max(1u, HW() >> l); }
@@ -469,6 +470,12 @@ void RefreshDynamicTexture(ReplayCtx& cx, TextureImpl* t);   // re-uploads a CPU
 void DoCopyTextureToBuffer(ReplayCtx& cx, const struct Cmd& c);
 void DebugDumpSampledTexture(ReplayCtx& cx, TextureImpl* t, const char* tag);   // nvn_xfer.cpp: NVN_RT_DUMP=<dir>
 void DoCopyTextureToTexture(ReplayCtx& cx, const struct Cmd& c);
+// nvn_xfer.cpp, render scale: guest copy regions are in guest texels, a scaled texture's image is HW() x HH(). A buffer->image copy
+// into a scaled texture goes through an unscaled stand-in and a blit (returns true when it did that; NVN_NO_XFER_SCALE=1 turns the
+// scaled paths and the clamp off). XferFitCopy logs a region that runs past the image (undefined behavior: it lost the device below
+// render scale 1) and clamps it; false = nothing left to copy.
+bool XferUploadScaled(ReplayCtx& cx, TextureImpl* t, VkBuffer src, const VkBufferImageCopy& guestCopy);
+bool XferFitCopy(const TextureImpl* t, VkBufferImageCopy& bc, const char* what);
 void DoReportCounter(ReplayCtx& cx, const struct Cmd& c);
 void DoMaskedClear(ReplayCtx& cx, TextureImpl* t, const TexView* tv, int mask, const float* color);   // nvn_draw.cpp
 void QueueShaderWriteback(ReplayCtx& cx, PoolImpl* pool, uint64_t off, uint64_t size);   // nvn_draw.cpp: fragment SSBO copy-back (Readback kind 3)

@@ -1,0 +1,12 @@
+# fixture: post_tutorial
+# Florio photo run that picks photos at photo select and gets the professor's evaluation (photo evaluation path, 2026-11-12).
+# Same course part as florio_photos.txt. From f12000 a 1200-present cycle: Right (next subject folder), A (open), A (select the shown photo),
+# B (back), twice; then Plus (Evaluate Photos), Up (Yes), A, A taps through the evaluation, and B at the cycle end, which closes a pause
+# menu or help page when the cycle runs while the course is still on (photo select began anywhere from f7152 to f17610 in five runs).
+# Run: Wurmple folder probe (worker wurmple): opens the first (Wurmple) folder at each 1200-present cycle and never leaves it.
+repeat @f300 @f12000 120 8 A
+repeat @f6000 @f12000 24 4 A
+repeat @f6000 @f11000 600 200 ZL
+repeat @f6000 @f11000 400 60 rx=0.25
+repeat @f6200 @f11000 400 60 rx=-0.25
+repeat @f12100 @f60000 1200 10 A

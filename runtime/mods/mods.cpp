@@ -169,6 +169,8 @@ extern "C" void rt_mod_entry(Cpu* c) {
   if (idx < g_ovr.size() && g_counts[idx]->n++ == 0)
     fprintf(stderr, "[mods] hit %s <- %s (%zu bytes)\n", o->label.c_str(), g_index.packs[o->pack].id.c_str(), data.size());
   g_hits++;
+  static const int delay_ms = getenv("SNAP_MODS_DELAY_MS") ? atoi(getenv("SNAP_MODS_DELAY_MS")) : 0;   // test aid: make each hit as slow as the old per-hit disk read
+  if (delay_ms > 0) Sleep((DWORD)delay_ms);
   c->x[20] = (uint64_t)(uintptr_t)buf.data();   // held until this thread's next replacement: the worker is done with it by then
 }
 

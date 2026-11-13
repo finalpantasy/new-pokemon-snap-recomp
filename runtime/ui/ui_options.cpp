@@ -84,9 +84,10 @@ const PresetKey kPresetKeys[] = {
 constexpr int kPresetKeyN = 9;
 struct PresetDef { const char* id; const char* label; const char* v[kPresetKeyN]; };
 const PresetDef kPresets[] = {
-    // No preset renders below native size: a render scale under 1 (0.5 and 0.75, 4 of 4 runs) lost the GPU device soon after the photo score screen
-    // (florio_eval), while scale 1 did not. The upscaler rows are also left out of the presets for that reason (their scene scale is below 1 in a window under 1080p).
-    {"verylow", "Very Low", {"", "none", "", "0", "1", "512", "", "4", ""}},
+    // Very Low draws at 0.5 (960 x 540). Sub-native scale used to lose the GPU device after the photo score screen: the album thumbnail
+    // readback copied a 240x200 guest region out of a 120x100 scaled image; transfers are render-scale aware since 2026-11-12 (nvn_xfer.cpp).
+    // The upscaler rows stay out of the presets (they need a backend DLL and pick their own scene scale).
+    {"verylow", "Very Low", {"0.50", "none", "", "0", "1", "512", "", "4", ""}},
     {"low", "Low", {"", "off", "", "4", "", "", "", "8", ""}},
     {"normal", "Normal", {"", "", "", "", "", "", "", "", ""}},
     {"high", "High", {"", "ssaa2,smaa", "0.30", "", "", "2048", "high", "", ""}},
@@ -159,7 +160,7 @@ std::vector<Opt>& graphics_opts() {
       {"", "Picture quality", kSection, kLive, "", ""},
       {"gfx_preset", "Quality preset", kChoice, kRestart,
        "Sets the picture-quality rows below together: render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution and ambient occlusion. "
-       "Very Low: for really weak hardware (draws at the game's own 1920 x 1080, no anti-aliasing, no filtering, softer textures, 512 shadows, few occlusion samples). "
+       "Very Low: for really weak hardware (draws the 3D scene at half size, 960 x 540, then stretches it to the window; no anti-aliasing, no filtering, softer textures, 512 shadows, few occlusion samples). "
        "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Normal: this port's defaults. "
        "High: 2x supersampling, SMAA, 2048 shadows, High occlusion. Ultra: 2x scale, 4096 shadows, Ultra occlusion. "
        "Maximum: 4x scale (7680 x 4320), 8192 shadows and the most occlusion samples. It will slow even a very fast graphics card and needs a lot of video memory. "
@@ -169,8 +170,9 @@ std::vector<Opt>& graphics_opts() {
        {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Normal"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_preset, set_preset},
       {"gfx_render_scale", "Render scale", kSlider, kRestart,
        "How sharp the 3D picture is drawn, as a multiple of the game's own 1920 x 1080. 2.00x draws 3840 x 2160 and then shows it on your screen. Higher is crisper and slower. "
-       "Photo scoring still uses the original-size data.",
-       "1.00", {}, 1.0f, 4.0f, "%.2fx", "SNAP_RENDER_SCALE"},   // below 1.0 lost the GPU device after photo scoring in tests, so the slider starts at 1
+       "Below 1.00x the scene is drawn smaller and stretched (0.50x = 960 x 540): blurrier, but much lighter for a weak graphics card. "
+       "Photo scoring still uses the original-size data. Saved photos stay 1080 x 720 but are as sharp as the scene they were taken from.",
+       "1.00", {}, 0.5f, 4.0f, "%.2fx", "SNAP_RENDER_SCALE"},
       {"gfx_aa", "Anti-aliasing", kChoice, kRestart,
        "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling draws at twice the window height first: very sharp, and costs a lot of GPU time.",
        "default",

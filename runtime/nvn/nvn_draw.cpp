@@ -952,7 +952,8 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
   const bool evalDs = cx.rt[8] && cx.rt[8]->b.format == 0x36 && cx.rt[8]->b.width == 1920;   // the Evaluation DepthStencil (DEPTH32F_STENCIL8)
   if (evalLog && (evalDs || (p->st[1].valid && (!strncmp(p->st[1].key, "6e4fc3880af9", 12) || !strncmp(p->st[1].key, "10774e331b21", 12) || !strncmp(p->st[1].key, "fae2ba6353af", 12))))) {
     static int n = 0;
-    if (n++ < 1500) {
+    static const int evalMax = getenv("NVN_EVAL_LOG_MAX") ? atoi(getenv("NVN_EVAL_LOG_MAX")) : 1500;
+    if (n++ < evalMax) {
       const char* fk = p->st[1].valid ? p->st[1].key : "none";
       const char* nm = !strncmp(fk, "6e4fc3880af9", 12) ? "Aggregate" : !strncmp(fk, "10774e331b21", 12) ? "Sphere" : !strncmp(fk, "fae2ba6353af", 12) ? "CopyDepth" : fk;
       fprintf(stderr, "[eval] p%d %s vs=%.12s rt0=%p n=%d ds=%llx (dt=%u dw=%u st=%u df=%u sf=%u fail=%u zfail=%u zpass=%u) ref=%d cmp=%x wr=%x rt8=%p f%x cull=%d vp=(%.0f %.0f %.0f %.0f) cb:",
@@ -965,6 +966,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
       }
       for (auto& w : texWrites) if (w.r.t) fprintf(stderr, " tex%d=%ux%u f%x scale%.2f", w.binding, w.r.t->b.width, w.r.t->b.height, w.r.t->b.format, w.r.t->scale);   // CopyDepth's source size under render scale
       if (cx.rt[8]) fprintf(stderr, " rt8scale%.2f", cx.rt[8]->scale);
+      if (d.ssbo[1][1].pool && d.ssbo[1][1].pool->storage) fprintf(stderr, " agg=%p", (const void*)((const uint8_t*)d.ssbo[1][1].pool->storage + d.ssbo[1][1].off));   // the subject's 0x40-byte counter slot (matches `wb values`)
       fprintf(stderr, "\n");
     }
   }
@@ -1138,6 +1140,8 @@ void DoCopyBufferToTexture(ReplayCtx& cx, const Cmd& c) {
     bc.imageOffset = {r.x, r.y, r.z}; bc.imageExtent = {(uint32_t)r.w, (uint32_t)std::max(r.h, 1), (uint32_t)std::max(r.d, 1)};
   }
   SyncPoolRangeOnce(pool, off, (uint64_t)bc.imageExtent.width * bc.imageExtent.height * std::max<uint64_t>(bc.imageExtent.depth, bc.imageSubresource.layerCount) * t->fi->bytes / (t->fi->bw * t->fi->bh) + 16);
+  if (XferUploadScaled(cx, t, pool->buffer, bc)) return;   // render-scaled target: guest-size stand-in + blit (nvn_xfer.cpp)
+  if (!XferFitCopy(t, bc, "CopyBufferToTexture")) return;
   vkCmdCopyBufferToImage(cx.cb, pool->buffer, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bc);
 }
 

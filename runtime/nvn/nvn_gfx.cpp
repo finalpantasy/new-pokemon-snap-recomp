@@ -97,7 +97,7 @@ void BufferBuilderSetStorage(void* b, void* pool, ptrdiff_t off, size_t size) { 
 Boolean BufferInitialize(void* buf, const void* builder) {
   auto* b = reinterpret_cast<const BufferBuilder*>(builder);
   auto* p = Impl<PoolImpl>(b->pool, MAGIC_POOL);
-  if (!p) { LogError("BufferInitialize: builder has no memory pool"); return 0; }
+  if (!p) { LogError("BufferInitialize: builder has no memory pool (pool=%p hdr magic=%llx impl=%p off=0x%llx size=0x%llx)", b->pool, b->pool ? (unsigned long long)static_cast<const ObjHdr*>(b->pool)->magic : 0ull, b->pool ? static_cast<const ObjHdr*>(b->pool)->impl : nullptr, (unsigned long long)b->offset, (unsigned long long)b->size); return 0; }
   auto* i = new BufferImpl();
   i->pool = p; i->offset = b->offset; i->size = b->size;
   Bind(buf, MAGIC_BUFFER, i);

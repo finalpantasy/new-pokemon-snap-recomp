@@ -213,7 +213,7 @@ The row picks Very Low, Low, Normal, High, Ultra or Maximum and sets nine rows a
 
 | Row (env) | Very Low | Low | Normal | High | Ultra | Maximum |
 |---|---|---|---|---|---|---|
-| Render scale (`SNAP_RENDER_SCALE`) | 1 | 1 | default | default | 2.00 | 4.00 |
+| Render scale (`SNAP_RENDER_SCALE`) | 0.50 | 1 | default | default | 2.00 | 4.00 |
 | Anti-aliasing (`SNAP_AA`) | none | off (game FXAA) | default (ssaa2+smaa, CAS 0.3) | ssaa2,smaa | smaa | smaa |
 | Sharpening (`SNAP_SHARPEN`) | 0 | 0 | default | 0.30 | 0.30 | 0.50 |
 | Aniso (`SNAP_ANISO`) | off | 4 | 16 | 16 | 16 | 16 |
@@ -223,10 +223,10 @@ The row picks Very Low, Low, Normal, High, Ultra or Maximum and sets nine rows a
 | AO samples (`SNAP_SSAO_SAMPLES`, new row) | 4 | 8 | default | default | default | 512 |
 | HBAO dirs x steps (`SNAP_SSAO_HBAO`, new row) | default | default | default | default | default | 32 x 128 |
 
-Left out on purpose: draw distance, full-rate animation (photo scores unverified), FOV (paused), lighting preset (lighting worker), HDR, color look, frame cap. Upscaler and upscaler quality rows are now live (restart) but in no preset. The upscaler replaces the render scale and the ssaa2 default (the game's FXAA is off unless `SNAP_AA` is set); its scene scale is below 1 in a window under 1080p, which is the path that lost the device.
+Left out on purpose: draw distance, full-rate animation (photo scores unverified), FOV (paused), lighting preset (lighting worker), HDR, color look, frame cap. Upscaler and upscaler quality rows are now live (restart) but in no preset. The upscaler replaces the render scale and the ssaa2 default (the game's FXAA is off unless `SNAP_AA` is set); its scene scale is below 1 in a window under 1080p (works since the fix below; DLSS Quality at 1280x720 scored in run `0-20261112_174810`).
 
 Findings (2026-11-12, florio_eval / florio_photos, hidden 1280x720 window, RTX 4090, 2 to 4 runs at once with other workers, so absolute times are noisy):
-- Sub-native render scale is unsafe: scale 0.5 (3 runs) and 0.75 (1 run) reached photo scoring, then the GPU device was lost (`vkQueueSubmit2 failed: -4`, tens of thousands of errors) 20 to 30 s after the score screen. Scale 1 (Very Low, Low, Normal) never did. Cause not found. The slider now starts at 1.0.
+- Sub-native render scale lost the GPU device (`vkQueueSubmit2 failed: -4`) 20 to 30 s after the score screen in 4 of 4 runs at 0.5/0.75. Cause: the album thumbnail readback copied a 240x200 guest region out of the 120x100 scaled image. Fixed 2026-11-12 in `runtime\nvn\nvn_xfer.cpp` (render-scale-aware copies, `NVN_NO_XFER_SCALE=1` restores the old ones; runs in `AGENTS.md`, "Sub-native scale device loss fixed"). Very Low now draws at 0.5 (960 x 540) and the slider starts at 0.5. 0.5 and 0.75 each scored in 2 runs and kept running 160 to 200 s past the score screen with no device loss.
 - Scale 6 and 8 crash the guest before the title (run `0-20261112_144057`); 4 works.
 - `SNAP_SHADOW_RES=512` is new (the depth maps scale 0.5). `SNAP_PASS_OFF` does nothing yet (`rt_gm_pass` never matches names), so bloom/DOF/SSAO cannot be switched off.
 - Presents are paced to 60 Hz, so ms/frame below is mostly the limiter plus CPU load, not GPU cost: Normal 18.9 (`3-20261112_131027`), Very Low 17.7 (`0-20261112_141432`, florio_eval, photo scored, 2,375 points shown), Low 17.6 (`1-20261112_141432`), High 18.1 (`0-20261112_142450`), Ultra 18.4 (`1-20261112_142450`), Maximum 19.5 (`0-20261112_143210`, 7680x4320 scene), Maximum with a 3840x2160 window 19.7 (`0-20261112_144203`). Maximum does not lag a 4090 under this pacing; an exclusive `SNAP_PERF` bench is needed for real GPU cost.

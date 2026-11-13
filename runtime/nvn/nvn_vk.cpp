@@ -567,6 +567,7 @@ void DestroyTexture(TextureImpl* t) {
   if (!t) return;
   UpscaleForgetTexture(t);   // [upscale]
   if (t->bcShadow) { DestroyTexture(t->bcShadow); t->bcShadow = nullptr; }
+  if (t->xferShadow) { DestroyTexture(t->xferShadow); t->xferShadow = nullptr; }
   if (t->host && t->host->device) {
     for (auto& kv : t->views) vkDestroyImageView(t->host->device, kv.second, nullptr);
     if (t->image) vkDestroyImage(t->host->device, t->image, nullptr);
@@ -958,8 +959,30 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         const SubRange rr = RtRange(t, cx.rtHasView[8] ? &cx.rtView[8] : nullptr);
         TransitionRange(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rr);
         VkClearDepthStencilValue v{c.f[0], (uint32_t)c.i[1]};
+        {   // debug (NVN_EVAL_DEPTH_DUMP=<dir>): the Evaluation depth (EvaluationCopyDepth's copy of the scene depth) before the first subject clear of a present, raw float32 1920x1080
+          static const char* edd = getenv("NVN_EVAL_DEPTH_DUMP"); static int lastP = -1, nd = 0;
+          if (edd && *edd && t->b.format == 0x36 && t->b.width == 1920 && (t->fi->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && g_presentCount != lastP && nd < 12) {
+            lastP = g_presentCount;
+            const uint64_t sz = (uint64_t)t->b.width * t->b.height * 4;
+            VkBuffer eb = VK_NULL_HANDLE; uint8_t* em = NewScratch(cx, sz, &eb);
+            if (em) {
+              TransitionRange(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rr);
+              VkBufferImageCopy ebc{}; ebc.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}; ebc.imageExtent = {(uint32_t)t->b.width, (uint32_t)t->b.height, 1};
+              vkCmdCopyImageToBuffer(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, eb, 1, &ebc);
+              VkMemoryBarrier2 emb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+              emb.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT; emb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+              emb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; emb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+              VkDependencyInfo edi{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; edi.memoryBarrierCount = 1; edi.pMemoryBarriers = &emb;
+              vkCmdPipelineBarrier2(cb, &edi);
+              TransitionRange(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rr);
+              char en[600]; snprintf(en, sizeof en, "%s/evaldepth_p%d_%d.raw", edd, g_presentCount, nd++);
+              Readback erb; erb.map = em; erb.dst = nullptr; erb.size = sz; erb.kind = 2; erb.dumpPath = en;
+              erb.sb = cx.scratch->back(); cx.scratch->pop_back(); cx.readbacks->push_back(erb);
+            }
+          }
+        }
         { static const bool el = getenv("NVN_EVAL_LOG") != nullptr; static int n = 0;
-          if (el && t->b.format == 0x36 && n++ < 200) fprintf(stderr, "[eval] p%d ClearDepthStencil depth=%d(%g) stencil=%d(%d) t=%p\n", g_presentCount, c.i[0], c.f[0], c.i[2], c.i[1], (void*)t); }
+          if (el && t->b.format == 0x36 && n++ < 5000) fprintf(stderr, "[eval] p%d ClearDepthStencil depth=%d(%g) stencil=%d(%d) t=%p\n", g_presentCount, c.i[0], c.f[0], c.i[2], c.i[1], (void*)t); }
         VkImageSubresourceRange rg{asp, rr.lb, 1, rr.yb, rr.yn};
         vkCmdClearDepthStencilImage(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v, 1, &rg);
         break;
