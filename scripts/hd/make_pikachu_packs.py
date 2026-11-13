@@ -44,7 +44,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', default=os.path.join(os.environ.get('APPDATA', '.'), 'SnapRecomp', 'mods'))
     ap.add_argument('--variant', default='x4_realesrgan')
-    ap.add_argument('--max-edge', type=int, default=1024, help='sizes above the original (1024) crashed the hub load in 1 of 1 test at 2048, see qa bugs B1')
+    ap.add_argument('--max-edge', type=int, default=4096, help='4096 is 4x the original (1024); sizes above the original load fine (QA B1 was not size related, see docs/hd-assets.md)')
     a = ap.parse_args()
     root = Path(a.root)
     tmp = Path(tempfile.mkdtemp(prefix='pikapack_'))

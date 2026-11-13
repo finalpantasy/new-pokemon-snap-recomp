@@ -1,0 +1,30 @@
+{
+ "asset": "p113_00", "num": "113", "name": "Scorbunny",
+ "notes": [
+  "Painted design: white fur with faint soft strokes on head (3), body (12), arms (15), head and cheek tufts (7, 10, 14, 17), tail (19) and the lower ears; ears (2, 8, 11, 13) orange at the top with clearer strokes, a pale orange band and a yellow inner-ear mark (2, 13); feet (16, 18) white with orange toe caps split by dark toe lines; thin dark finger lines on the hands (15); orange nose (4), red band (5), mouth (6), island 9 a small white tuft with dark painted strokes at its base.",
+  "So: short soft fur along the painted strokes (Scorbunny's white is clean: the albedo strands are kept faint, 1%, and the baked cavity low, so it never reads grey or dirty), slightly longer at the ear tips and tufts; toe caps keep their dark toe lines crisp, finger lines crisp; yellow ear marks, nose, band and mouth untouched.",
+  "Body shader 3676778037 is the flocky fur shader with dummy_flocky_texture as its normal (the fur noise), so in game only _dif and _par change; the authored Body_nor is cache-only (would replace the flocky noise via a material change)."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.12,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "nose_band_mouth", "include": [{"islands": [4, 5, 6]}], "treatment": "none"},
+   {"id": "ear_marks", "include": [{"islands": [2, 13], "lab": {"h": [60, 95], "C": [45, 200], "L": [60, 100]}}], "grow": 2, "feather": 1.5, "treatment": "none"},
+   {"id": "toe_finger_lines", "include": [{"islands": [9, 15, 16, 18], "lab": {"L": [0, 55]}}], "grow": 1, "treatment": "none",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [8, 20], "power": 1.8}},
+   {"id": "ears", "include": [{"islands": [2, 8, 11, 13]}], "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 5.5, "width_texels": 0.45, "painted_mix": 0.6, "clump_texels": 3.5,
+               "amp": 0.05, "alb_amp": 0.018, "cav": 0.25, "seed": 31, "edge": {"texels": 8, "len_mul": 1.5, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.76, "rough_w": 0.2}},
+   {"id": "white_fur", "include": [{"islands": [1, 3, 7, 9, 10, 12, 14, 15, 16, 17, 18, 19]}], "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 5.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 3.5,
+               "amp": 0.05, "alb_amp": 0.01, "cav": 0.3, "seed": 32, "edge": {"texels": 8, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.76, "rough_w": 0.2}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [30, -60], "closeup": {"yaw": 30, "center": [0.5, 0.35], "zoom": 3.0}, "crop": [0.47, 0.35], "crop_set": "Body"}
+}

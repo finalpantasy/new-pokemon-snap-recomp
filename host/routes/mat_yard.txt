@@ -1,0 +1,8 @@
+# fixture: new_game
+# Close-up Pikachu in the lab yard (material texture proof, 2026-11-13). Same A taps as lod_yard; the camera tutorial step "line up with Pikachu"
+# is active from about present 8400. Coarse turn from tut_full (rx -0.3 for 0.75 s, ry -0.3 for 0.8 s centers Pikachu), then ZL (zoom) held.
+repeat @f1500 @f9000 50 12 A
+repeat @f9000 @f90000 30 4 A
+@f8700 45 rx=-0.3
+@f8800 48 ry=-0.3
+@f9100 900 ZL

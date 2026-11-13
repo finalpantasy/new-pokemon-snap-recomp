@@ -1,0 +1,6386 @@
+{
+  "_note": "Species facts and ids only. Materials are design-based judgments, not extracted from the game. Region class codes: see docs/pokemon-material-catalog.md.",
+  "species": [
+    {
+      "internal_id": "p001_00",
+      "species": "Pikachu",
+      "dex": 25,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "short dense yellow fur with fine flyaway strands",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_nor"
+          ]
+        },
+        {
+          "region": "cheeks",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "red patches, same fur",
+          "slot": "Cheek",
+          "slot_guess": false,
+          "textures": [
+            "Body_nor",
+            "Cheek_dif"
+          ]
+        },
+        {
+          "region": "ears",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "black tips",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_nor"
+          ]
+        },
+        {
+          "region": "tail",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "brown base fur, yellow bolt panel",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_nor"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        },
+        {
+          "region": "mouth",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "mouth atlas; tongue and inner mouth (added from real slot list)",
+          "slot": "Mouth",
+          "slot_guess": false,
+          "textures": [
+            "Mouth_dif",
+            "Mouth_nor",
+            "Mouth_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Pikachu_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p002_00",
+      "species": "Eevee",
+      "dex": 133,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "fluffy short brown fur",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_nor",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "neck",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "cream ruff, longer tufts",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_nor",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "tail",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "bushy, cream tip",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_nor",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        },
+        {
+          "region": "mouth",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "mouth atlas; tongue and inner mouth (added from real slot list)",
+          "slot": "Mouth",
+          "slot_guess": false,
+          "textures": [
+            "Mouth_dif",
+            "Mouth_nor",
+            "Mouth_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Eevee_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p003_00",
+      "species": "Heracross",
+      "dex": 214,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "blue-black beetle plate, sharp highlights"
+        },
+        {
+          "region": "horn",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "hard, tan tip"
+        },
+        {
+          "region": "belly",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "segmented plates"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Heracross_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p004_00",
+      "species": "Pinsir",
+      "dex": 127,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "brown plated"
+        },
+        {
+          "region": "pincers",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "hard ridged tan"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Pinsir_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p005_00",
+      "species": "Torchic",
+      "dex": 255,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "fluffy orange down"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small hard yellow"
+        },
+        {
+          "region": "crest",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "tufted"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Torchic_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p006_00",
+      "species": "Pichu",
+      "dex": 172,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "very short pale yellow fur"
+        },
+        {
+          "region": "ears",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "black, thin"
+        },
+        {
+          "region": "cheeks",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "pink patches"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Pichu_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p007_00",
+      "species": "Dodrio",
+      "dex": 85,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "short brown feathers"
+        },
+        {
+          "region": "necks",
+          "material": "feathers",
+          "gloss": "satin",
+          "notes": "long thin feather-covered necks"
+        },
+        {
+          "region": "beaks",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "hard red-pink"
+        },
+        {
+          "region": "legs",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "scaly"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Dodrio_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p008_00",
+      "species": "Caterpie",
+      "dex": 10,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "soft green segmented skin"
+        },
+        {
+          "region": "antennae",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "red, fleshy"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Caterpie_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p009_00",
+      "species": "Lapras",
+      "dex": 131,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "smooth blue skin, lighter belly"
+        },
+        {
+          "region": "shell",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "hard ridged gray-brown spikes"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Lapras_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p010_00",
+      "species": "Swanna",
+      "dex": 581,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "clean white feathers"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "tan"
+        },
+        {
+          "region": "wings",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "layered primaries"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Swanna_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p011_00",
+      "species": "Aipom",
+      "dex": 190,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short lavender fur",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "dummy_flocky_texture"
+          ]
+        },
+        {
+          "region": "face",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "cream muzzle",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "dummy_flocky_texture"
+          ]
+        },
+        {
+          "region": "tail",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "prehensile purple with a hand-like tip",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "dummy_flocky_texture"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        },
+        {
+          "region": "mouth",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "mouth atlas; tongue and inner mouth (added from real slot list)",
+          "slot": "Mouth",
+          "slot_guess": false,
+          "textures": [
+            "Mouth_dif",
+            "Mouth_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Aipom_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p012_00",
+      "species": "Bounsweet",
+      "dex": 761,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "smooth fruit-like pink skin"
+        },
+        {
+          "region": "stem",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "green leaves and stem"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Bounsweet_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p013_00",
+      "species": "Metapod",
+      "dex": 11,
+      "regions": [
+        {
+          "region": "shell",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "smooth hard green cocoon, ridged"
+        },
+        {
+          "region": "eyes",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Metapod_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p014_00",
+      "species": "Beautifly",
+      "dex": 267,
+      "regions": [
+        {
+          "region": "wings",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "powdery butterfly scales, patterned"
+        },
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "fuzzy"
+        },
+        {
+          "region": "proboscis",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "curled"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Beautifly_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p015_00",
+      "species": "Magikarp",
+      "dex": 129,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "glossy",
+          "notes": "large orange scales with a pearly sheen",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "whiskers",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "long thin cream",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "fins",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "translucent membrane",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Magikarp_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p016_00",
+      "species": "Wurmple",
+      "dex": 265,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "soft segmented skin"
+        },
+        {
+          "region": "spikes",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Wurmple_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p017_00",
+      "species": "Ducklett",
+      "dex": 580,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "fluffy blue down"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "yellow"
+        },
+        {
+          "region": "crest",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "tuft"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Ducklett_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p018_00",
+      "species": "Wooper",
+      "dex": 194,
+      "regions": [
+        {
+          "region": "body",
+          "material": "slime_water_gas",
+          "gloss": "glossy",
+          "notes": "wet slimy blue skin"
+        },
+        {
+          "region": "gills",
+          "material": "rubbery",
+          "gloss": "glossy",
+          "notes": "pink external"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Wooper_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p019_00",
+      "species": "Emolga",
+      "dex": 587,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "white short fur"
+        },
+        {
+          "region": "membrane",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "thin stretchy flap, black pattern"
+        },
+        {
+          "region": "tail",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "bushy"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Emolga_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p020_00",
+      "species": "Noibat",
+      "dex": 714,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "short purple fuzz"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "membrane"
+        },
+        {
+          "region": "ears",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "large thin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Noibat_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p021_00",
+      "species": "Tyrantrum",
+      "dex": 697,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "rough reptile hide, brown"
+        },
+        {
+          "region": "jaw",
+          "material": "bone_horn",
+          "gloss": "satin",
+          "notes": "boxy bone-like crest and teeth"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Tyrantrum_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p022_00",
+      "species": "Hippowdon",
+      "dex": 450,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "thick leathery hide with sand dust"
+        },
+        {
+          "region": "vents",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "grainy"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Hippowdon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p023_00",
+      "species": "Wingull",
+      "dex": 278,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "white feathers"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "orange"
+        },
+        {
+          "region": "wings",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "blue-gray"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Wingull_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p024_00",
+      "species": "Ninetales",
+      "dex": 38,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "satin",
+          "notes": "long silky cream-gold fur",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "tails",
+          "material": "fur_long",
+          "gloss": "satin",
+          "notes": "nine flowing tails, shiny strands",
+          "slot": "TailMat",
+          "slot_guess": false,
+          "textures": [
+            "Tail_dif",
+            "Tail_par"
+          ]
+        },
+        {
+          "region": "face",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Ninetales_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p025_00",
+      "species": "Cubchoo",
+      "dex": 613,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "thick white fur"
+        },
+        {
+          "region": "snot",
+          "material": "ice",
+          "gloss": "glossy",
+          "notes": "icicle-like"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Cubchoo_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p026_00",
+      "species": "Chandelure",
+      "dex": 609,
+      "regions": [
+        {
+          "region": "body",
+          "material": "metal",
+          "gloss": "satin",
+          "notes": "dark purple chandelier-like body, glass and metal"
+        },
+        {
+          "region": "flames",
+          "material": "flame",
+          "gloss": "emissive",
+          "notes": "ghostly purple fire"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Chandelure_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: ghostly fire in a chandelier body"
+    },
+    {
+      "internal_id": "p027_00",
+      "species": "Skorupi",
+      "dex": 451,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "purple-brown scorpion plates"
+        },
+        {
+          "region": "claws",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "hard"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Skorupi_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p028_00",
+      "species": "Pikipek",
+      "dex": 731,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "black feathers"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "hard orange"
+        },
+        {
+          "region": "chest",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "white"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Pikipek_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p029_00",
+      "species": "Beartic",
+      "dex": 614,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "thick white shaggy fur",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "icicles",
+          "material": "ice",
+          "gloss": "glossy",
+          "notes": "hard ice along the jaw",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Beartic_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p030_00",
+      "species": "Toucannon",
+      "dex": 733,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "black feathers"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "big smooth hard orange"
+        },
+        {
+          "region": "cheek",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "white"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Toucannon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p031_00",
+      "species": "Quagsire",
+      "dex": 195,
+      "regions": [
+        {
+          "region": "body",
+          "material": "slime_water_gas",
+          "gloss": "glossy",
+          "notes": "smooth moist blue skin"
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Quagsire_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p032_00",
+      "species": "Bidoof",
+      "dex": 399,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "thick short brown fur",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "face",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "cream muzzle",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "teeth",
+          "material": "bone_horn",
+          "gloss": "satin",
+          "notes": "big white",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Bidoof_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p034_00",
+      "species": "Vivillon",
+      "dex": 666,
+      "regions": [
+        {
+          "region": "wings",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "powdery scaled wings, pattern varies by form"
+        },
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "fuzzy"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Vivillon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p035_00",
+      "species": "Aerodactyl",
+      "dex": 142,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "rough gray hide"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "leathery membrane"
+        },
+        {
+          "region": "teeth",
+          "material": "bone_horn",
+          "gloss": "satin",
+          "notes": "jagged"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Aerodactyl_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p036_00",
+      "species": "Flygon",
+      "dex": 330,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth green skin"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "translucent red membrane"
+        },
+        {
+          "region": "eyes",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "red visor"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Flygon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p037_00",
+      "species": "Wailord",
+      "dex": 321,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "smooth blue skin, huge"
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "pale pleats"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Wailord_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p038_00",
+      "species": "Wailmer",
+      "dex": 320,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "smooth round blue skin"
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "pale"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Wailmer_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p039_00",
+      "species": "Slugma",
+      "dex": 218,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rock_crystal",
+          "gloss": "glowing",
+          "notes": "lava with cooling black crust"
+        },
+        {
+          "region": "glow",
+          "material": "flame",
+          "gloss": "emissive",
+          "notes": "orange magma gaps"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Slugma_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: molten lava body"
+    },
+    {
+      "internal_id": "p040_00",
+      "species": "Alomomola",
+      "dex": 594,
+      "regions": [
+        {
+          "region": "body",
+          "material": "slime_water_gas",
+          "gloss": "glossy",
+          "notes": "translucent pink gel-like skin"
+        },
+        {
+          "region": "fins",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "thin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Alomomola_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p041_00",
+      "species": "Mantine",
+      "dex": 226,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "smooth blue-white skin"
+        },
+        {
+          "region": "fins",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "wide wing-like"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Mantine_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p042_00",
+      "species": "Mamoswine",
+      "dex": 473,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "long shaggy brown fur",
+          "slot": "BodyA",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "tusks",
+          "material": "ice",
+          "gloss": "satin",
+          "notes": "ice-like tusks",
+          "slot": "BodyA",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        },
+        {
+          "region": "mouth",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "mouth atlas; tongue and inner mouth (added from real slot list)",
+          "slot": "Mouth",
+          "slot_guess": false,
+          "textures": [
+            "Mouth_dif",
+            "Mouth_par"
+          ]
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Mamoswine_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p044_00",
+      "species": "Sawsbuck",
+      "dex": 586,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short coat, seasonal colors"
+        },
+        {
+          "region": "antlers",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "branch-like with blossoms or leaves"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sawsbuck_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p045_00",
+      "species": "Carbink",
+      "dex": 703,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "faceted gray crystal, translucent"
+        },
+        {
+          "region": "gems",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "pink or blue facets"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Carbink_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: gem born underground"
+    },
+    {
+      "internal_id": "p046_00",
+      "species": "Sableye",
+      "dex": 302,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "purple skin"
+        },
+        {
+          "region": "eyes",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "faceted blue gems"
+        },
+        {
+          "region": "claws",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "gem claws"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sableye_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p047_00",
+      "species": "Luvdisc",
+      "dex": 370,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "glossy",
+          "notes": "heart-shaped pink scales"
+        },
+        {
+          "region": "fins",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "thin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Luvdisc_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p048_00",
+      "species": "Pidgeot",
+      "dex": 18,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "brown and cream feathers"
+        },
+        {
+          "region": "crest",
+          "material": "feathers",
+          "gloss": "satin",
+          "notes": "long red-yellow plume"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small hooked"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Pidgeot_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p049_00",
+      "species": "Onix",
+      "dex": 95,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "boulder segments, gray, grainy"
+        },
+        {
+          "region": "spikes",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "dark rock spikes"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Onix_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: rock body"
+    },
+    {
+      "internal_id": "p050_00",
+      "species": "Exeggutor",
+      "dex": 103,
+      "regions": [
+        {
+          "region": "trunk",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "bark-like neck (form in Snap not checked)"
+        },
+        {
+          "region": "heads",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "coconut-like heads with leaf crown"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Exeggutor_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "low"
+    },
+    {
+      "internal_id": "p051_00",
+      "species": "Feraligatr",
+      "dex": 160,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "satin",
+          "notes": "blue scales"
+        },
+        {
+          "region": "jaw",
+          "material": "bone_horn",
+          "gloss": "satin",
+          "notes": "red crest and teeth"
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Feraligatr_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p052_00",
+      "species": "Bellossom",
+      "dex": 182,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "green leafy skirt"
+        },
+        {
+          "region": "petals",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "red petals"
+        },
+        {
+          "region": "face",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Bellossom_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p053_00",
+      "species": "Slaking",
+      "dex": 289,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short sparse tan fur"
+        },
+        {
+          "region": "face",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "cream with folds"
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Slaking_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p054_00",
+      "species": "Sharpedo",
+      "dex": 319,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth blue shark skin"
+        },
+        {
+          "region": "fins",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "stiff"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sharpedo_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p055_00",
+      "species": "Cacnea",
+      "dex": 331,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "green cactus"
+        },
+        {
+          "region": "spines",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "stiff yellow-cream"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Cacnea_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p056_00",
+      "species": "Finneon",
+      "dex": 456,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "glossy",
+          "notes": "blue scales"
+        },
+        {
+          "region": "fins",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "translucent"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Finneon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p057_00",
+      "species": "Yanmega",
+      "dex": 469,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "green chitin"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "glassy veined"
+        },
+        {
+          "region": "eyes",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "big compound eyes"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Yanmega_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p058_00",
+      "species": "Liepard",
+      "dex": 510,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "sleek purple fur"
+        },
+        {
+          "region": "tail",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "long"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Liepard_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p059_00",
+      "species": "Stunfisk",
+      "dex": 618,
+      "regions": [
+        {
+          "region": "body",
+          "material": "slime_water_gas",
+          "gloss": "matte",
+          "notes": "flat muddy skin, mottled brown"
+        },
+        {
+          "region": "edges",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "yellow"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Stunfisk_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p060_00",
+      "species": "Mandibuzz",
+      "dex": 630,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "dark feathers"
+        },
+        {
+          "region": "bone armor",
+          "material": "bone_horn",
+          "gloss": "satin",
+          "notes": "white ridged"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Mandibuzz_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p061_00",
+      "species": "Florges",
+      "dex": 671,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "petal dress, smooth"
+        },
+        {
+          "region": "head",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Florges_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p062_00",
+      "species": "Primarina",
+      "dex": 730,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth blue skin"
+        },
+        {
+          "region": "hair",
+          "material": "hair",
+          "gloss": "satin",
+          "notes": "flowing ruffled white"
+        },
+        {
+          "region": "tail",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "fin-like"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Primarina_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p063_00",
+      "species": "Crabrawler",
+      "dex": 739,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "shell"
+        },
+        {
+          "region": "pom-poms",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "fluffy"
+        },
+        {
+          "region": "claws",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "hard"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Crabrawler_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p064_00",
+      "species": "Lycanroc",
+      "dex": 745,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "rough brown fur"
+        },
+        {
+          "region": "mane",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "long cream"
+        },
+        {
+          "region": "rocks",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "stone tufts"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Lycanroc_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p065_00",
+      "species": "Comfey",
+      "dex": 764,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "flowers on a vine ring"
+        },
+        {
+          "region": "head",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small green"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Comfey_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p066_00",
+      "species": "Pyukumuku",
+      "dex": 771,
+      "regions": [
+        {
+          "region": "body",
+          "material": "slime_water_gas",
+          "gloss": "glossy",
+          "notes": "wet sea-cucumber skin, black with white"
+        },
+        {
+          "region": "arms",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Pyukumuku_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p067_00",
+      "species": "Jolteon",
+      "dex": 135,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "spiky yellow fur"
+        },
+        {
+          "region": "ruff",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "pointed white spikes"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Jolteon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p068_00",
+      "species": "Blastoise",
+      "dex": 9,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth blue skin"
+        },
+        {
+          "region": "shell",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "brown with cream rim, hard"
+        },
+        {
+          "region": "cannons",
+          "material": "metal",
+          "gloss": "metallic",
+          "notes": "steel gray"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Blastoise_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p069_00",
+      "species": "Raichu",
+      "dex": 26,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "short orange fur"
+        },
+        {
+          "region": "ears",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "dark"
+        },
+        {
+          "region": "tail",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "lightning tip"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Raichu_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p070_00",
+      "species": "Vaporeon",
+      "dex": 134,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "smooth blue skin"
+        },
+        {
+          "region": "fins",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "translucent"
+        },
+        {
+          "region": "ruff",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Vaporeon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p071_00",
+      "species": "Machamp",
+      "dex": 68,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "gray muscle skin",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "belt",
+          "material": "metal",
+          "gloss": "satin",
+          "notes": "champion belt, metal and fabric",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eyes",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "small",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Machamp_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p072_00",
+      "species": "Flareon",
+      "dex": 136,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "fluffy orange fur",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "neck",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "cream ruff",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "tail",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "bushy",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        },
+        {
+          "region": "mouth",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "mouth atlas; tongue and inner mouth (added from real slot list)",
+          "slot": "Mouth",
+          "slot_guess": false,
+          "textures": [
+            "Mouth_dif",
+            "Mouth_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Flareon_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p073_00",
+      "species": "Snorlax",
+      "dex": 143,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "short dark teal fur",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream, smooth",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "claws",
+          "material": "bone_horn",
+          "gloss": "satin",
+          "notes": "white",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_par"
+          ]
+        },
+        {
+          "region": "mouth",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "mouth atlas; tongue and inner mouth (added from real slot list)",
+          "slot": "Mouth",
+          "slot_guess": false,
+          "textures": [
+            "Mouth_dif",
+            "Mouth_nor",
+            "Mouth_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Snorlax_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p074_00",
+      "species": "Meganium",
+      "dex": 154,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth green hide"
+        },
+        {
+          "region": "flower ring",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "pink petals"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Meganium_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p075_00",
+      "species": "Umbreon",
+      "dex": 197,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "sleek black fur"
+        },
+        {
+          "region": "rings",
+          "material": "flame",
+          "gloss": "emissive",
+          "notes": "glowing yellow marks"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Umbreon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p076_00",
+      "species": "Hoothoot",
+      "dex": 163,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "brown-cream feathers"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Hoothoot_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p077_00",
+      "species": "Espeon",
+      "dex": 196,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "sleek lavender fur"
+        },
+        {
+          "region": "gem",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "red forehead gem"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Espeon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p078_00",
+      "species": "Murkrow",
+      "dex": 198,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "satin",
+          "notes": "dark feathers"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Murkrow_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p079_00",
+      "species": "Corsola",
+      "dex": 222,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "matte",
+          "notes": "pink coral with branching texture"
+        },
+        {
+          "region": "tips",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "lighter"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Corsola_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p080_00",
+      "species": "Octillery",
+      "dex": 224,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "red skin with suckers"
+        },
+        {
+          "region": "tentacles",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "suction cups"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Octillery_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p081_00",
+      "species": "Taillow",
+      "dex": 276,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "satin",
+          "notes": "dark blue feathers"
+        },
+        {
+          "region": "belly",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "cream"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Taillow_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p082_00",
+      "species": "Pelipper",
+      "dex": 279,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "white feathers"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "large yellow pouch"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Pelipper_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p083_00",
+      "species": "Zangoose",
+      "dex": 335,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "cream fur"
+        },
+        {
+          "region": "stripe",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "red markings"
+        },
+        {
+          "region": "claws",
+          "material": "bone_horn",
+          "gloss": "satin",
+          "notes": "white"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Zangoose_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p084_00",
+      "species": "Shroomish",
+      "dex": 285,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small tan body"
+        },
+        {
+          "region": "cap",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "mushroom cap"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Shroomish_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p085_00",
+      "species": "Seviper",
+      "dex": 336,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "satin",
+          "notes": "black scales"
+        },
+        {
+          "region": "blade tail",
+          "material": "metal",
+          "gloss": "glossy",
+          "notes": "curved bladed tail"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Seviper_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p086_00",
+      "species": "Combee",
+      "dex": 415,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "small honeycomb discs"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "translucent"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Combee_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p087_00",
+      "species": "Torterra",
+      "dex": 389,
+      "regions": [
+        {
+          "region": "shell",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "rocky earth with moss",
+          "slot": "BodyC",
+          "slot_guess": true,
+          "textures": [
+            "BodyB_dif",
+            "BodyB_par"
+          ]
+        },
+        {
+          "region": "tree",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "bark and leaves",
+          "slot": "BodyB",
+          "slot_guess": true,
+          "textures": [
+            "BodyB_dif",
+            "BodyB_par"
+          ]
+        },
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "dark green",
+          "slot": "BodyA",
+          "slot_guess": true,
+          "textures": [
+            "BodyA_dif",
+            "BodyA_par"
+          ]
+        },
+        {
+          "region": "eyea",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "EyeA",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Torterra_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film",
+      "dex_hint": "Pokedex: tree on a continent-like shell",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p088_00",
+      "species": "Clamperl",
+      "dex": 366,
+      "regions": [
+        {
+          "region": "shell",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "hard blue shell, ridged"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Clamperl_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p089_00",
+      "species": "Vespiquen",
+      "dex": 416,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "honeycomb abdomen"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "glassy"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Vespiquen_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p090_00",
+      "species": "Glaceon",
+      "dex": 471,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "blue fur"
+        },
+        {
+          "region": "ice",
+          "material": "ice",
+          "gloss": "glossy",
+          "notes": "ice crystals on tail"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Glaceon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p091_00",
+      "species": "Tangrowth",
+      "dex": 465,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "dense blue vines, tangled"
+        },
+        {
+          "region": "feet",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Tangrowth_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p092_00",
+      "species": "Leafeon",
+      "dex": 470,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "beige fur"
+        },
+        {
+          "region": "leaves",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "green leaf ears and tail"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Leafeon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p093_00",
+      "species": "Drifblim",
+      "dex": 426,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "balloon-like purple skin"
+        },
+        {
+          "region": "hands",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Drifblim_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p094_00",
+      "species": "Manaphy",
+      "dex": 490,
+      "regions": [
+        {
+          "region": "body",
+          "material": "slime_water_gas",
+          "gloss": "glossy",
+          "notes": "gel-like blue skin"
+        },
+        {
+          "region": "tentacles",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "thin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Manaphy_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p095_00",
+      "species": "Shaymin",
+      "dex": 492,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "soft green-white fur"
+        },
+        {
+          "region": "flowers",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "pink blossoms"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Shaymin_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p096_00",
+      "species": "Foongus",
+      "dex": 590,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "glossy",
+          "notes": "plastic-like Poke Ball pattern"
+        },
+        {
+          "region": "spots",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "red and white"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Foongus_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: mimics a Poke Ball"
+    },
+    {
+      "internal_id": "p097_00",
+      "species": "Bouffalant",
+      "dex": 626,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "dense brown afro-like wool",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "horns",
+          "material": "bone_horn",
+          "gloss": "satin",
+          "notes": "curved",
+          "slot": "BodyB",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "dummy_flocky_texture"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Bouffalant_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p098_00",
+      "species": "Inkay",
+      "dex": 686,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "smooth blue skin"
+        },
+        {
+          "region": "tentacles",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "pale"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Inkay_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p099_00",
+      "species": "Sylveon",
+      "dex": 700,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "cream fur"
+        },
+        {
+          "region": "ribbons",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "pink feelers"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sylveon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p100_00",
+      "species": "Mareanie",
+      "dex": 748,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "blue-purple skin"
+        },
+        {
+          "region": "spines",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "stiff"
+        },
+        {
+          "region": "tentacles",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "thin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Mareanie_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p101_00",
+      "species": "Sandygast",
+      "dex": 769,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "grainy sand mound"
+        },
+        {
+          "region": "shovel",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "small"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sandygast_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p102_00",
+      "species": "Squirtle",
+      "dex": 7,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth blue skin",
+          "slot": "BodyA",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "shell",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "brown hard shell",
+          "slot": "BodyA",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream",
+          "slot": "BodyA",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Squirtle_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p103_00",
+      "species": "Morelull",
+      "dex": 755,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "mushroom body"
+        },
+        {
+          "region": "cap",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "glowing spots"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Morelull_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p104_00",
+      "species": "Charmander",
+      "dex": 4,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth orange skin"
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream"
+        },
+        {
+          "region": "flame",
+          "material": "flame",
+          "gloss": "emissive",
+          "notes": "tail flame"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Charmander_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film"
+    },
+    {
+      "internal_id": "p105_00",
+      "species": "Ariados",
+      "dex": 168,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "red abdomen with fine hairs"
+        },
+        {
+          "region": "legs",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "jointed"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Ariados_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p106_00",
+      "species": "Bulbasaur",
+      "dex": 1,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "teal skin with dark patches",
+          "slot": "BodyA",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "bulb",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "green plant bulb",
+          "slot": "BodyA",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Bulbasaur_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p107_00",
+      "species": "Steelix",
+      "dex": 208,
+      "regions": [
+        {
+          "region": "body",
+          "material": "metal",
+          "gloss": "metallic",
+          "notes": "gray steel segments",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_emi",
+            "Body_flb",
+            "Body_flc",
+            "Body_flp",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "spikes",
+          "material": "metal",
+          "gloss": "metallic",
+          "notes": "sharp",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_emi",
+            "Body_flb",
+            "Body_flc",
+            "Body_flp",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_emi",
+            "Eye_emi2",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Steelix_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film",
+      "dex_hint": "Pokedex: body is steel-hard",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p108_00",
+      "species": "Milotic",
+      "dex": 350,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "glossy",
+          "notes": "smooth pink scales"
+        },
+        {
+          "region": "tail",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "ribbon-like"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Milotic_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p109_00",
+      "species": "Volcarona",
+      "dex": 637,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "white fuzz"
+        },
+        {
+          "region": "wings",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "red-orange powdery, fire-patterned"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Volcarona_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p110_00",
+      "species": "Xerneas",
+      "dex": 716,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "short pale fur"
+        },
+        {
+          "region": "antlers",
+          "material": "rock_crystal",
+          "gloss": "glowing",
+          "notes": "crystal, rainbow glow"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Xerneas_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p111_00",
+      "species": "Wishiwashi",
+      "dex": 746,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "glossy",
+          "notes": "small fish scales, blue"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Wishiwashi_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: tiny fish school"
+    },
+    {
+      "internal_id": "p112_00",
+      "species": "Grookey",
+      "dex": 810,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short green fur"
+        },
+        {
+          "region": "stick",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "wooden drumstick"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Grookey_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p113_00",
+      "species": "Scorbunny",
+      "dex": 813,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short white fur"
+        },
+        {
+          "region": "feet",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "bare orange"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Scorbunny_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p114_00",
+      "species": "Sobble",
+      "dex": 816,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "smooth blue skin, damp look"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sobble_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p115_00",
+      "species": "Venusaur",
+      "dex": 3,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "green skin"
+        },
+        {
+          "region": "flower",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "pink large bloom"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Venusaur_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p116_00",
+      "species": "Arbok",
+      "dex": 24,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "satin",
+          "notes": "purple scales"
+        },
+        {
+          "region": "hood",
+          "material": "scales",
+          "gloss": "satin",
+          "notes": "patterned"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Arbok_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p117_00",
+      "species": "Sandshrew",
+      "dex": 27,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "armored plates (Kanto or Alolan form not checked)"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sandshrew_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "internal_id": "p118_00",
+      "species": "Diglett",
+      "dex": 50,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth brown skin"
+        },
+        {
+          "region": "nose",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "pink"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Diglett_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p119_00",
+      "species": "Psyduck",
+      "dex": 54,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "smooth soft yellow skin"
+        },
+        {
+          "region": "beak",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Psyduck_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film"
+    },
+    {
+      "internal_id": "p120_00",
+      "species": "Koffing",
+      "dex": 109,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "purple gas-filled skin"
+        },
+        {
+          "region": "skulls",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "pale marking"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Koffing_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p121_00",
+      "species": "Kangaskhan",
+      "dex": 115,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short brown fur"
+        },
+        {
+          "region": "pouch",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Kangaskhan_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p122_00",
+      "species": "Gyarados",
+      "dex": 130,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "glossy",
+          "notes": "blue scales"
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream"
+        },
+        {
+          "region": "fins",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "thin membrane"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Gyarados_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p123_00",
+      "species": "Mew",
+      "dex": 151,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "very fine short pink fur",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "tail",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "long thin",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        },
+        {
+          "region": "mouth",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "mouth atlas; tongue and inner mouth (added from real slot list)",
+          "slot": "Mouth",
+          "slot_guess": false,
+          "textures": [
+            "Mouth_dif",
+            "Mouth_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Mew_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p124_00",
+      "species": "Ledian",
+      "dex": 166,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": "red shell"
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "black"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Ledian_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p125_00",
+      "species": "Cleffa",
+      "dex": 173,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth pink skin"
+        },
+        {
+          "region": "ears",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "dark tips"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Cleffa_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p126_00",
+      "species": "Ursaring",
+      "dex": 217,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "thick brown fur"
+        },
+        {
+          "region": "mark",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "cream ring"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Ursaring_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p127_00",
+      "species": "Tyranitar",
+      "dex": 248,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "rocky green armor plates"
+        },
+        {
+          "region": "spikes",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "hard"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Tyranitar_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p128_00",
+      "species": "Swalot",
+      "dex": 317,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "purple slime-coated"
+        },
+        {
+          "region": "mouth",
+          "material": "slime_water_gas",
+          "gloss": "glossy",
+          "notes": "wet"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Swalot_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p129_00",
+      "species": "Trapinch",
+      "dex": 328,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "matte",
+          "notes": "orange armor"
+        },
+        {
+          "region": "jaws",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "large"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Trapinch_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p130_00",
+      "species": "Tropius",
+      "dex": 357,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "satin",
+          "notes": "green hide"
+        },
+        {
+          "region": "fruit",
+          "material": "plant",
+          "gloss": "glossy",
+          "notes": "bananas"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Tropius_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p131_00",
+      "species": "Swampert",
+      "dex": 260,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "blue skin"
+        },
+        {
+          "region": "fins",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "orange cheek fins"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Swampert_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p132_00",
+      "species": "Shinx",
+      "dex": 403,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short blue fur"
+        },
+        {
+          "region": "mane",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "black"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Shinx_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p133_00",
+      "species": "Gliscor",
+      "dex": 472,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "purple"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "membrane"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Gliscor_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p134_00",
+      "species": "Tepig",
+      "dex": 498,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "orange smooth"
+        },
+        {
+          "region": "nose",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "large"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Tepig_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p135_00",
+      "species": "Drilbur",
+      "dex": 529,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "gray fur"
+        },
+        {
+          "region": "claws",
+          "material": "metal",
+          "gloss": "metallic",
+          "notes": "drill claws"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Drilbur_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p136_00",
+      "species": "Scolipede",
+      "dex": 545,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "red segmented plates"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Scolipede_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p137_00",
+      "species": "Crustle",
+      "dex": 558,
+      "regions": [
+        {
+          "region": "shell",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "heavy rock slab"
+        },
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "matte",
+          "notes": "red"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Crustle_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p138_00",
+      "species": "Heliolisk",
+      "dex": 695,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "yellow"
+        },
+        {
+          "region": "frill",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "large ruffled"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Heliolisk_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p139_00",
+      "species": "Rockruff",
+      "dex": 744,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "brown fur"
+        },
+        {
+          "region": "rock",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "stone ruff"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Rockruff_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p140_00",
+      "species": "Salazzle",
+      "dex": 758,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "smooth dark skin, red markings"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Salazzle_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p141_00",
+      "species": "Minior",
+      "dex": 774,
+      "regions": [
+        {
+          "region": "shell",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "meteor shell"
+        },
+        {
+          "region": "core",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "colorful gem"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Minior_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: meteor shell"
+    },
+    {
+      "internal_id": "p142_00",
+      "species": "Zeraora",
+      "dex": 807,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short dark fur"
+        },
+        {
+          "region": "mane",
+          "material": "flame",
+          "gloss": "emissive",
+          "notes": "electric glow"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Zeraora_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p143_00",
+      "species": "Rattata",
+      "dex": 19,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short purple fur"
+        },
+        {
+          "region": "teeth",
+          "material": "bone_horn",
+          "gloss": "satin",
+          "notes": "long"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Rattata_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p144_00",
+      "species": "Sandslash",
+      "dex": 28,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "hide"
+        },
+        {
+          "region": "spines",
+          "material": "bone_horn",
+          "gloss": "matte",
+          "notes": "stiff (form not checked)"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sandslash_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "internal_id": "p145_00",
+      "species": "Vulpix",
+      "dex": 37,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "satin",
+          "notes": "silky fur"
+        },
+        {
+          "region": "tails",
+          "material": "fur_long",
+          "gloss": "satin",
+          "notes": "curled (form not checked)"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Vulpix_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "internal_id": "p146_00",
+      "species": "Meowth",
+      "dex": 52,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short cream fur"
+        },
+        {
+          "region": "coin",
+          "material": "metal",
+          "gloss": "metallic",
+          "notes": "gold"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Meowth_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p147_00",
+      "species": "Dewgong",
+      "dex": 87,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "short white sleek"
+        },
+        {
+          "region": "tail",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": ""
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Dewgong_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p148_00",
+      "species": "Jynx",
+      "dex": 124,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "purple face and body"
+        },
+        {
+          "region": "hair",
+          "material": "hair",
+          "gloss": "satin",
+          "notes": "long blonde"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Jynx_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p149_00",
+      "species": "Furret",
+      "dex": 162,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "long soft body"
+        },
+        {
+          "region": "belly",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "cream"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Furret_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p150_00",
+      "species": "Sudowoodo",
+      "dex": 185,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "bark-brown tree look"
+        },
+        {
+          "region": "foliage",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "green"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sudowoodo_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p151_00",
+      "species": "Swinub",
+      "dex": 220,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "shaggy brown"
+        },
+        {
+          "region": "snout",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": ""
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Swinub_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p152_00",
+      "species": "Delibird",
+      "dex": 225,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "red and white"
+        },
+        {
+          "region": "bag",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "white sack"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Delibird_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p153_00",
+      "species": "Skarmory",
+      "dex": 227,
+      "regions": [
+        {
+          "region": "body",
+          "material": "metal",
+          "gloss": "metallic",
+          "notes": "steel-gray armored feathers"
+        },
+        {
+          "region": "wings",
+          "material": "metal",
+          "gloss": "metallic",
+          "notes": "blade edges"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Skarmory_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: steel wings"
+    },
+    {
+      "internal_id": "p154_00",
+      "species": "Suicune",
+      "dex": 245,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth blue"
+        },
+        {
+          "region": "ribbons",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "translucent flowing"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Suicune_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p155_00",
+      "species": "Mightyena",
+      "dex": 262,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "gray fur"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Mightyena_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p156_00",
+      "species": "Snorunt",
+      "dex": 361,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "small"
+        },
+        {
+          "region": "hood",
+          "material": "ice",
+          "gloss": "satin",
+          "notes": "ice cone"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Snorunt_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p157_00",
+      "species": "Glalie",
+      "dex": 362,
+      "regions": [
+        {
+          "region": "body",
+          "material": "ice",
+          "gloss": "glossy",
+          "notes": "ice-like hard"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Glalie_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: ice body"
+    },
+    {
+      "internal_id": "p158_00",
+      "species": "Spheal",
+      "dex": 363,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "short blue fuzzy"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Spheal_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p159_00",
+      "species": "Piplup",
+      "dex": 393,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "satin",
+          "notes": "blue feathers"
+        },
+        {
+          "region": "belly",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "white"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Piplup_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p160_00",
+      "species": "Starly",
+      "dex": 396,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "gray feathers"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Starly_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p161_00",
+      "species": "Abomasnow",
+      "dex": 460,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "white coarse fur"
+        },
+        {
+          "region": "ice",
+          "material": "ice",
+          "gloss": "glossy",
+          "notes": "ice patches"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Abomasnow_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p162_00",
+      "species": "Weavile",
+      "dex": 461,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "black fur"
+        },
+        {
+          "region": "claws",
+          "material": "bone_horn",
+          "gloss": "glossy",
+          "notes": "red"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Weavile_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p163_00",
+      "species": "Froslass",
+      "dex": 478,
+      "regions": [
+        {
+          "region": "body",
+          "material": "ice",
+          "gloss": "satin",
+          "notes": "pale ice"
+        },
+        {
+          "region": "scarf",
+          "material": "cloth_ethereal",
+          "gloss": "satin",
+          "notes": ""
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Froslass_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p164_00",
+      "species": "Stoutland",
+      "dex": 508,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "long cream fur"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Stoutland_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p165_00",
+      "species": "Audino",
+      "dex": 531,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "pink short fur"
+        },
+        {
+          "region": "ears",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "blue"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Audino_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p166_00",
+      "species": "Trubbish",
+      "dex": 568,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "plastic-like garbage bag"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Trubbish_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: garbage bag body"
+    },
+    {
+      "internal_id": "p167_00",
+      "species": "Vanilluxe",
+      "dex": 583,
+      "regions": [
+        {
+          "region": "body",
+          "material": "ice",
+          "gloss": "glossy",
+          "notes": "ice-cream-like frozen"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Vanilluxe_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p168_00",
+      "species": "Braviary",
+      "dex": 628,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "brown feathers"
+        },
+        {
+          "region": "head",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "white crest"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Braviary_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p169_00",
+      "species": "Bunnelby",
+      "dex": 659,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short gray fur"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Bunnelby_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p170_00",
+      "species": "Aurorus",
+      "dex": 699,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "blue"
+        },
+        {
+          "region": "crystals",
+          "material": "ice",
+          "gloss": "glossy",
+          "notes": "sail"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Aurorus_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p171_00",
+      "species": "Dedenne",
+      "dex": 702,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "orange-white fur"
+        },
+        {
+          "region": "whiskers",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": ""
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Dedenne_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p172_00",
+      "species": "Avalugg",
+      "dex": 713,
+      "regions": [
+        {
+          "region": "body",
+          "material": "ice",
+          "gloss": "glossy",
+          "notes": "ice block"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Avalugg_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p173_00",
+      "species": "Crabominable",
+      "dex": 740,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_long",
+          "gloss": "matte",
+          "notes": "white shaggy"
+        },
+        {
+          "region": "shell",
+          "material": "chitin_shell",
+          "gloss": "satin",
+          "notes": ""
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Crabominable_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p174_00",
+      "species": "Cutiefly",
+      "dex": 742,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "yellow fuzz"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "thin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Cutiefly_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p175_00",
+      "species": "Charizard",
+      "dex": 6,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "satin",
+          "notes": "orange",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "belly",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "cream",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "teal membrane",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "flame",
+          "material": "flame",
+          "gloss": "emissive",
+          "notes": "tail flame",
+          "slot": "Fire",
+          "slot_guess": false,
+          "textures": [
+            "FireA_dif",
+            "FireA_emi",
+            "FireA_par",
+            "FireB_emi"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        },
+        {
+          "region": "fire02",
+          "material": "flame",
+          "gloss": "emissive",
+          "notes": "second flame sheet; emissive (added from real slot list)",
+          "slot": "Fire02",
+          "slot_guess": false,
+          "textures": [
+            "FireA2_dif",
+            "FireA2_emi",
+            "FireA_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Charizard_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p176_00",
+      "species": "Clefairy",
+      "dex": 35,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth pink skin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Clefairy_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p177_00",
+      "species": "Tentacruel",
+      "dex": 73,
+      "regions": [
+        {
+          "region": "body",
+          "material": "slime_water_gas",
+          "gloss": "glossy",
+          "notes": "blue jellyfish skin"
+        },
+        {
+          "region": "crystals",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "red orbs"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Tentacruel_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p179_00",
+      "species": "Geodude",
+      "dex": 74,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "gray boulder"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Geodude_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p181_00",
+      "species": "Graveler",
+      "dex": 75,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "gray rock"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Graveler_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p184_00",
+      "species": "Gengar",
+      "dex": 94,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "dark purple soft fur",
+          "slot": "BodyA",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eyes",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "red",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_emi",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Gengar_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p185_00",
+      "species": "Starmie",
+      "dex": 121,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "purple star"
+        },
+        {
+          "region": "core",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "red gem"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Starmie_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p187_00",
+      "species": "Typhlosion",
+      "dex": 157,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "dark fur"
+        },
+        {
+          "region": "flames",
+          "material": "flame",
+          "gloss": "emissive",
+          "notes": "mane fire"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Typhlosion_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p188_00",
+      "species": "Crobat",
+      "dex": 169,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "purple"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "membrane"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Crobat_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p189_00",
+      "species": "Lanturn",
+      "dex": 171,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "blue"
+        },
+        {
+          "region": "lure",
+          "material": "slime_water_gas",
+          "gloss": "emissive",
+          "notes": "bulb"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Lanturn_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p191_00",
+      "species": "Chinchou",
+      "dex": 170,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "blue"
+        },
+        {
+          "region": "lure",
+          "material": "slime_water_gas",
+          "gloss": "emissive",
+          "notes": "antennae"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Chinchou_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p192_00",
+      "species": "Natu",
+      "dex": 177,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "green feathers"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Natu_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p193_00",
+      "species": "Qwilfish",
+      "dex": 211,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "blue"
+        },
+        {
+          "region": "spines",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "stiff"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Qwilfish_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p194_00",
+      "species": "Houndoom",
+      "dex": 229,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "satin",
+          "notes": "black fur"
+        },
+        {
+          "region": "horns",
+          "material": "bone_horn",
+          "gloss": "glossy",
+          "notes": "curved"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Houndoom_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p196_00",
+      "species": "Lugia",
+      "dex": 249,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "satin",
+          "notes": "white"
+        },
+        {
+          "region": "back",
+          "material": "feathers",
+          "gloss": "satin",
+          "notes": "blue plumage"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Lugia_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p197_00",
+      "species": "Lotad",
+      "dex": 270,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "blue"
+        },
+        {
+          "region": "pad",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "lily pad"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Lotad_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p198_00",
+      "species": "Ho-Oh",
+      "dex": 250,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "satin",
+          "notes": "rainbow plumage"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Ho-Oh_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p199_00",
+      "species": "Shiftry",
+      "dex": 275,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "dark skin"
+        },
+        {
+          "region": "leaf fans",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": ""
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Shiftry_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p200_00",
+      "species": "Celebi",
+      "dex": 251,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "green smooth"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Celebi_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p202_00",
+      "species": "Mawile",
+      "dex": 303,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "black"
+        },
+        {
+          "region": "jaws",
+          "material": "metal",
+          "gloss": "metallic",
+          "notes": "steel jaw"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Mawile_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: jaws are steel"
+    },
+    {
+      "internal_id": "p203_00",
+      "species": "Torkoal",
+      "dex": 324,
+      "regions": [
+        {
+          "region": "shell",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "rocky brown"
+        },
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": ""
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Torkoal_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: coal burns in shell"
+    },
+    {
+      "internal_id": "p204_00",
+      "species": "Gardevoir",
+      "dex": 282,
+      "regions": [
+        {
+          "region": "dress",
+          "material": "cloth_ethereal",
+          "gloss": "satin",
+          "notes": "white"
+        },
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "green"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Gardevoir_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p207_00",
+      "species": "Altaria",
+      "dex": 334,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "blue"
+        },
+        {
+          "region": "wings",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "cloud-like fluff"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Altaria_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p209_00",
+      "species": "Cradily",
+      "dex": 346,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "purple tentacle plant"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Cradily_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p210_00",
+      "species": "Kecleon",
+      "dex": 352,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "satin",
+          "notes": "green scales"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Kecleon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p216_00",
+      "species": "Jirachi",
+      "dex": 385,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "white, smooth"
+        },
+        {
+          "region": "star",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "yellow"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Jirachi_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p217_00",
+      "species": "Monferno",
+      "dex": 391,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short brown fur"
+        },
+        {
+          "region": "flame",
+          "material": "flame",
+          "gloss": "emissive",
+          "notes": "tail"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Monferno_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p218_00",
+      "species": "Luxray",
+      "dex": 405,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "black short fur"
+        },
+        {
+          "region": "mane",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": ""
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Luxray_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p219_00",
+      "species": "Rampardos",
+      "dex": 409,
+      "regions": [
+        {
+          "region": "head",
+          "material": "bone_horn",
+          "gloss": "matte",
+          "notes": "thick helmet-like skull"
+        },
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "blue"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Rampardos_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p220_00",
+      "species": "Drifloon",
+      "dex": 425,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rubbery",
+          "gloss": "glossy",
+          "notes": "balloon-like"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Drifloon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p222_00",
+      "species": "Croagunk",
+      "dex": 453,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "blue wet skin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Croagunk_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p223_00",
+      "species": "Lumineon",
+      "dex": 457,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "glossy",
+          "notes": "fish scales"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Lumineon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p228_00",
+      "species": "Serperior",
+      "dex": 497,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "glossy",
+          "notes": "green scales"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Serperior_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p230_00",
+      "species": "Unfezant",
+      "dex": 521,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "gray feathers"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Unfezant_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p231_00",
+      "species": "Woobat",
+      "dex": 527,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "blue fuzz"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Woobat_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p234_00",
+      "species": "Sigilyph",
+      "dex": 561,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rock_crystal",
+          "gloss": "satin",
+          "notes": "stone-like winged"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Sigilyph_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p235_00",
+      "species": "Archeops",
+      "dex": 567,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "feathered"
+        },
+        {
+          "region": "head",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": ""
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Archeops_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p238_00",
+      "species": "Frillish",
+      "dex": 592,
+      "regions": [
+        {
+          "region": "body",
+          "material": "slime_water_gas",
+          "gloss": "satin",
+          "notes": "translucent jelly"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Frillish_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p239_00",
+      "species": "Joltik",
+      "dex": 595,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "yellow fuzz"
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Joltik_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film"
+    },
+    {
+      "internal_id": "p242_00",
+      "species": "Beheeyem",
+      "dex": 606,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "smooth brown"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Beheeyem_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p244_00",
+      "species": "Hydreigon",
+      "dex": 635,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "dark blue"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Hydreigon_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p246_00",
+      "species": "Pancham",
+      "dex": 674,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short gray-white fur",
+          "slot": "Body",
+          "slot_guess": false,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "leaf",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "stem in mouth",
+          "slot": "Body",
+          "slot_guess": true,
+          "textures": [
+            "Body_dif",
+            "Body_par"
+          ]
+        },
+        {
+          "region": "eye",
+          "material": "smooth_skin",
+          "gloss": "glossy",
+          "notes": "eye atlas (9 expression cells); glossy cornea (added from real slot list)",
+          "slot": "Eye",
+          "slot_guess": false,
+          "textures": [
+            "Eye_dif",
+            "Eye_nor",
+            "Eye_par"
+          ]
+        },
+        {
+          "region": "mouth",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "mouth atlas; tongue and inner mouth (added from real slot list)",
+          "slot": "Mouth",
+          "slot_guess": false,
+          "textures": [
+            "Mouth_dif",
+            "Mouth_par"
+          ]
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Pancham_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "prominent in film",
+      "slots_checked": "info.json material slots (2026-11-12)"
+    },
+    {
+      "internal_id": "p247_00",
+      "species": "Talonflame",
+      "dex": 663,
+      "regions": [
+        {
+          "region": "body",
+          "material": "feathers",
+          "gloss": "matte",
+          "notes": "red-gray feathers"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Talonflame_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p249_00",
+      "species": "Espurr",
+      "dex": 677,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "gray fur"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Espurr_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p251_00",
+      "species": "Clawitzer",
+      "dex": 693,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "blue shell"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Clawitzer_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p252_00",
+      "species": "Goodra",
+      "dex": 706,
+      "regions": [
+        {
+          "region": "body",
+          "material": "slime_water_gas",
+          "gloss": "glossy",
+          "notes": "slimy purple"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Goodra_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p253_00",
+      "species": "Trevenant",
+      "dex": 709,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "gnarled bark"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Trevenant_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p254_00",
+      "species": "Diancie",
+      "dex": 719,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rock_crystal",
+          "gloss": "glossy",
+          "notes": "pink diamond crystal"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Diancie_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high",
+      "dex_hint": "Pokedex: pink diamond"
+    },
+    {
+      "internal_id": "p256_00",
+      "species": "Salandit",
+      "dex": 757,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "satin",
+          "notes": "dark lizard skin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Salandit_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p257_00",
+      "species": "Bewear",
+      "dex": 760,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "pink-brown plush fur"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Bewear_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p258_00",
+      "species": "Golisopod",
+      "dex": 768,
+      "regions": [
+        {
+          "region": "body",
+          "material": "chitin_shell",
+          "gloss": "glossy",
+          "notes": "pale armored"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Golisopod_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p260_00",
+      "species": "Drampa",
+      "dex": 780,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "white fur"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Drampa_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p262_00",
+      "species": "Absol",
+      "dex": 359,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "white fur"
+        },
+        {
+          "region": "blade",
+          "material": "bone_horn",
+          "gloss": "glossy",
+          "notes": "dark curved horn"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Absol_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p263_00",
+      "species": "Deerling",
+      "dex": 585,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_short",
+          "gloss": "matte",
+          "notes": "short coat, seasonal colors"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Deerling_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p264_00",
+      "species": "Golurk",
+      "dex": 623,
+      "regions": [
+        {
+          "region": "body",
+          "material": "rock_crystal",
+          "gloss": "matte",
+          "notes": "clay and stone, heavy"
+        },
+        {
+          "region": "belt",
+          "material": "metal",
+          "gloss": "satin",
+          "notes": ""
+        }
+      ],
+      "dp_reference": true,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Golurk_%28Pok%C3%A9mon%29",
+        "https://shacknews.com/article/110178/all-pokemon-characters-in-the-detective-pikachu-movie"
+      ],
+      "confidence": "high",
+      "dp_prominence": "brief cameo or background in film",
+      "dex_hint": "Pokedex: ancient clay golem"
+    },
+    {
+      "internal_id": "p265_00",
+      "species": "Noivern",
+      "dex": 715,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "purple fuzz"
+        },
+        {
+          "region": "wings",
+          "material": "rubbery",
+          "gloss": "satin",
+          "notes": "membrane"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Noivern_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p266_00",
+      "species": "Eldegoss",
+      "dex": 829,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "matte",
+          "notes": "cotton-like fluff"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Eldegoss_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p267_00",
+      "species": "Applin",
+      "dex": 840,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "glossy",
+          "notes": "apple"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Applin_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p268_00",
+      "species": "Silicobra",
+      "dex": 843,
+      "regions": [
+        {
+          "region": "body",
+          "material": "scales",
+          "gloss": "matte",
+          "notes": "sand-colored scales"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Silicobra_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p269_00",
+      "species": "Snom",
+      "dex": 872,
+      "regions": [
+        {
+          "region": "body",
+          "material": "smooth_skin",
+          "gloss": "matte",
+          "notes": "small larva"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Snom_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p270_00",
+      "species": "Frosmoth",
+      "dex": 873,
+      "regions": [
+        {
+          "region": "body",
+          "material": "fur_dense_fluffy",
+          "gloss": "matte",
+          "notes": "white fuzz"
+        },
+        {
+          "region": "wings",
+          "material": "ice",
+          "gloss": "satin",
+          "notes": "icy scale wings"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Frosmoth_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    },
+    {
+      "internal_id": "p271_00",
+      "species": "Pumpkaboo",
+      "dex": 710,
+      "regions": [
+        {
+          "region": "body",
+          "material": "plant",
+          "gloss": "satin",
+          "notes": "pumpkin"
+        }
+      ],
+      "dp_reference": false,
+      "sources": [
+        "https://bulbapedia.bulbagarden.net/wiki/Pumpkaboo_%28Pok%C3%A9mon%29"
+      ],
+      "confidence": "high"
+    }
+  ]
+}

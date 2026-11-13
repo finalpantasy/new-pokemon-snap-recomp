@@ -1,0 +1,28 @@
+{
+ "asset": "p016_00", "num": "016", "name": "Wurmple",
+ "notes": [
+  "Painted design: red back (18) and head parts (8, 9, 10, 16) with a fine light crackle of wrinkle lines and soft darker blotches over each body segment; cream belly (2) split into segments by dark olive fold lines plus a short centre line at the head end, with soft shading inside each segment; yellow spikes (11, 12 tail, 15 head) with a painted brown base; white claw-like prolegs (1, 3-7, 13, 14, 17, 19).",
+  "So: caterpillar skin = soft, slightly waxy cuticle. Red skin keeps only its painted wrinkle crackle as micro relief (no bumps added); the belly folds become soft grooves exactly on the painted fold lines; spikes are smooth keratin with a little more gloss; prolegs untouched. Skin roughness stays the artist's (_par carries a painted sparkle pattern; making the skin rougher spread the highlight over it and it read as speckles).",
+  "Body shader 1731682751 has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.35,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "prolegs", "include": [{"islands": [1, 3, 4, 5, 6, 7, 13, 14, 17, 19]}], "treatment": "none"},
+   {"id": "spikes", "include": [{"islands": [11, 12, 15]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.008},
+    "par": {"rough_to": 0.4, "rough_w": 0.25}},
+   {"id": "belly", "include": [{"islands": [2]}], "treatment": "skin",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [5, 14], "power": 1.6},
+    "params": {"source": "dif.L", "grain_sigma": 1.5, "amp": 0.012,
+               "creases": {"polarity": "dark", "width": 1.5, "thr": [5, 14], "amp": 0.05, "soft": 1.6, "cav": 0.35, "min_area": 20}}},
+   {"id": "red_skin", "include": [{"islands": [8, 9, 10, 16, 18]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 1.5, "amp": 0.022, "undulation": 0.0}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [40, -60], "closeup": {"yaw": 40, "center": [0.45, 0.62], "zoom": 3.0}, "crop": [0.77, 0.5], "crop_set": "Body"}
+}

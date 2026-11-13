@@ -1,0 +1,32 @@
+{
+ "asset": "p072_00", "num": "072", "name": "Flareon",
+ "notes": [
+  "Painted design: orange short fur (face, ears, legs, body), a cream ruff, head tuft and tail painted as many jagged lock-shaped islands with long strokes, navy inner ears, pink paw pads with dark toe lines, a dark nose.",
+  "So: orange = short fur along the painted strokes; cream ruff/tuft/tail = long clumped locks (longest and softest at the jagged edges); inner ears very short and flat; nose, pads and toe lines excluded.",
+  "Body shader 2455468789 has no normal sampler: in game only _dif and _par (512) load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.3,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "nose", "include": [{"islands": [31]}], "treatment": "none"},
+   {"id": "pads", "include": [{"islands": [7, 12, 16, 28, 29], "lab": {"h": [330, 40], "C": [20, 200], "L": [50, 100]}}], "grow": 2, "treatment": "none"},
+   {"id": "toe_lines", "include": [{"islands": [7, 12, 16, 28, 29], "lab": {"L": [0, 35]}}], "grow": 1, "treatment": "none"},
+   {"id": "ear_inner", "include": [{"islands": [30], "lab": {"L": [0, 40]}}], "grow": 1, "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 3.0, "width_texels": 0.4, "painted_mix": 0.6, "clump_texels": 2.0,
+               "amp": 0.03, "alb_amp": 0.015, "cav": 0.15, "seed": 6}},
+   {"id": "orange_fur", "include": [{"islands": [7, 12, 16, 28, 29, 30]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 6.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 4.0,
+               "amp": 0.06, "alb_amp": 0.03, "cav": 0.3, "seed": 8},
+    "par": {"rough_to": 0.74, "rough_w": 0.25}},
+   {"id": "ruff_locks", "include": [{"islands": [1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 11.0, "width_texels": 0.7, "painted_mix": 0.55, "clump_texels": 7.0, "clump_w": 0.6,
+               "amp": 0.07, "alb_amp": 0.035, "cav": 0.3, "seed": 7, "edge": {"texels": 12, "len_mul": 1.5, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.78, "rough_w": 0.3}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif", "Mouth_dif", "Mouth_par"],
+ "preview": {"yaws": [35, -130], "closeup": {"yaw": 35, "center": [0.6, 0.45], "zoom": 3.0}, "crop": [0.2, 0.62], "crop_set": "Body"}
+}

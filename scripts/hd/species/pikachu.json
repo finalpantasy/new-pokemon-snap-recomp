@@ -1,0 +1,27 @@
+{
+ "asset": "p001_00", "num": "001", "name": "Pikachu",
+ "notes": [
+  "Painted design: a fine fur grain painted into _dif (short strokes, direction visible on the back and head), brown back stripes and tail base, black ear tips; _nor is near-flat noise (the flocky grain).",
+  "So: short fur along the painted strokes (structure tensor of the _dif luminance), half painted strokes sharpened along the flow, half new strands at the same length; ears longer and softer within 12 texels of the edge; tail a little shorter and flatter (it reads as a flat plate in the design).",
+  "Stripes and ear tips are fur markings: same fur, colours locked. Cheeks (own texture) untouched: upscale only.",
+  "Body shader 12075339 (flocky) binds _dif and _nor (BC7) only, no _par: the fur relief and albedo load in game; there is no _par output (it would never be read)."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "nor": "Body_nor", "par": null,
+  "in_game": {"dif": true, "nor": true},
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "ears", "include": [{"islands": [6]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 6.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 4.0,
+               "amp": 0.055, "alb_amp": 0.025, "cav": 0.0, "edge": {"texels": 12, "len_mul": 1.6, "amp_mul": 0.55}}},
+   {"id": "tail", "include": [{"islands": [5]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 4.5, "width_texels": 0.5, "painted_mix": 0.55, "clump_texels": 3.0,
+               "amp": 0.045, "alb_amp": 0.02, "cav": 0.0, "seed": 2}},
+   {"id": "body_fur", "include": [{"islands": [1, 2, 3, 4]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 6.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 4.0,
+               "amp": 0.06, "alb_amp": 0.026, "cav": 0.0, "seed": 4}}
+  ]
+ }],
+ "upscale_only": ["Cheek_dif", "Eye_dif", "Mouth_dif"],
+ "preview": {"yaws": [28, 160], "closeup": {"yaw": 28, "center": [0.5, 0.45], "zoom": 3.0}, "crop": [0.3, 0.4], "crop_set": "Body"}
+}

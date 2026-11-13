@@ -1,0 +1,33 @@
+{
+ "asset": "p004_00", "num": "004", "name": "Pinsir",
+ "notes": [
+  "Painted design: brown body (1) with dark painted segment grooves across the belly and two soft darker discs; brown shoulders (13, 20), arms (17, 18, 23, 24), legs (33, 40, one painted groove each) and feet (14, 22); grey pincer horns (47, 54) with a few soft dark dots (painted pores) and a darker inner edge; grey horn spikes, claws and toes (15, 16, 19, 21, 25-32, 41-46, 48-53, 55-60); white teeth (2-6, 8-12); black mouth (7, 34-39).",
+  "So: beetle chitin. Body and legs: plates split exactly on the painted grooves (narrow groove, soft bevel, gentle dome per segment), the painted mottling as fine grain, a satin _par. Limbs: grain only, satin. Horns, spikes and claws: smooth hard keratin, painted grain only, a little glossier; the painted pores stay paint (no pits). Teeth and mouth untouched.",
+  "Body shader 3116720224 has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.35,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "mouth_teeth", "include": [{"islands": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 34, 35, 36, 37, 38, 39]}], "treatment": "none"},
+   {"id": "horn_pores", "include": [{"islands": [47, 54], "lab": {"L": [0, 56]}, "edge_beyond": 10}], "grow": 2, "feather": 1.5, "treatment": "none",
+    "par": {"rough_to": 0.4, "rough_w": 0.25}},
+   {"id": "horns_claws", "include": [{"islands": [15, 16, 19, 21, 25, 26, 27, 28, 29, 30, 31, 32, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]}],
+    "treatment": "skin", "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.008},
+    "par": {"rough_to": 0.4, "rough_w": 0.25}},
+   {"id": "body_plates", "include": [{"islands": [1, 33, 40]}], "treatment": "plates",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [5, 12], "power": 1.6},
+    "params": {"seams": {"polarity": "dark", "width": 1.5, "thr": [5, 12], "min_area": 30},
+               "bevel_texels": 3.0, "dome_texels": 25.0, "dome": 0.5, "amp": 0.05, "cav": 0.4,
+               "grain": {"source": "dif.L", "sigma": 2.0, "micro": 0.3, "amp": 0.012}},
+    "par": {"rough_to": 0.5, "rough_w": 0.25}},
+   {"id": "limbs", "include": [{"islands": [13, 14, 17, 18, 20, 22, 23, 24]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012},
+    "par": {"rough_to": 0.5, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [25, -60], "closeup": {"yaw": 25, "center": [0.5, 0.58], "zoom": 3.0}, "crop": [0.5, 0.62], "crop_set": "Body"}
+}

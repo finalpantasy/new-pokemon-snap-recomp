@@ -1,0 +1,128 @@
+{
+ "asset": "p106_00",
+ "num": "106",
+ "name": "Bulbasaur",
+ "notes": [
+  "Painted design: blue-green skin with a soft painted grain and darker green spot markings; a red mouth; white claws; the bulb painted as leaf panels with faint lighter streaks (veins).",
+  "So: skin = smooth, moist amphibian: only its own painted grain as micro relief, slight gloss, spots keep the same skin (they are markings); bulb = plant leaf: its painted lighter streaks are soft and broad (no traceable vein lines), so they are lifted only as much as they are painted (high-pass of the paint at the streak scale), with a little leaf sheen; mouth and claws untouched.",
+  "Body shader 2455468789 (material BodyA) has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [
+  {
+   "name": "Body",
+   "mat": "BodyA",
+   "dif": "Body_dif",
+   "par": "Body_par",
+   "nor": "Body_nor",
+   "in_game": {
+    "dif": true,
+    "par": true,
+    "nor": false
+   },
+   "bake_ao": 0.3,
+   "regions": [
+    {
+     "id": "mouth",
+     "include": [
+      {
+       "islands": [
+        1
+       ]
+      }
+     ],
+     "treatment": "none"
+    },
+    {
+     "id": "claws",
+     "include": [
+      {
+       "islands": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        13
+       ]
+      }
+     ],
+     "treatment": "none"
+    },
+    {
+     "id": "bulb_leaves",
+     "include": [
+      {
+       "islands": [
+        18,
+        19
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 2.5,
+      "amp": 0.025,
+      "undulation": 0.2
+     },
+     "par": {
+      "rough_to": 0.5,
+      "rough_w": 0.2
+     }
+    },
+    {
+     "id": "skin",
+     "include": [
+      {
+       "islands": [
+        2,
+        3,
+        4,
+        11,
+        12,
+        14,
+        15,
+        16,
+        17
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 2.0,
+      "amp": 0.015,
+      "undulation": 0.3
+     },
+     "par": {
+      "rough_to": 0.45,
+      "rough_w": 0.2
+     }
+    }
+   ]
+  }
+ ],
+ "upscale_only": [
+  "Eye_dif"
+ ],
+ "preview": {
+  "yaws": [
+   30,
+   -140
+  ],
+  "closeup": {
+   "yaw": -140,
+   "center": [
+    0.5,
+    0.35
+   ],
+   "zoom": 3.0
+  },
+  "crop": [
+   0.75,
+   0.78
+  ],
+  "crop_set": "Body"
+ }
+}

@@ -1,0 +1,121 @@
+{
+ "asset": "p181_00",
+ "num": "181",
+ "name": "Graveler",
+ "notes": [
+  "Painted design: grey-brown granite with a fine painted grain and soft painted crater rings, darker small fingertip islands, a red mouth.",
+  "So: rough stone: the painted grain as fine relief and the painted crater rings and blotches as broader relief, exactly where painted (paint-proportional high-pass, no new pits), rougher and less specular; fingertips the same stone, lower; mouth untouched.",
+  "Body shader 2185982105 has no normal sampler: in game only _dif (faint baked cavity) and _par load; Body_nor is cache-only."
+ ],
+ "sets": [
+  {
+   "name": "Body",
+   "mat": "Body",
+   "dif": "Body_dif",
+   "par": "Body_par",
+   "nor": "Body_nor",
+   "in_game": {
+    "dif": true,
+    "par": true,
+    "nor": false
+   },
+   "bake_ao": 0.35,
+   "regions": [
+    {
+     "id": "mouth",
+     "include": [
+      {
+       "islands": [
+        17
+       ]
+      }
+     ],
+     "treatment": "none"
+    },
+    {
+     "id": "tips",
+     "include": [
+      {
+       "islands": [
+        4,
+        6,
+        8,
+        11,
+        15
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 1.6,
+      "amp": 0.02,
+      "undulation": 0.2
+     }
+    },
+    {
+     "id": "granite",
+     "include": [
+      {
+       "islands": [
+        1,
+        2,
+        3,
+        5,
+        7,
+        9,
+        10,
+        12,
+        13,
+        14,
+        16,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 3.0,
+      "amp": 0.045,
+      "undulation": 0.35
+     },
+     "par": {
+      "rough_to": 0.85,
+      "rough_w": 0.3,
+      "spec_mul": 0.85
+     }
+    }
+   ]
+  }
+ ],
+ "upscale_only": [
+  "Eye_dif"
+ ],
+ "preview": {
+  "yaws": [
+   30,
+   -150
+  ],
+  "closeup": {
+   "yaw": 30,
+   "center": [
+    0.5,
+    0.45
+   ],
+   "zoom": 3.0
+  },
+  "crop": [
+   0.25,
+   0.75
+  ],
+  "crop_set": "Body"
+ }
+}

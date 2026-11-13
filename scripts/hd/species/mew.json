@@ -1,0 +1,25 @@
+{
+ "asset": "p123_00", "num": "123", "name": "Mew",
+ "notes": [
+  "Painted design: an almost flat pale pink with only faint soft smudges (a few texels, random directions) and very soft occlusion; thin grey-mauve toe lines on the feet; one orange pad oval.",
+  "So: very short, fine fur that reads almost smooth: strands 2.5 texels, flow from the geometry, very low relief and almost no albedo change (Mew must keep its soft velvety look); the faint painted smudges stay as they are. Toe lines and pad untouched.",
+  "Body shader has no normal sampler: in game only _dif and _par load (baked cavity kept tiny)."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.12,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "pad", "include": [{"lab": {"C": [25, 200]}}], "grow": 2, "treatment": "none"},
+   {"id": "toe_lines", "include": [{"islands": [3, 5], "lab": {"L": [0, 80]}}], "grow": 1, "treatment": "none",
+    "crisp_lines": {"polarity": "dark", "width": 1.2, "thr": [6, 16], "power": 1.8}},
+   {"id": "fine_fur", "include": [{"islands": [1, 2, 3, 4, 5, 6, 7, 8]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 2.5, "width_texels": 0.4, "painted_mix": 0.2, "clump_texels": 2.0, "clump_w": 0.3,
+               "amp": 0.02, "alb_amp": 0.006, "cav": 0.08, "seed": 31, "coherence": [0.5, 0.9]},
+    "par": {"rough_to": 0.72, "rough_w": 0.15}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif", "Mouth_dif"],
+ "preview": {"yaws": [25, -150], "closeup": {"yaw": 25, "center": [0.5, 0.3], "zoom": 2.6}, "crop": [0.3, 0.5], "crop_set": "Body"}
+}

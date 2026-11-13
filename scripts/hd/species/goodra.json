@@ -1,0 +1,96 @@
+{
+ "asset": "p252_00",
+ "num": "252",
+ "name": "Goodra",
+ "notes": [
+  "Painted design: lilac body with a dense painted pebble/cell texture, a purple belly band, green round spots, yellow-green antenna pieces.",
+  "So: wet slime: the painted cells are NOT raised (dense cells would be trypophobic); only the broad painted shading as a very soft undulation, and a clearly wetter, glossier _par (lower roughness, higher spec mask); green spots keep the same wet surface; nothing added.",
+  "Body shader 733334526 (material BodyTattu00) has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [
+  {
+   "name": "Body",
+   "mat": "BodyTattu00",
+   "dif": "Body_dif",
+   "par": "Body_par",
+   "nor": "Body_nor",
+   "in_game": {
+    "dif": true,
+    "par": true,
+    "nor": false
+   },
+   "bake_ao": 0.0,
+   "regions": [
+    {
+     "id": "antenna_bits",
+     "include": [
+      {
+       "islands": [
+        1,
+        2,
+        5
+       ]
+      }
+     ],
+     "treatment": "none",
+     "par": {
+      "rough_to": 0.25,
+      "rough_w": 0.3,
+      "spec_mul": 1.1
+     }
+    },
+    {
+     "id": "slime",
+     "include": [
+      {
+       "islands": [
+        3,
+        4,
+        6,
+        7,
+        8,
+        9
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 8.0,
+      "amp": 0.01,
+      "undulation": 0.6
+     },
+     "par": {
+      "rough_to": 0.15,
+      "rough_w": 0.45,
+      "spec_mul": 1.15
+     }
+    }
+   ]
+  }
+ ],
+ "upscale_only": [
+  "Eye_dif",
+  "Mouth_dif",
+  "Mouth_par"
+ ],
+ "preview": {
+  "yaws": [
+   30,
+   -150
+  ],
+  "closeup": {
+   "yaw": 30,
+   "center": [
+    0.5,
+    0.4
+   ],
+   "zoom": 3.0
+  },
+  "crop": [
+   0.42,
+   0.72
+  ],
+  "crop_set": "Body"
+ }
+}

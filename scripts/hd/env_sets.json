@@ -1,0 +1,444 @@
+{
+ "beach": {
+  "archive": "LC_003_1_A.drp",
+  "items": [
+   {
+    "stem": "SM_ENV_003_groundA_00",
+    "class": "sd",
+    "asset": "sm_env_003_1_cliff_lightmapuv",
+    "dif": "SM_ENV_003_groundA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_groundB_00",
+    "class": "sd",
+    "asset": "sm_env_003_1_ground1_lightmapuv",
+    "dif": "SM_ENV_003_groundB_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_groundC_00",
+    "class": "sd",
+    "asset": "sm_env_003_1_ground1_lightmapuv",
+    "dif": "SM_ENV_003_groundC_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_groundD_00",
+    "class": "sd",
+    "asset": "sm_env_003_1_ground1_lightmapuv",
+    "dif": "SM_ENV_003_groundD_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_caveA_00",
+    "class": "sd",
+    "asset": "sm_env_003_1_cliff_lightmapuv",
+    "dif": "SM_ENV_003_caveA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_caveB_00",
+    "class": "sd",
+    "asset": "sm_env_003_1_cliff_lightmapuv",
+    "dif": "SM_ENV_003_caveB_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_flatrockA_00",
+    "class": "sd",
+    "asset": "sm_env_003_1_flatrock_lightmapuv",
+    "dif": "SM_ENV_003_flatrockA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_purplerockA_00",
+    "class": "sd",
+    "asset": "sm_env_003_1_flatrock_lightmapuv",
+    "dif": "SM_ENV_003_purplerockA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_groundE_00",
+    "class": "detail",
+    "asset": "sm_env_003_1_ground1_lightmapuv",
+    "dif": "SM_ENV_003_groundE_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_003_groundF_00",
+    "class": "detail",
+    "asset": "sm_env_003_1_ground1_lightmapuv",
+    "dif": "SM_ENV_003_groundF_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_003_flatrockB_00",
+    "class": "detail",
+    "asset": "sm_env_003_1_flatrock_lightmapuv",
+    "dif": "SM_ENV_003_flatrockB_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_purplerockB_00",
+    "class": "detail",
+    "asset": "sm_env_003_1_flatrock_lightmapuv",
+    "dif": "SM_ENV_003_purplerockB_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_redrockA_00",
+    "class": "detail",
+    "asset": "sm_env_003_1_rock1_lightmapuv",
+    "dif": "SM_ENV_003_redrockA_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_003_searockA_00",
+    "class": "detail",
+    "asset": "sm_env_003_1_searock1_lightmapuv",
+    "dif": "SM_ENV_003_searockA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_003_bark_yashiA_00",
+    "class": "esr",
+    "asset": "sm_env_003_1_palma1_lightmapuv",
+    "dif": "SM_ENV_003_bark_yashiA_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_003_leafA_00",
+    "class": "esr",
+    "asset": "sm_env_003_1_grassv_lightmapuv",
+    "dif": "SM_ENV_003_leafA_00_dif",
+    "size": 1024
+   }
+  ]
+ },
+ "jungle": {
+  "archive": "LC_005_1_A.drp",
+  "items": [
+   {
+    "stem": "SM_ENV_005_groundN_00",
+    "class": "sd",
+    "asset": "sm_env_005_1_grounda_lightmapuv",
+    "dif": "SM_ENV_005_groundN_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_groundP_00",
+    "class": "sd",
+    "asset": "sm_env_005_1_grounda_lightmapuv",
+    "dif": "SM_ENV_005_groundP_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_groundS_00",
+    "class": "sd",
+    "asset": "sm_env_005_1_grounda_lightmapuv",
+    "dif": "SM_ENV_005_groundS_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_mossP_00",
+    "class": "sd",
+    "asset": "sm_env_005_1_rock_lightmapuv",
+    "dif": "SM_ENV_005_mossP_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_barkE_00",
+    "class": "sd",
+    "asset": "sm_env_005_1_grassc_lightmapuv",
+    "dif": "SM_ENV_005_barkE_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_005_barkN_00",
+    "class": "sd",
+    "asset": "sm_env_005_1_treea_lightmapuv",
+    "dif": "SM_ENV_005_barkN_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_005_rockP_00",
+    "class": "sd",
+    "asset": "sm_env_005_1_rock_lightmapuv",
+    "dif": "SM_ENV_005_rockP_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_rockX_00",
+    "class": "sd",
+    "asset": "sm_env_005_1_rock_lightmapuv",
+    "dif": "SM_ENV_005_rockX_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_groundR_00",
+    "class": "detail",
+    "asset": "sm_env_005_1_grounda_lightmapuv",
+    "dif": "SM_ENV_005_groundR_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_rockR_00",
+    "class": "detail",
+    "asset": "sm_env_005_1_rockb_lightmapuv",
+    "dif": "SM_ENV_005_rockR_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_rockV_00",
+    "class": "detail",
+    "asset": "sm_env_005_1_rock_lightmapuv",
+    "dif": "SM_ENV_005_rockV_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_ruinN_00",
+    "class": "detail",
+    "asset": "sm_env_005_1_ruinsa_lightmapuv",
+    "dif": "SM_ENV_005_ruinN_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_005_barkT_00",
+    "class": "detail",
+    "asset": "sm_env_005_1_treea_lightmapuv",
+    "dif": "SM_ENV_005_barkT_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_005_bark_yashiN_00",
+    "class": "detail",
+    "asset": "sm_env_005_1_grassa_lightmapuv",
+    "dif": "SM_ENV_005_bark_yashiN_00_dif",
+    "size": 256
+   },
+   {
+    "stem": "SM_ENV_005_leafZ_00",
+    "class": "esr",
+    "asset": "sm_env_005_1_grounda_lightmapuv",
+    "dif": "SM_ENV_005_leafZ_00_dif",
+    "size": 512
+   }
+  ]
+ },
+ "hub": {
+  "archive": "LC_101_A.drp",
+  "items": [
+   {
+    "stem": "SM_ENV_001_groundB_00",
+    "class": "sd",
+    "asset": "sm_env_101_1_ground_lightmapuv",
+    "dif": "SM_ENV_001_groundB_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_001_groundC_00",
+    "class": "sd",
+    "asset": "sm_env_101_1_ground_lightmapuv",
+    "dif": "SM_ENV_001_groundC_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_101_groundA",
+    "class": "sd",
+    "asset": "sm_env_101_1_ground_lightmapuv",
+    "dif": "SM_ENV_101_groundA_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_com_barkA_00",
+    "class": "sd",
+    "asset": "sm_env_101_1_tree_lightmapuv",
+    "dif": "SM_ENV_com_barkA_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_com_barkB_00",
+    "class": "sd",
+    "asset": "sm_env_101_1_tree_lightmapuv",
+    "dif": "SM_ENV_com_barkB_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_101_woodA_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_woodA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_101_woodwallA_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_woodwallA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_101_brickA_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_brickA_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_101_wallA_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_wallA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_101_roofA_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_roofA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_101_carpetA_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_houseasset_lightmapuv",
+    "dif": "SM_ENV_101_carpetA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_101_diningsetC_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_houseasset_lightmapuv",
+    "dif": "SM_ENV_101_diningsetC_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_101_diningsetD_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_houseasset_lightmapuv",
+    "dif": "SM_ENV_101_diningsetD_00_dif",
+    "size": 512
+   },
+   {
+    "stem": "SM_ENV_101_cottageA_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_cottage_lightmapuv",
+    "dif": "SM_ENV_101_cottageA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_101_bonfireA_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_ground_lightmapuv",
+    "dif": "SM_ENV_101_bonfireA_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_101_bonfireB_00",
+    "class": "esr",
+    "asset": "sm_env_101_1_cottage_lightmapuv",
+    "dif": "SM_ENV_101_bonfireB_00_dif",
+    "size": 1024
+   },
+   {
+    "stem": "SM_ENV_101_woodB_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_woodB_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_woodfloorA_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_cottage_lightmapuv",
+    "dif": "SM_ENV_101_woodfloorA_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_metalflooA_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_metalflooA_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_001_stonewallB_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_ground_lightmapuv",
+    "dif": "SM_ENV_001_stonewallB_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_garagewallA_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_garagewallA_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_garagewallB_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_garagewallB_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_garagewallC_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_garagewallC_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_campobjA_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_outdoorasset_lightmapuv",
+    "dif": "SM_ENV_101_campobjA_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_campobjB_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_outdoorasset_lightmapuv",
+    "dif": "SM_ENV_101_campobjB_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_podA_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_pod_lightmapuv",
+    "dif": "SM_ENV_101_podA_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_podB_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_pod_lightmapuv",
+    "dif": "SM_ENV_101_podB_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_kanbanA_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_outdoorasset_lightmapuv",
+    "dif": "SM_ENV_101_kanbanA_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_rebarA_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_labo_lightmapuv",
+    "dif": "SM_ENV_101_rebarA_00_dif",
+    "size": 2048
+   },
+   {
+    "stem": "SM_ENV_101_indoorobjA_00",
+    "class": "detail",
+    "asset": "sm_env_101_1_cottage_lightmapuv",
+    "dif": "SM_ENV_101_indoorobjA_00_dif",
+    "size": 2048
+   }
+  ]
+ }
+}

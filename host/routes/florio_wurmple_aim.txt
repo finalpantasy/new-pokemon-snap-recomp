@@ -1,0 +1,34 @@
+# fixture: post_tutorial
+# Aimed Wurmple proof (2026-11-12/13). Ride phase moves by tens of seconds between runs (load), so: ZL zoom held t=150..340 (at the wide default FOV
+# the Wurmple was a tiny dot in all 14 refused photos of run 1-20261113_083705), a shot every 3.5 s over the whole ride (film 50), dumps every 3 s
+# (the HUD subject tag at the reticle shows what the shot was aimed at). After the ride: A taps through the professor's talk, then every 60 s a cycle:
+# A opens the first (Wurmple) folder, Right walks the photos (1.5 s apart), B back.
+# Run: powershell -File hostun_boot.ps1 -Route florio_wurmple_aim -Timeout 590 -ShotAt 150 -ShotEvery 3 -ShotMax 140
+repeat @f300 @f5400 120 8 A
+150 190 ZL
+repeat 150 340 3.5 0.1 A
+repeat 342 382 2 0.15 A
+repeat 384 3000 60 0.2 A
+repeat 386 3000 60 0.15 Right
+repeat 387.5 3000 60 0.15 Right
+repeat 389 3000 60 0.15 Right
+repeat 390.5 3000 60 0.15 Right
+repeat 392 3000 60 0.15 Right
+repeat 393.5 3000 60 0.15 Right
+repeat 395 3000 60 0.15 Right
+repeat 396.5 3000 60 0.15 Right
+repeat 398 3000 60 0.15 Right
+repeat 399.5 3000 60 0.15 Right
+repeat 401 3000 60 0.15 Right
+repeat 402.5 3000 60 0.15 Right
+repeat 404 3000 60 0.15 Right
+repeat 405.5 3000 60 0.15 Right
+repeat 407 3000 60 0.15 Right
+repeat 408.5 3000 60 0.15 Right
+repeat 410 3000 60 0.15 Right
+repeat 411.5 3000 60 0.15 Right
+repeat 413 3000 60 0.15 Right
+repeat 414.5 3000 60 0.15 Right
+repeat 416 3000 60 0.15 Right
+repeat 417.5 3000 60 0.15 Right
+repeat 422 3000 60 0.2 B

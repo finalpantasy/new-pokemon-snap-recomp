@@ -1,0 +1,30 @@
+{
+ "asset": "p246_00", "num": "246", "name": "Pancham",
+ "notes": [
+  "Painted design: off-white head/back fur painted with fine radial strokes and whorls (strokes about 5-8 texels), grey soft shading blobs under the ears and limbs (painted occlusion, not markings); charcoal arms/legs/ears/eye patch with coarser strokes; a flat green leaf (island 3); two red-brown dots and a dark nose blob.",
+  "So: fur along the painted strokes everywhere: white fur a little longer and softer, charcoal fur slightly shorter; the head spikes and cheek tufts share the white fur; ear islands get a softer edge band. Leaf: waxy, a little glossier, only its painted grain plus a faint midrib along its long axis (left untouched if it reads as an added pattern). Dots and nose untouched; painted grey blobs are colour only.",
+  "Body shader has no normal sampler (manifest normal null): in game only _dif and _par load; the fur relief is cache-only in Body_nor and faint as baked cavity in _dif / AO in _par G."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.25,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "dots_nose", "include": [{"lab": {"h": [10, 70], "C": [12, 200], "L": [10, 45]}}, {"islands": [4]}], "grow": 2, "treatment": "none"},
+   {"id": "leaf", "include": [{"islands": [3]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.01},
+    "par": {"rough_to": 0.38, "rough_w": 0.35}},
+   {"id": "white_fur", "include": [{"lab": {"L": [62, 100]}}], "exclude": [{"islands": [3]}], "feather": 1.5, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 7.0, "width_texels": 0.55, "painted_mix": 0.55, "clump_texels": 4.0, "clump_w": 0.5,
+               "amp": 0.055, "alb_amp": 0.022, "cav": 0.25, "seed": 11, "edge": {"texels": 8, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.78, "rough_w": 0.25}},
+   {"id": "dark_fur", "include": [{"islands": [1, 2, 5, 6, 7, 8, 9]}], "feather": 1.5, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 5.5, "width_texels": 0.5, "painted_mix": 0.55, "clump_texels": 3.5,
+               "amp": 0.05, "alb_amp": 0.035, "cav": 0.25, "seed": 12, "edge": {"texels": 8, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.76, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif", "Mouth_dif"],
+ "preview": {"yaws": [25, -150], "closeup": {"yaw": 25, "center": [0.5, 0.62], "zoom": 3.0}, "crop": [0.3, 0.55], "crop_set": "Body"}
+}

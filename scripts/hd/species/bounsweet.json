@@ -1,0 +1,28 @@
+{
+ "asset": "p012_00", "num": "012", "name": "Bounsweet",
+ "notes": [
+  "Painted design (a mangosteen): magenta-purple rind (1, 6, 7) with a fine paper-like grain, a soft lighter highlight and a darker band at the bottom; white lower body (2) with the same grain and grey shading; a magenta star-shaped nub (3); pink feet (4, 5); green calyx sepals and the stem leaf (8-16), flat with a soft darker base and the same fine grain.",
+  "So: fruit rind = smooth, slightly waxy; only the painted grain as micro relief, a little more gloss. White body: grain only, matte. Sepals: thick waxy leaves, grain only, satin. No pores or bumps (none are painted). Nub and feet untouched.",
+  "Body shader 1542326572 and BodyA shader 534591824: no normal map is bound; in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body|BodyA", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.3,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "nub_feet", "include": [{"islands": [3, 4, 5]}], "treatment": "none"},
+   {"id": "sepals", "include": [{"islands": [8, 9, 10, 11, 12, 13, 14, 15, 16]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012, "undulation": 0.15},
+    "par": {"rough_to": 0.48, "rough_w": 0.2}},
+   {"id": "white_body", "include": [{"islands": [2]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.014},
+    "par": {"rough_to": 0.7, "rough_w": 0.15}},
+   {"id": "rind", "include": [{"islands": [1, 6, 7]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012, "undulation": 0.1},
+    "par": {"rough_to": 0.38, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif", "Mouth_dif"],
+ "preview": {"yaws": [30, 180], "closeup": {"yaw": 30, "center": [0.5, 0.55], "zoom": 3.0}, "crop": [0.5, 0.8], "crop_set": "Body"}
+}

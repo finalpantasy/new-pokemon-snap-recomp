@@ -1,0 +1,174 @@
+{
+ "asset": "p073_00",
+ "num": "073",
+ "name": "Snorlax",
+ "notes": [
+  "Painted design (2048 _dif, 1024 _par): dark-teal fur with visible painted strokes, a big cream belly and face patch with finer strokes, cream foot soles with a brown pad, white claws.",
+  "So: teal = short dense fur along the painted strokes; the belly and face = much softer, shorter, flatter fur (a big soft surface, not shaggy); soles soft short fur, brown pads smooth skin; claws untouched apart from gloss.",
+  "Body shader 2887235398 is flocky-parametered but has no normal sampler: in game only _dif and _par load; Body_nor is cache-only. The master is capped at 4096 (2x of the 2048 original)."
+ ],
+ "sets": [
+  {
+   "name": "Body",
+   "mat": "Body",
+   "dif": "Body_dif",
+   "par": "Body_par",
+   "nor": "Body_nor",
+   "in_game": {
+    "dif": true,
+    "par": true,
+    "nor": false
+   },
+   "bake_ao": 0.3,
+   "flows": {
+    "fur": [
+     0.0,
+     -1.0,
+     -0.35
+    ]
+   },
+   "regions": [
+    {
+     "id": "claws",
+     "include": [
+      {
+       "islands": [
+        3,
+        5,
+        6,
+        8,
+        9
+       ]
+      }
+     ],
+     "treatment": "none",
+     "par": {
+      "rough_to": 0.35,
+      "rough_w": 0.25
+     }
+    },
+    {
+     "id": "pads",
+     "include": [
+      {
+       "islands": [
+        1,
+        12
+       ],
+       "lab": {
+        "L": [
+         0,
+         45
+        ]
+       }
+      }
+     ],
+     "grow": 1,
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 2.0,
+      "amp": 0.012,
+      "undulation": 0.2
+     }
+    },
+    {
+     "id": "belly_face",
+     "include": [
+      {
+       "islands": [
+        1,
+        2,
+        4,
+        12
+       ],
+       "lab": {
+        "L": [
+         58,
+         100
+        ]
+       }
+      }
+     ],
+     "feather": 2.0,
+     "treatment": "fur",
+     "params": {
+      "stroke_source": "dif.L",
+      "len_texels": 5.0,
+      "width_texels": 0.45,
+      "painted_mix": 0.55,
+      "clump_texels": 3.0,
+      "clump_w": 0.15,
+      "amp": 0.025,
+      "alb_amp": 0.008,
+      "cav": 0.06,
+      "seed": 2
+     },
+     "par": {
+      "rough_to": 0.72,
+      "rough_w": 0.2
+     }
+    },
+    {
+     "id": "teal_fur",
+     "include": [
+      {
+       "islands": [
+        2,
+        4,
+        7,
+        10,
+        11
+       ]
+      }
+     ],
+     "treatment": "fur",
+     "params": {
+      "stroke_source": "dif.L",
+      "len_texels": 6.0,
+      "width_texels": 0.55,
+      "painted_mix": 0.5,
+      "clump_texels": 4.0,
+      "amp": 0.06,
+      "alb_amp": 0.03,
+      "cav": 0.3,
+      "seed": 3,
+      "edge": {
+       "texels": 8,
+       "len_mul": 1.4,
+       "amp_mul": 0.7
+      }
+     },
+     "par": {
+      "rough_to": 0.74,
+      "rough_w": 0.25
+     }
+    }
+   ]
+  }
+ ],
+ "upscale_only": [
+  "Eye_dif",
+  "Mouth_dif",
+  "Mouth_par"
+ ],
+ "preview": {
+  "yaws": [
+   25,
+   160
+  ],
+  "closeup": {
+   "yaw": 25,
+   "center": [
+    0.45,
+    0.6
+   ],
+   "zoom": 3.0
+  },
+  "crop": [
+   0.12,
+   0.62
+  ],
+  "crop_set": "Body"
+ }
+}

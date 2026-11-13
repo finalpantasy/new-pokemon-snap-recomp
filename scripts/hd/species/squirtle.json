@@ -1,0 +1,40 @@
+{
+ "asset": "p102_00", "num": "102", "name": "Squirtle",
+ "notes": [
+  "Painted design: light-blue skin with a soft watercolour grain and a few dark painted lines (tail curl, mouth corner); a brown carapace split into scutes by thin dark seams, with a darker border band; a cream plastron with thin seams and black side patches; a white shell rim band; mouth interior.",
+  "So: skin stays smooth (only its own painted grain as micro relief, slightly moist gloss, no pores); the shell is the hard part: each scute a gentle dome with a groove along the painted seams and faint growth lines running parallel to the seams near them (what real turtle scutes show, at the painted seams' scale), plus fine keratin grain. Plastron flatter. Rim, mouth: untouched.",
+  "Body shader 1731682751 (material BodyA) has no normal sampler: in game only _dif (with a faint baked cavity) and _par load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "BodyA", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.35,
+  "regions": [
+   {"id": "mouth", "include": [{"islands": [16]}], "treatment": "none"},
+   {"id": "rim", "include": [{"islands": [14]}], "treatment": "none", "par": {"rough_to": 0.42, "rough_w": 0.2}},
+   {"id": "plastron_patches", "include": [{"islands": [8], "lab": {"L": [0, 30]}}], "grow": 1, "treatment": "none"},
+   {"id": "plastron", "include": [{"islands": [8]}], "treatment": "plates",
+    "crisp_lines": {"polarity": "dark", "width": 1.2, "thr": [5, 14], "power": 1.8},
+    "params": {"seams": {"polarity": "dark", "width": 1.2, "thr": [5, 14], "min_area": 20},
+               "bevel_texels": 2.5, "dome": 0.35, "dome_texels": 30,
+               "growth": {"spacing": 5.0, "amp": 0.06, "fade": 12.0},
+               "grain": {"source": "dif.L", "sigma": 2.0, "amp": 0.006, "micro": 0.4, "micro_texels": 0.5},
+               "amp": 0.045, "alb_seam": 0.0, "cav": 0.3},
+    "par": {"rough_to": 0.5, "rough_w": 0.15}},
+   {"id": "carapace", "include": [{"islands": [9]}], "treatment": "plates",
+    "crisp_lines": {"polarity": "dark", "width": 3.5, "thr": [6, 16], "power": 1.6},
+    "params": {"seams": {"polarity": "dark", "width": 3.5, "thr": [6, 16], "min_area": 40}, "edge_is_seam": true,
+               "bevel_texels": 3.0, "dome": 0.6, "dome_texels": 35,
+               "growth": {"spacing": 6.0, "amp": 0.1, "fade": 16.0},
+               "grain": {"source": "dif.L", "sigma": 2.5, "amp": 0.006, "micro": 0.25, "micro_texels": 0.5},
+               "amp": 0.055, "alb_seam": 0.0, "cav": 0.35},
+    "par": {"rough_to": 0.45, "rough_w": 0.2}},
+   {"id": "skin", "include": [{"islands": [3, 4, 5, 6, 15]}], "treatment": "skin",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [6, 16], "power": 1.8},
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.01, "undulation": 0.3},
+    "par": {"rough_to": 0.5, "rough_w": 0.15}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [30, 160], "closeup": {"yaw": 160, "center": [0.5, 0.5], "zoom": 3.0}, "crop": [0.33, 0.75], "crop_set": "Body"}
+}

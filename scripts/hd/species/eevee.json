@@ -1,0 +1,32 @@
+{
+ "asset": "p002_00", "num": "002", "name": "Eevee",
+ "notes": [
+  "Painted design: brown short fur with visible strokes on head and body; a cream ruff and tail tip painted as long jagged locks; dark-brown ear interiors; salmon nose/paw-pad dots and dark painted toe and muzzle marks.",
+  "So: three fur lengths, all along the painted strokes: short on head/body/legs, longer clumped locks on the ruff and tail tip (longest at the jagged edges), very short and flat inside the ears. Nose dots and painted marks excluded.",
+  "Body shader 2122998584 (flocky) binds _dif, _nor (BC5) and _par: everything shown can load in game. The flocky shader also uses the normal as the rim fuzz source, so the fur normal doubles as the soft silhouette."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": true},
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "nose_pads", "include": [{"lab": {"h": [350, 50], "C": [28, 200], "L": [45, 100]}}], "grow": 2, "treatment": "none"},
+   {"id": "painted_marks", "include": [{"islands": [2, 3, 4, 5, 6, 7, 16, 17], "lab": {"L": [0, 30]}}], "grow": 1, "treatment": "none",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [8, 20], "power": 1.8}},
+   {"id": "ear_inner", "include": [{"islands": [11]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 3.0, "width_texels": 0.4, "painted_mix": 0.6, "clump_texels": 2.0,
+               "amp": 0.03, "alb_amp": 0.015, "cav": 0.15, "seed": 6},
+    "par": {"rough_to": 0.7, "rough_w": 0.2}},
+   {"id": "ruff_tip", "include": [{"islands": [8, 10, 12, 13, 14, 20]}, {"islands": [9], "lab": {"L": [68, 100]}}], "feather": 2.0, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 11.0, "width_texels": 0.7, "painted_mix": 0.55, "clump_texels": 7.0, "clump_w": 0.6,
+               "amp": 0.07, "alb_amp": 0.035, "cav": 0.3, "seed": 7, "edge": {"texels": 14, "len_mul": 1.5, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.78, "rough_w": 0.3}},
+   {"id": "body_fur", "include": [{"islands": [1, 2, 3, 4, 5, 6, 7, 9, 15, 16, 17, 18, 19]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 6.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 4.0,
+               "amp": 0.06, "alb_amp": 0.028, "cav": 0.3, "seed": 8, "edge": {"texels": 8, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.74, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif", "Mouth_dif"],
+ "preview": {"yaws": [35, -130], "closeup": {"yaw": 35, "center": [0.5, 0.55], "zoom": 3.0}, "crop": [0.72, 0.72], "crop_set": "Body"}
+}

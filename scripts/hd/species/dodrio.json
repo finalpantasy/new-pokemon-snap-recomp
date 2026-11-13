@@ -1,0 +1,44 @@
+{
+ "asset": "p007_00", "num": "007", "name": "Dodrio",
+ "notes": [
+  "Painted design: orange-brown body (1) and three heads (12, 13, 21, two discs each; the dark dot is the eye hole in the mesh, not paint) painted as short downy strokes; black lower body (2) the same, darker; six pink tail plumes (6-11) painted as long vertical barb streaks; black crest feathers (15, 19, 27, 32, 36, 40) with long streaks; tan legs and feet (14) with a fine painted reticulate scale pattern and yellow claws; dark leathery necks (23, 30, 38) with a painted cell pattern; cream beaks (16, 20, 26, 31, 35, 41) with faint marbling; red tongues (17-28 strip) and mouth parts (29-42).",
+  "So: down on the body and heads (short, soft, along the painted strokes), slightly longer on the black lower body; tail plumes and crest feathers as fine barbs along the painted streaks (long, thin, low relief); legs and necks keep their painted reticulation as the only micro relief (skin grain, no new cells); beaks smooth with a little gloss; claws, tongues and mouth untouched.",
+  "Body shader 3116720224 has no normal sampler: in game only _dif and _par load; relief is faint baked cavity in _dif plus AO in _par G; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.3,
+  "flows": {"fur": [0.0, -1.0, -0.4]},
+  "regions": [
+   {"id": "mouth_parts", "include": [{"islands": [17, 18, 22, 24, 25, 28, 29, 33, 34, 37, 39, 42]}], "treatment": "none"},
+   {"id": "claws", "include": [{"islands": [14], "lab": {"L": [70, 100], "C": [22, 200]}}], "grow": 2, "treatment": "none",
+    "par": {"rough_to": 0.4, "rough_w": 0.2}},
+   {"id": "beaks", "include": [{"islands": [16, 20, 26, 31, 35, 41]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.008},
+    "par": {"rough_to": 0.35, "rough_w": 0.3}},
+   {"id": "legs", "include": [{"islands": [14]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 1.5, "amp": 0.02},
+    "par": {"rough_to": 0.6, "rough_w": 0.15}},
+   {"id": "necks", "include": [{"islands": [23, 30, 38]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 1.5, "amp": 0.018}},
+   {"id": "tail_plumes", "include": [{"islands": [6, 7, 8, 9, 10, 11]}], "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 10.0, "width_texels": 0.35, "painted_mix": 0.65, "clump_texels": 5.0, "clump_w": 0.3,
+               "amp": 0.04, "alb_amp": 0.018, "cav": 0.2, "seed": 11},
+    "par": {"rough_to": 0.72, "rough_w": 0.2}},
+   {"id": "crest", "include": [{"islands": [15, 19, 27, 32, 36, 40]}], "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 9.0, "width_texels": 0.35, "painted_mix": 0.65, "clump_texels": 4.0, "clump_w": 0.3,
+               "amp": 0.04, "alb_amp": 0.02, "cav": 0.2, "seed": 12}},
+   {"id": "lower_body", "include": [{"islands": [2]}], "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 6.0, "width_texels": 0.5, "painted_mix": 0.55, "clump_texels": 4.0,
+               "amp": 0.05, "alb_amp": 0.03, "cav": 0.3, "seed": 13},
+    "par": {"rough_to": 0.78, "rough_w": 0.2}},
+   {"id": "down", "include": [{"islands": [1, 3, 4, 5, 12, 13, 21]}], "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 5.0, "width_texels": 0.5, "painted_mix": 0.55, "clump_texels": 3.5,
+               "amp": 0.05, "alb_amp": 0.025, "cav": 0.3, "seed": 14, "edge": {"texels": 8, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.76, "rough_w": 0.2}}
+  ]
+ }],
+ "upscale_only": ["EyeA_dif", "EyeB_dif"],
+ "preview": {"yaws": [30, -60], "closeup": {"yaw": 30, "center": [0.5, 0.42], "zoom": 3.0}, "crop": [0.2, 0.35], "crop_set": "Body"}
+}

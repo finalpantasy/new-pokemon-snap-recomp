@@ -1,0 +1,46 @@
+{
+ "asset": "p024_00", "num": "024", "name": "Ninetales",
+ "notes": [
+  "Painted design: pale cream fur; the chest ruff (island 1) and the head crest (islands 6, 10, 12) are painted as fans of long fine strokes; body and legs with soft long strokes and soft occlusion; black nose, pink toe dots, mouth (pink/dark red) and thin toe lines. Tail texture (own material TailMat, 9 islands, one per tail): long horizontal strokes from root to tip, cream with a lighter jagged band and an orange tip whose jagged edge is painted as locks.",
+  "So: long silky fur that follows the painted strokes everywhere (structure tensor), in four lengths: ruff and crest longest with soft clumped locks and a longer band at the island edge, body/neck long, legs medium, muzzle short; tails longest and smoothest, clumped into locks along the painted direction, low relief so they stay silky (no wiry look). Nose, mouth, dots and toe lines untouched.",
+  "Body and TailMat shaders bind no normal (manifest normal null): in game only _dif and _par load; the relief is cache-only (Body_nor, Tail_nor) and faint as baked cavity in _dif / AO in _par G."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.25,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "nose_mouth_dots", "include": [{"lab": {"L": [0, 45]}}, {"lab": {"h": [330, 70], "C": [12, 200]}}], "grow": 2, "treatment": "none"},
+   {"id": "toe_lines", "include": [{"lab": {"L": [0, 66]}}], "grow": 1, "treatment": "none",
+    "crisp_lines": {"polarity": "dark", "width": 1.2, "thr": [6, 16], "power": 1.8}},
+   {"id": "muzzle", "include": [{"islands": [2, 9, 13]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 3.5, "width_texels": 0.45, "painted_mix": 0.5, "clump_texels": 2.5,
+               "amp": 0.03, "alb_amp": 0.012, "cav": 0.15, "seed": 51}},
+   {"id": "ruff_crest", "include": [{"islands": [1, 6, 10, 12]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 14.0, "width_texels": 0.6, "painted_mix": 0.6, "clump_texels": 8.0, "clump_w": 0.6,
+               "amp": 0.06, "alb_amp": 0.028, "cav": 0.3, "seed": 52, "edge": {"texels": 14, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.66, "rough_w": 0.25}},
+   {"id": "legs", "include": [{"islands": [4, 5, 8, 11]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 6.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 4.0,
+               "amp": 0.045, "alb_amp": 0.02, "cav": 0.25, "seed": 53}},
+   {"id": "body", "include": [{"islands": [3, 7]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 9.0, "width_texels": 0.55, "painted_mix": 0.55, "clump_texels": 6.0, "clump_w": 0.5,
+               "amp": 0.05, "alb_amp": 0.024, "cav": 0.25, "seed": 54, "edge": {"texels": 10, "len_mul": 1.3, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.68, "rough_w": 0.2}}
+  ]
+ }, {
+  "name": "Tail", "mat": "TailMat", "dif": "Tail_dif", "par": "Tail_par", "nor": "Tail_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.25,
+  "flows": {"fur": [0.0, 0.0, -1.0]},
+  "regions": [
+   {"id": "tails", "include": [{"islands": [1, 2, 3, 4, 5, 6, 7, 8, 9]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 18.0, "width_texels": 0.65, "painted_mix": 0.6, "clump_texels": 10.0, "clump_w": 0.6,
+               "amp": 0.055, "alb_amp": 0.026, "cav": 0.28, "seed": 55},
+    "par": {"rough_to": 0.64, "rough_w": 0.2}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [30, -120], "closeup": {"yaw": 30, "center": [0.62, 0.62], "zoom": 3.0}, "crop": [0.2, 0.25], "crop_set": "Body"}
+}

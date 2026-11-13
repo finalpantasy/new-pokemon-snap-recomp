@@ -1,0 +1,34 @@
+{
+ "asset": "p112_00", "num": "112", "name": "Grookey",
+ "notes": [
+  "Painted design: one Body_dif shared by four materials (Body = flocky fur shader, Body2/Body3 = leaf and stick, Body_tail). Green fur on head (6), body (5) and legs (13) with clear short strokes; a pale yellow face patch on the head island; brown fur on ears (14), back of head (10) and tail (20); orange fur on arms (12, lower half), hands (18), feet (16) and fingers/toes (7, 8, 11); a glossy orange muzzle (23, 19); the head leaf (15, 9, 17) is painted with the same strokes plus a dark midrib; the stick (4) is a plain light-brown gradient; red mouth (22) and white tooth (21).",
+  "So: short fur along the painted strokes everywhere the artist painted fur (green, brown, orange), a little shorter and softer on the face patch; the muzzle (23, 19) is bare monkey skin: painted grain only, its gloss kept; the leaf stays a leaf: painted grain only, crisp midrib, a waxier _par; the stick, mouth and tooth are left alone (the artist painted no wood grain, so none is added).",
+  "Body (2701501019) samples a normal map but binds the dummy one, so a fur normal needs a material change; Body2/Body3 (2972460439) have no normal sampler. In game today: _dif and _par; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body|Body2|Body3|Body_tail", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.3,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "mouth_tooth", "include": [{"islands": [21, 22]}], "treatment": "none"},
+   {"id": "stick", "include": [{"islands": [1, 3, 4]}], "treatment": "none"},
+   {"id": "leaf", "include": [{"islands": [9, 15, 17]}], "treatment": "skin",
+    "crisp_lines": {"polarity": "dark", "width": 2.0, "thr": [6, 16], "power": 1.6},
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012},
+    "par": {"rough_to": 0.45, "rough_w": 0.25}},
+   {"id": "muzzle", "include": [{"islands": [19, 23]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.01}},
+   {"id": "face", "include": [{"islands": [6], "lab": {"L": [82, 100], "h": [85, 112]}}], "grow": 1, "feather": 2.0, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 3.5, "width_texels": 0.45, "painted_mix": 0.6, "clump_texels": 2.5,
+               "amp": 0.035, "alb_amp": 0.015, "cav": 0.2, "seed": 21},
+    "par": {"rough_to": 0.74, "rough_w": 0.2}},
+   {"id": "fur", "include": [{"islands": [5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 18, 20]}], "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 5.5, "width_texels": 0.5, "painted_mix": 0.55, "clump_texels": 3.5,
+               "amp": 0.055, "alb_amp": 0.026, "cav": 0.3, "seed": 22, "edge": {"texels": 8, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.76, "rough_w": 0.2}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [30, -130], "closeup": {"yaw": 30, "center": [0.5, 0.4], "zoom": 3.0}, "crop": [0.25, 0.65], "crop_set": "Body"}
+}

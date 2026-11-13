@@ -1,0 +1,45 @@
+{
+ "asset": "p097_00", "num": "097", "name": "Bouffalant",
+ "notes": [
+  "Painted design: one Body_dif shared by two materials: Body (shader 1731682751, no normal sampler; _dif + _par) and BodyB = the afro (flocky shader, normal slot = dummy_flocky_texture, no _par slot). Afro (island 26) painted as dark soft cloudy clumps; brown body fur with visible radial strokes; grey lower legs and grey muzzle with fine strokes and one dark mouth line; cream horns with painted darker growth bands; orange horn rings; grey hooves.",
+  "So: afro = dense curly fur whose short curved strands wrap the painted clumps (curls treatment, species_ext_curls.py); body = short fur along the painted strokes; lower legs and muzzle shorter; horns = smooth keratin with soft grooves only on the painted bands; hooves = painted grain only; rings, mouth, teeth, nose and the small bits untouched.",
+  "Island ids come from both materials (mat Body|BodyB, species_author_ext.py)."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body|BodyB", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "mat_in_game": {"BodyB": {"dif": true, "par": false, "nor": false}},
+  "bake_ao": 0.3,
+  "flows": {"fur": [0.0, -1.0, -0.45], "horn": [1.0, 0.25, 0.0]},
+  "regions": [
+   {"id": "mouth_teeth", "include": [{"islands": [6, 13, 16, 24, 25]}], "treatment": "none"},
+   {"id": "rings", "include": [{"islands": [28, 29]}], "treatment": "none"},
+   {"id": "painted_lines", "include": [{"islands": [12], "lab": {"L": [0, 40]}}], "grow": 1, "treatment": "none",
+    "crisp_lines": {"polarity": "dark", "width": 1.2, "thr": [8, 20], "power": 1.8}},
+   {"id": "horns", "include": [{"islands": [27]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012,
+               "creases": {"polarity": "dark", "width": 6.0, "thr": [3, 10], "amp": 0.035, "soft": 2.5, "cav": 0.2}},
+    "par": {"rough_to": 0.45, "rough_w": 0.2}},
+   {"id": "hooves", "include": [{"islands": [9, 10, 3, 7]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.015}},
+   {"id": "afro", "include": [{"islands": [26]}], "treatment": "curls",
+    "params": {"source": "dif.L", "clump_sigma": 8.0, "curl_texels": 2.0, "follow_paint": 0.5, "kink": 1.0, "len_texels": 3.0, "width_texels": 0.5,
+               "painted_mix": 0.3, "clump_w": 0.45, "amp": 0.055, "alb_amp": 0.045, "cav": 0.4, "seed": 3},
+    "par": {"rough_to": 0.8, "rough_w": 0.3}},
+   {"id": "muzzle", "include": [{"islands": [12]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 3.0, "width_texels": 0.4, "painted_mix": 0.6, "clump_texels": 2.0,
+               "amp": 0.03, "alb_amp": 0.015, "cav": 0.15, "seed": 4},
+    "par": {"rough_to": 0.7, "rough_w": 0.2}},
+   {"id": "lower_legs", "include": [{"islands": [2, 21]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 5.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 3.0,
+               "amp": 0.05, "alb_amp": 0.022, "cav": 0.25, "seed": 5, "edge": {"texels": 8, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.74, "rough_w": 0.25}},
+   {"id": "body_fur", "include": [{"islands": [1, 4, 5, 8, 11, 14, 15, 17, 18, 19, 20, 22, 23]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 6.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 4.0,
+               "amp": 0.06, "alb_amp": 0.028, "cav": 0.3, "seed": 6, "edge": {"texels": 10, "len_mul": 1.5, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.76, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [30, -120], "closeup": {"yaw": 30, "center": [0.45, 0.35], "zoom": 3.0}, "crop": [0.33, 0.55], "crop_set": "Body"}
+}

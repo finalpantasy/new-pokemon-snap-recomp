@@ -6,6 +6,9 @@
 #   exclusive  : -Bench / perf runs: build\slots\exclusive.lock (one exclusive at a time), then all 4 slots; new normal runs yield meanwhile
 if (-not $script:LockRoot) { $script:LockRoot = if ($root) { "$root" } else { (Resolve-Path (Join-Path $PSScriptRoot '..')).Path } }
 $script:LockMax = 4   # owner 2026-11-12: 4 hidden runs at once (was 6: CPU at 100%, runs crawled; was 3 before that)
+# owner 2026-11-12: "while i use the pc you can only have 1 instance". build\slots\max.txt (1..4) lowers the cap; delete it to go back to 4.
+$capFile = Join-Path $script:LockRoot 'build\slots\max.txt'
+if (Test-Path $capFile) { $cap = 0; if ([int]::TryParse(((Get-Content $capFile -TotalCount 1) -as [string]).Trim(), [ref]$cap) -and $cap -ge 1 -and $cap -lt $script:LockMax) { $script:LockMax = $cap } }
 
 function Get-LockText([string]$Path) { try { (Get-Content -LiteralPath $Path -ErrorAction Stop) -join ' ' } catch { $null } }
 

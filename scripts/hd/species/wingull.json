@@ -1,0 +1,32 @@
+{
+ "asset": "p023_00", "num": "023", "name": "Wingull",
+ "notes": [
+  "Painted design: one long wing island (1, both wings) in white with a blue band, painted as fine streaks running along the wing (feather barbs), grey shading at the root; tail feathers (4, 6, 11) white with blue streaked tips; white head and body (7, 9, 10) with soft grey shading and faint streaks; two-tone beak (12, 14: dark top, orange bottom); dark red mouth (3, 15) and tongue (8); orange webbed feet (2, 5, 13, 16).",
+  "So: feathers along the painted streaks: long, very thin barbs with little relief on the wing and tail (gull feathers are smooth and tight, not fluffy), smooth contour feathers on head and body (long soft strands, albedo change under 1% so the white stays clean); beak smooth keratin with a little gloss; feet painted grain only; mouth and tongue untouched.",
+  "BodyA shader 3116720224 has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "BodyA", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.12,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "mouth", "include": [{"islands": [3, 8, 15]}], "treatment": "none"},
+   {"id": "beak", "include": [{"islands": [12, 14]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.008},
+    "par": {"rough_to": 0.38, "rough_w": 0.3}},
+   {"id": "feet", "include": [{"islands": [2, 5, 13, 16]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 1.5, "amp": 0.012}},
+   {"id": "wing_tail", "include": [{"islands": [1, 4, 6, 11]}], "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 11.0, "width_texels": 0.35, "painted_mix": 0.7, "clump_texels": 6.0, "clump_w": 0.25,
+               "amp": 0.035, "alb_amp": 0.012, "cav": 0.15, "seed": 41},
+    "par": {"rough_to": 0.66, "rough_w": 0.2}},
+   {"id": "down", "include": [{"islands": [7, 9, 10]}], "feather": 1.5, "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 6.0, "width_texels": 0.6, "painted_mix": 0.6, "clump_texels": 4.0,
+               "amp": 0.025, "alb_amp": 0.007, "cav": 0.15, "seed": 42},
+    "par": {"rough_to": 0.72, "rough_w": 0.2}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [-60, 160], "closeup": {"yaw": -60, "center": [0.47, 0.5], "zoom": 3.5}, "crop": [0.3, 0.45], "crop_set": "Body"}
+}

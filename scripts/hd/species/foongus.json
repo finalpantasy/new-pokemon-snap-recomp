@@ -1,0 +1,125 @@
+{
+ "asset": "p096_00",
+ "num": "096",
+ "name": "Foongus",
+ "notes": [
+  "Painted design: a ball-shaped cap (red top, white bottom, dark band and button ring) with a fine painted speckle, a pink cap underside, a white fungal body and arms with soft painted fibrous streaks.",
+  "So: cap = plastic-like: no relief beyond the faintest painted grain, the band edges kept crisp, clearly lower roughness and a slightly higher spec mask; underside soft and matte; body and arms = soft matte fungal flesh, the painted fibre streaks as low relief.",
+  "Body shader 4124276552 has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [
+  {
+   "name": "Body",
+   "mat": "Body",
+   "dif": "Body_dif",
+   "par": "Body_par",
+   "nor": "Body_nor",
+   "in_game": {
+    "dif": true,
+    "par": true,
+    "nor": false
+   },
+   "bake_ao": 0.2,
+   "regions": [
+    {
+     "id": "cap",
+     "include": [
+      {
+       "islands": [
+        1,
+        2
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 1.6,
+      "amp": 0.004,
+      "undulation": 0.1
+     },
+     "crisp_lines": {
+      "polarity": "dark",
+      "width": 2.0,
+      "thr": [
+       8,
+       20
+      ],
+      "power": 1.6
+     },
+     "par": {
+      "rough_to": 0.22,
+      "rough_w": 0.45,
+      "spec_mul": 1.12
+     }
+    },
+    {
+     "id": "underside",
+     "include": [
+      {
+       "islands": [
+        3
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 2.0,
+      "amp": 0.012,
+      "undulation": 0.2
+     },
+     "par": {
+      "rough_to": 0.8,
+      "rough_w": 0.2
+     }
+    },
+    {
+     "id": "flesh",
+     "include": [
+      {
+       "islands": [
+        4,
+        5,
+        6
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 2.0,
+      "amp": 0.02,
+      "undulation": 0.25
+     },
+     "par": {
+      "rough_to": 0.82,
+      "rough_w": 0.2
+     }
+    }
+   ]
+  }
+ ],
+ "upscale_only": [
+  "Eye_dif"
+ ],
+ "preview": {
+  "yaws": [
+   30,
+   -150
+  ],
+  "closeup": {
+   "yaw": -150,
+   "center": [
+    0.5,
+    0.3
+   ],
+   "zoom": 3.0
+  },
+  "crop": [
+   0.3,
+   0.68
+  ],
+  "crop_set": "Body"
+ }
+}

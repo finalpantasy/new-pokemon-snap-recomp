@@ -1,0 +1,24 @@
+{
+ "asset": "p184_00", "num": "184", "name": "Gengar",
+ "notes": [
+  "Painted design: dusky purple body with soft cloudy mottling, dark-red mouth interior, pink tongue, white teeth.",
+  "So: kept mostly smooth: the painted mottling as a very low, soft relief plus a fine velvety micro-grain (sub-texel, no bumps), rougher and less specular so it reads soft and gas-like, not plastic; tongue wetter; mouth and teeth untouched.",
+  "Body shader 2972460439 (material BodyA) has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "BodyA", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.2,
+  "regions": [
+   {"id": "mouth", "include": [{"islands": [1]}], "treatment": "none"},
+   {"id": "teeth", "include": [{"islands": [2, 5]}], "treatment": "none"},
+   {"id": "tongue", "include": [{"islands": [12, 13]}], "treatment": "none", "par": {"rough_to": 0.35, "rough_w": 0.3}},
+   {"id": "body", "include": [{"islands": [3, 4, 6, 7, 8, 9, 10, 11]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 4.0, "amp": 0.01, "undulation": 0.4,
+               "pores": {"spacing_texels": 1.2, "fill": 0.9, "radius_texels": 0.25, "amp": 0.008, "cav": 0.0}},
+    "par": {"rough_to": 0.78, "rough_w": 0.3, "spec_mul": 0.8}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [25, -140], "closeup": {"yaw": 25, "center": [0.5, 0.55], "zoom": 3.0}, "crop": [0.35, 0.65], "crop_set": "Body"}
+}

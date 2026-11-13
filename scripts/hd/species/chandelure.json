@@ -1,0 +1,130 @@
+{
+ "asset": "p026_00",
+ "num": "026",
+ "name": "Chandelure",
+ "notes": [
+  "Painted design: near-black smoky metal arms, bars, discs and zig-zag trims with soft painted gradients and small painted white glints at bar ends; the glass head is a separate white island (Glass/Glass2 materials) and the flames are their own emissive materials.",
+  "So: dark lacquered iron: the painted grain only, very low; painted glints kept crisp; lower roughness and a slightly raised spec mask; glass head and flames untouched (crisp upscale only; Fire_dif/Fire_par are not in the pack data).",
+  "Body_par is BC1 (no alpha), so no metallic channel can be written: the metal read comes from roughness (R) and spec mask (B) only. The body shader 2613379960 carries no metal parameters (census: FresnelColor, innerColor, sssContrast), so a BC3/BC7 _par alone would very likely not make it metallic; that needs a material swap to a metal shader such as 1096415554 (reads paramsTexture.w, metal_coef). Not verifiable locally: the body shader's fragment code is not dumped. No normal sampler: in game only _dif and _par load."
+ ],
+ "sets": [
+  {
+   "name": "Body",
+   "mat": [
+    "Body",
+    "Glass",
+    "Glass2"
+   ],
+   "dif": "Body_dif",
+   "par": "Body_par",
+   "nor": "Body_nor",
+   "in_game": {
+    "dif": true,
+    "par": true,
+    "nor": false
+   },
+   "bake_ao": 0.1,
+   "regions": [
+    {
+     "id": "glass_head",
+     "include": [
+      {
+       "islands": [
+        36
+       ]
+      }
+     ],
+     "treatment": "none"
+    },
+    {
+     "id": "iron",
+     "include": [
+      {
+       "islands": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 1.6,
+      "amp": 0.01,
+      "undulation": 0.2
+     },
+     "crisp_lines": {
+      "polarity": "light",
+      "width": 1.5,
+      "thr": [
+       10,
+       25
+      ],
+      "power": 1.6
+     },
+     "par": {
+      "rough_to": 0.25,
+      "rough_w": 0.3,
+      "spec_mul": 1.1
+     }
+    }
+   ]
+  }
+ ],
+ "upscale_only": [
+  "Eye_dif",
+  "Fire_emi",
+  "Fire_emi2"
+ ],
+ "preview": {
+  "yaws": [
+   25,
+   -150
+  ],
+  "closeup": {
+   "yaw": 25,
+   "center": [
+    0.25,
+    0.7
+   ],
+   "zoom": 4.0
+  },
+  "crop": [
+   0.3,
+   0.6
+  ],
+  "crop_set": "Body"
+ }
+}

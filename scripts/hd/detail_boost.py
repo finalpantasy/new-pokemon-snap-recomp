@@ -42,6 +42,27 @@ def wrap_blur(a, sigma):
     return b[pad:-pad, pad:-pad]
 
 
+def smear_mask(rgb, run=12, tol=1.5 / 255):
+    """1 where the texture is extruded padding (a pixel repeated along x or y for >= run texels, e.g. the smeared borders of rock
+    atlases); 0 elsewhere. The band must not be added there: sharpening a smear makes diagonal zigzag streaks (Florio cliff,
+    2026-11-13). Result is dilated and softened."""
+    y = rgb
+    m = np.zeros(y.shape[:2], np.float32)
+    for ax in (0, 1):
+        d = (np.abs(np.diff(y, axis=ax, append=y.take([-1], axis=ax))).max(-1) < tol)          # pixel equals its next neighbour
+        d = d.astype(np.float32)
+        k = (run, 1) if ax == 0 else (1, run)
+        full = cv2.boxFilter(d, -1, k, anchor=(0, 0), normalize=True, borderType=cv2.BORDER_REFLECT) > 0.999   # run texels all equal
+        m = np.maximum(m, cv2.dilate(full.astype(np.float32), np.ones((run + 1, run + 1), np.uint8)))
+    for sgn in (1, -1):                                                                  # diagonal smear (corner rays of the atlas)
+        sh = np.roll(y, (-1, -sgn), axis=(0, 1))
+        d = (np.abs(y - sh).max(-1) < tol).astype(np.float32)
+        kern = np.eye(run, dtype=np.float32)[::sgn] / run
+        full = cv2.filter2D(d, -1, kern, anchor=(0, 0), borderType=cv2.BORDER_REFLECT) > 0.999
+        m = np.maximum(m, cv2.dilate(full.astype(np.float32), np.ones((run + 1, run + 1), np.uint8)))
+    return cv2.GaussianBlur(m, (0, 0), 1.5)
+
+
 def fine_band(rgb, amount):
     """Detail at 2x resolution: the original's finest band, one octave finer, tiled with a shift (zero mean)."""
     d = rgb - wrap_blur(rgb, 1.1)                              # finest band of the source (wavelength ~2-6 source px)
@@ -60,10 +81,13 @@ def fine_band(rgb, amount):
 def do_albedo(a, amount):
     rgb, al = a[..., :3], a[..., 3:]
     u = up2(rgb)
+    keep = (1 - cv2.resize(smear_mask(rgb), (u.shape[1], u.shape[0]), interpolation=cv2.INTER_LINEAR))[..., None]   # no detail on extruded padding
     band, y = fine_band(rgb, amount * 1.4)
+    band = band * keep
+    y = y * keep[..., 0]
     u = u + band
     sharp = u - cv2.GaussianBlur(u, (0, 0), 1.0)
-    u = u + 0.45 * sharp * amount
+    u = u + 0.45 * sharp * amount * keep
     out = np.concatenate([np.clip(u, 0, 1), np.clip(up2(al).reshape(u.shape[0], u.shape[1], 1), 0, 1)], -1)
     return out, y
 
@@ -87,7 +111,9 @@ def main():
     ap.add_argument('--amount', type=float, default=0.8)
     ap.add_argument('--bump', type=float, default=1.0)
     ap.add_argument('--force', action='store_true')
+    ap.add_argument('--textures', default='', help='comma list of texture names (default: all of the asset)')
     a = ap.parse_args()
+    only = set(x for x in a.textures.split(',') if x)
     man = json.loads((CACHE / 'manifest.json').read_text())
     want = a.assets.split(',')
     for asset in man['assets']:
@@ -97,6 +123,8 @@ def main():
         ys = {}
         order = sorted(asset['textures'], key=lambda t: t['role'] != 'albedo')   # albedo first: its fine band feeds the normal
         for t in order:
+            if only and t['name'].rsplit('_', 1)[0] not in {o.rsplit('_', 1)[0] for o in only}:
+                continue
             src = d / (t['name'] + '.orig.png')
             dst = d / (t['name'] + '.' + OUT + '.png')
             if dst.exists() and not a.force:

@@ -1,0 +1,24 @@
+{
+ "asset": "p071_00", "num": "071", "name": "Machamp",
+ "notes": [
+  "Painted design: grey-blue skin with soft dark painted muscle-separation strokes, brown head crests, cream lips/nails, a red mouth, black trunks, a gold belt with a P buckle, arrow and studs (_par BC3: alpha kept as authored).",
+  "So: smooth muscled skin: soft grooves only along the painted muscle strokes, the painted grain, faint evenly spread pores (normal only, tiny, low); no new lines; belt, buckle, trunks, crests, lips, mouth untouched (crisp upscale only).",
+  "Body shader 4247236603 has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.25,
+  "regions": [
+   {"id": "belt_trunks", "include": [{"islands": [1, 2, 7, 14, 24]}], "treatment": "none"},
+   {"id": "mouth_crests", "include": [{"islands": [4, 6, 8, 15, 17, 22]}], "treatment": "none"},
+   {"id": "skin", "include": [{"islands": [3, 5, 9, 10, 11, 12, 13, 16, 18, 19, 20, 21, 23]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012, "undulation": 0.25,
+               "creases": {"polarity": "dark", "width": 3.0, "thr": [3, 10], "min_area": 10, "soft": 1.5, "amp": 0.03, "cav": 0.25},
+               "pores": {"spacing_texels": 3.0, "fill": 0.55, "radius_texels": 0.3, "amp": 0.01, "cav": 0.05}},
+    "par": {"rough_to": 0.52, "rough_w": 0.15}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [20, -150], "closeup": {"yaw": 20, "center": [0.5, 0.45], "zoom": 3.0}, "crop": [0.58, 0.48], "crop_set": "Body"}
+}

@@ -1,0 +1,40 @@
+{
+ "asset": "p015_00", "num": "015", "name": "Magikarp",
+ "notes": [
+  "Painted design: one column of five pentagon scales (zigzag) behind the vertical head line at x=277 (island 3; mirrored x=746 on island 12), row period 48 texels, tips 41 texels and corners 26 texels behind the line; a fine 12-texel sparkle lattice in _par; dark design lines (gill arc, jaw).",
+  "So: the large scales continue that painted column toward the tail (same size, same pentagon shape, half-row stagger), rear edge raised, low amplitude. The fine _par lattice is the artist's sparkle and is left alone (no relief, no new cells).",
+  "Head (in front of the line) is smooth fish skin; lips smooth and glossy; mouth interior untouched; fins: ribs only on the painted rib lines; whiskers, crown fins and fin rays upscale only.",
+  "Body shader 1731682751 has no normal sampler: in game only _dif and _par load; the relief lives in the cache-only Body_nor and, faintly, as baked cavity in _dif and AO in _par G."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.35,
+  "flows": {"tail": [0.0, 0.0, -1.0]},
+  "regions": [
+   {"id": "mouth_interior", "include": [{"islands": [10]}], "treatment": "none"},
+   {"id": "lips", "include": [{"islands": [9]}], "treatment": "none", "par": {"rough_to": 0.3, "rough_w": 0.35}},
+   {"id": "whiskers", "include": [{"islands": [19, 20]}], "treatment": "none", "par": {"rough_to": 0.45, "rough_w": 0.2}},
+   {"id": "fin_rays", "include": [{"islands": [4, 18, 8, 11]}], "treatment": "none"},
+   {"id": "crown_fins", "include": [{"islands": [1, 2, 16, 17]}], "treatment": "none"},
+   {"id": "fin_border", "include": [{"islands": [5, 15, 6, 7, 13, 14], "lab": {"L": [0, 66]}, "edge_within": 14}], "grow": 1, "treatment": "none"},
+   {"id": "fin_membranes", "include": [{"islands": [5, 15, 6, 7, 13, 14]}], "treatment": "fin_membrane",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [4, 12], "power": 1.8},
+    "params": {"ribs": {"polarity": "dark", "width": 1.5, "thr": [4, 12]}, "rib_amp": 0.045, "rib_soft": 0.9, "sag_amp": 0.015, "sag_texels": 9, "alb_thin": 0.02},
+    "par": {"rough_to": 0.42, "rough_w": 0.25}},
+   {"id": "head", "include": [{"islands": [3], "uv_poly": [[277, 0], [530, 0], [530, 420], [277, 420]]},
+                              {"islands": [12], "uv_poly": [[494, 0], [746, 0], [746, 420], [494, 420]]}],
+    "feather": 1.5, "treatment": "skin",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [6, 14], "power": 2.0},
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012, "undulation": 0.0},
+    "par": {"rough_to": 0.42, "rough_w": 0.2}},
+   {"id": "body_scales", "include": [{"islands": [3, 12]}], "treatment": "scales_lattice",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [6, 14], "power": 2.0},
+    "params": {"row_period": 48.0, "row_y0": 97.0, "tip_s": 41.0, "corner_s": 26.0,
+               "lattices": [{"island": 3, "line_x": 277.0, "dir": -1}, {"island": 12, "line_x": 746.0, "dir": 1}],
+               "amp": 0.085, "soften": 1.3, "alb_rim": 0.02, "alb_tuck": 0.03, "cav": 0.35}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [28, -70], "closeup": {"yaw": -70, "center": [0.6, 0.41], "zoom": 3.0}, "crop": [0.2, 0.17], "crop_set": "Body"}
+}

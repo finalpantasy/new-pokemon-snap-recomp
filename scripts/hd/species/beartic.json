@@ -1,0 +1,37 @@
+{
+ "asset": "p029_00", "num": "029", "name": "Beartic",
+ "notes": [
+  "Painted design: white fur with long vertical strokes over body (island 8), arms (19, 23), ears (15) and soles (30); the face (top of island 8, UV box 140-440 x 0-430) has the same strokes but swirling around the eyes and nose; the waist tuft is many tiny islands painted as pale bluish-white facets; the beard (islands 7, 39, 42) is painted blue with sharp white wedge highlights (icicles); dark grey claws and pads, black nose plate (40), mouth (31).",
+  "So: white fur = long fur following the painted strokes, longer and softer at the island edges; face = short, flat fur (the long-fur pass made crumpled wrinkles there); waist tuft = short soft fur (tiny islands, no edge band so strands do not stop at every seam); beard = ice: glossy, low roughness, raised specular mask, only long smooth ripples along the painted icicle streaks (no cracks, no facet cells); claws, pads, nose and mouth untouched (claws a little glossier).",
+  "Body shader binds no normal (manifest normal null): in game only _dif and _par load; the gloss on the beard comes from _par (R lower, B higher)."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.25,
+  "flows": {"fur": [0.0, -1.0, -0.3], "ice": [0.0, -1.0, 0.0]},
+  "regions": [
+   {"id": "mouth_nose", "include": [{"islands": [31, 40]}], "treatment": "none"},
+   {"id": "claws_pads", "include": [{"lab": {"L": [0, 55]}, "islands": [8, 15, 19, 23, 30]}], "grow": 1, "treatment": "none",
+    "par": {"rough_to": 0.4, "rough_w": 0.25}},
+   {"id": "beard_ice", "include": [{"islands": [7, 39, 42]}, {"lab": {"C": [10, 200], "h": [170, 270]}}], "grow": 1, "feather": 1.5, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "fallback_flow": "ice", "len_texels": 18.0, "width_texels": 1.4, "painted_mix": 0.6, "clump_texels": 8.0, "clump_w": 0.3,
+               "amp": 0.02, "alb_amp": 0.006, "cav": 0.05, "seed": 61},
+    "par": {"rough_to": 0.15, "rough_w": 0.6, "spec_mul": 1.2}},
+   {"id": "waist_tuft", "include": [{"islands": [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 27, 28, 29, 32, 33, 34, 35, 36, 37, 38, 41, 43, 44, 45, 46, 47]}],
+    "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 4.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 3.0,
+               "amp": 0.035, "alb_amp": 0.015, "cav": 0.2, "seed": 62}},
+   {"id": "face", "include": [{"islands": [8], "uv_poly": [[140, 0], [440, 0], [440, 430], [140, 430]]}], "feather": 3.0, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 4.0, "width_texels": 0.5, "painted_mix": 0.4, "clump_texels": 2.5, "clump_w": 0.3,
+               "amp": 0.03, "alb_amp": 0.008, "cav": 0.12, "seed": 64},
+    "par": {"rough_to": 0.74, "rough_w": 0.25}},
+   {"id": "white_fur", "include": [{"islands": [8, 15, 19, 23, 30]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 11.0, "width_texels": 0.6, "painted_mix": 0.6, "clump_texels": 7.0, "clump_w": 0.55,
+               "amp": 0.06, "alb_amp": 0.02, "cav": 0.3, "seed": 63, "edge": {"texels": 12, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.74, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [25, -150], "closeup": {"yaw": 20, "center": [0.47, 0.16], "zoom": 4.0}, "crop": [0.3, 0.6], "crop_set": "Body"}
+}

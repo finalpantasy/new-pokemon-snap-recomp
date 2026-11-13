@@ -1,0 +1,31 @@
+{
+ "asset": "p011_00", "num": "011", "name": "Aipom",
+ "notes": [
+  "Painted design: violet fur painted as fine even speckle (no stroke direction) with soft darker occlusion around limbs and ears; flat cream patches: face, belly, ear insides, the three-lobed hand at the tail tip, feet and hands; thin dark painted finger/toe lines on the cream pads.",
+  "So: violet = short fur, flow from the geometry (the paint has no direction), painted speckle sharpened along it; cream face and belly = shorter, flatter fur; ear insides = very short flat fur; the tail hand and the feet/hands = smooth palm skin (painted grain only, slightly less rough); finger lines untouched.",
+  "Body material is flocky (normal slot = shared dummy_flocky_texture, no _par slot): in game only _dif loads. Body_nor is cache-only (needs a material change to bind a per-species normal); no _par written."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "nor": "Body_nor", "par": null,
+  "in_game": {"dif": true, "nor": false},
+  "bake_ao": 0.2,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "finger_lines", "include": [{"islands": [2, 4, 5, 6, 7, 8], "lab": {"L": [0, 84]}}], "grow": 1, "treatment": "none",
+    "crisp_lines": {"polarity": "dark", "width": 1.2, "thr": [8, 20], "power": 1.8}},
+   {"id": "palms", "include": [{"islands": [2, 4, 5, 6, 7, 8], "lab": {"C": [25, 200], "h": [60, 110]}}], "feather": 1.5, "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012}},
+   {"id": "ear_inner", "include": [{"islands": [9, 10], "lab": {"C": [25, 200], "h": [60, 110]}}], "feather": 1.5, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 2.5, "width_texels": 0.4, "painted_mix": 0.4, "clump_texels": 2.0,
+               "amp": 0.02, "alb_amp": 0.01, "cav": 0.1, "seed": 21}},
+   {"id": "cream_fur", "include": [{"lab": {"C": [25, 200], "h": [60, 110]}}], "feather": 1.5, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 3.5, "width_texels": 0.45, "painted_mix": 0.4, "clump_texels": 2.5,
+               "amp": 0.03, "alb_amp": 0.012, "cav": 0.15, "seed": 22, "coherence": [0.35, 0.7]}},
+   {"id": "violet_fur", "include": [{"islands": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 5.0, "width_texels": 0.5, "painted_mix": 0.45, "clump_texels": 3.5,
+               "amp": 0.05, "alb_amp": 0.03, "cav": 0.25, "seed": 23, "coherence": [0.35, 0.7], "edge": {"texels": 8, "len_mul": 1.3, "amp_mul": 0.7}}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif", "Mouth_dif"],
+ "preview": {"yaws": [25, -150], "closeup": {"yaw": 25, "center": [0.55, 0.72], "zoom": 2.6}, "crop": [0.4, 0.62], "crop_set": "Body"}
+}

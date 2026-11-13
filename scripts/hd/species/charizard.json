@@ -1,0 +1,172 @@
+{
+ "asset": "p175_00",
+ "num": "175",
+ "name": "Charizard",
+ "notes": [
+  "Painted design: orange skin with a fine painted grain, a cream belly band, wings with an orange outer side and a teal inner membrane carrying faint lighter painted veins; pink mouth, white teeth, claws and horns; fire is its own emissive materials.",
+  "So: skin = scaly-smooth: only its own painted grain as fine pebbling, slight sheen; belly smoother; wing membrane thin and soft: its painted vein crackle (lines about half a texel wide, 2-4 L contrast: too faint to trace as lines without turning into specks) is lifted only as much as it is painted (fine high-pass of the paint), with a slow soft undulation; mouth, teeth, claws, horns untouched; fire textures (FireA/FireA2/FireB) crisp upscale only.",
+  "Body shader 2185982105 has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [
+  {
+   "name": "Body",
+   "mat": "Body",
+   "dif": "Body_dif",
+   "par": "Body_par",
+   "nor": "Body_nor",
+   "in_game": {
+    "dif": true,
+    "par": true,
+    "nor": false
+   },
+   "bake_ao": 0.3,
+   "regions": [
+    {
+     "id": "mouth",
+     "include": [
+      {
+       "islands": [
+        1,
+        2
+       ]
+      }
+     ],
+     "treatment": "none"
+    },
+    {
+     "id": "teeth_claws",
+     "include": [
+      {
+       "islands": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        14,
+        15,
+        17
+       ]
+      }
+     ],
+     "treatment": "none"
+    },
+    {
+     "id": "wing_membrane",
+     "include": [
+      {
+       "islands": [
+        16
+       ],
+       "lab": {
+        "h": [
+         150,
+         260
+        ],
+        "C": [
+         8,
+         200
+        ]
+       }
+      }
+     ],
+     "grow": 1,
+     "feather": 1.5,
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 1.0,
+      "amp": 0.016,
+      "undulation": 0.35
+     },
+     "par": {
+      "rough_to": 0.5,
+      "rough_w": 0.2
+     }
+    },
+    {
+     "id": "belly",
+     "include": [
+      {
+       "islands": [
+        3,
+        4,
+        12
+       ],
+       "lab": {
+        "L": [
+         72,
+         100
+        ]
+       }
+      }
+     ],
+     "feather": 2.0,
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 2.0,
+      "amp": 0.012,
+      "undulation": 0.2
+     }
+    },
+    {
+     "id": "skin",
+     "include": [
+      {
+       "islands": [
+        3,
+        4,
+        10,
+        11,
+        12,
+        13,
+        16,
+        18
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 1.6,
+      "amp": 0.022,
+      "undulation": 0.25
+     },
+     "par": {
+      "rough_to": 0.55,
+      "rough_w": 0.15
+     }
+    }
+   ]
+  }
+ ],
+ "upscale_only": [
+  "Eye_dif",
+  "FireA_dif",
+  "FireA_par",
+  "FireA_emi",
+  "FireA2_dif",
+  "FireA2_emi",
+  "FireB_emi"
+ ],
+ "preview": {
+  "yaws": [
+   30,
+   -150
+  ],
+  "closeup": {
+   "yaw": -150,
+   "center": [
+    0.5,
+    0.4
+   ],
+   "zoom": 3.0
+  },
+  "crop": [
+   0.78,
+   0.58
+  ],
+  "crop_set": "Body"
+ }
+}

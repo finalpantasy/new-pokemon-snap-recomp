@@ -1,0 +1,28 @@
+{
+ "asset": "p063_00", "num": "063", "name": "Crabrawler",
+ "notes": [
+  "Painted design: flat purple and blue shell panels with soft painted shading and thin dark outlines where panels overlap: body (7), face plate (10, with cream mouth plates split by dark lines), belly (12, blue stripes), legs (1, 9: purple with a cream joint band and a blue tip), big blue boxing claws (2, 6, 11) with a dark opening (3), cream pincer crest (8) and cream arm joints (5, 15), a dark patch (13), small purple parts (4, 14).",
+  "So: crab carapace = hard, smooth, satin. Shell panels get a groove and soft bevel only on the painted outlines (no new seams), a gentle dome, the painted mottling as faint grain, satin _par; cream pincer and joints smooth with a bit more gloss; dark claw opening and dark patch untouched. No bumps or granules: the artist painted none.",
+  "BodyA shader 3436703351 has no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "BodyA", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.35,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "dark_parts", "include": [{"islands": [3, 13]}], "treatment": "none"},
+   {"id": "cream_parts", "include": [{"islands": [5, 8, 15]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.008},
+    "par": {"rough_to": 0.38, "rough_w": 0.25}},
+   {"id": "shell", "include": [{"islands": [1, 2, 4, 6, 7, 9, 10, 11, 12, 14]}], "treatment": "plates",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [6, 14], "power": 1.6},
+    "params": {"seams": {"polarity": "dark", "width": 1.5, "thr": [6, 14], "min_area": 30},
+               "bevel_texels": 3.0, "dome_texels": 30.0, "dome": 0.5, "amp": 0.045, "cav": 0.4,
+               "grain": {"source": "dif.L", "sigma": 2.0, "micro": 0.25, "amp": 0.01}},
+    "par": {"rough_to": 0.42, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [30, 180], "closeup": {"yaw": 180, "center": [0.5, 0.45], "zoom": 2.5}, "crop": [0.72, 0.6], "crop_set": "Body"}
+}

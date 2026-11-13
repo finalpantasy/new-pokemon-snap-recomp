@@ -1,0 +1,32 @@
+{
+ "asset": "p006_00", "num": "006", "name": "Pichu",
+ "notes": [
+  "Painted design: short fur strokes in _dif and very clear strand strokes in _par G (the artist's own fur direction); black ear tips, collar and tail are fur too (the first pass wrongly made them pored skin).",
+  "So: strands follow the painted strokes (structure tensor of _par G, gravity guess only where the paint has no direction), at the painted stroke length; half of the strand field is the painted stroke itself, sharpened along the flow.",
+  "Ears: longer, softer strands within 12 texels of the ear edge. Painted toe/foot lines excluded. Cheeks (own texture) untouched: upscale only.",
+  "Body shader 1682158148 binds _dif, _nor (BC5) and _par: everything shown can load in game."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": true},
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "toe_lines", "include": [{"islands": [2, 4], "lab": {"L": [0, 40]}}], "grow": 1, "treatment": "none",
+    "crisp_lines": {"polarity": "dark", "width": 1.5, "thr": [8, 20], "power": 1.8}},
+   {"id": "ears", "include": [{"islands": [6]}], "treatment": "fur",
+    "params": {"stroke_source": "par.G", "len_texels": 6.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 4.0,
+               "amp": 0.055, "alb_amp": 0.024, "cav": 0.3, "edge": {"texels": 12, "len_mul": 1.6, "amp_mul": 0.55}},
+    "par": {"rough_to": 0.72, "rough_w": 0.25}},
+   {"id": "black_fur", "include": [{"islands": [1, 3, 5], "lab": {"L": [0, 32]}}], "grow": 1, "treatment": "fur",
+    "params": {"stroke_source": "par.G", "len_texels": 5.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 3.0,
+               "amp": 0.055, "alb_amp": 0.03, "cav": 0.25, "seed": 3},
+    "par": {"rough_to": 0.7, "rough_w": 0.25}},
+   {"id": "body_fur", "include": [{"islands": [1, 2, 3, 4, 5]}], "treatment": "fur",
+    "params": {"stroke_source": "par.G", "len_texels": 6.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 4.0,
+               "amp": 0.065, "alb_amp": 0.028, "cav": 0.3, "seed": 5},
+    "par": {"rough_to": 0.72, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Cheek_dif", "Cheek_par", "Eye_dif", "Mouth_dif"],
+ "preview": {"yaws": [28, 150], "closeup": {"yaw": 28, "center": [0.35, 0.22], "zoom": 3.0}, "crop": [0.25, 0.3], "crop_set": "Body"}
+}

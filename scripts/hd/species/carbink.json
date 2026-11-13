@@ -1,0 +1,149 @@
+{
+ "asset": "p045_00",
+ "num": "045",
+ "name": "Carbink",
+ "notes": [
+  "Painted design: grey rock body with sparse painted dark crack lines and soft mottling, a white smooth stone collar/ears, pale-blue faceted diamonds with painted facet lines (DiamondOuterRefle shader with its own cube map); _par BC3 with alpha 0 on the rock and 16/255 on the diamonds.",
+  "So: rock = the painted cracks as soft grooves along the same lines (no new cracks), the painted mottling as low grain, rougher; white stone smoother and satin; diamonds = no relief, only their painted facet lines kept crisp, _par untouched (their look comes from the cube-map shader); _par alpha kept as authored.",
+  "Body shader 2865552615 and diamond shader 995503399 have no normal sampler: in game only _dif and _par load; Body_nor is cache-only."
+ ],
+ "sets": [
+  {
+   "name": "Body",
+   "mat": [
+    "Body",
+    "DiamondOuterRefle"
+   ],
+   "dif": "Body_dif",
+   "par": "Body_par",
+   "nor": "Body_nor",
+   "in_game": {
+    "dif": true,
+    "par": true,
+    "nor": false
+   },
+   "bake_ao": 0.3,
+   "regions": [
+    {
+     "id": "diamonds",
+     "include": [
+      {
+       "islands": [
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25
+       ]
+      }
+     ],
+     "treatment": "none",
+     "crisp_lines": {
+      "polarity": "light",
+      "width": 1.5,
+      "thr": [
+       6,
+       16
+      ],
+      "power": 1.6
+     }
+    },
+    {
+     "id": "white_stone",
+     "include": [
+      {
+       "islands": [
+        1,
+        4
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 2.0,
+      "amp": 0.012,
+      "undulation": 0.25
+     },
+     "par": {
+      "rough_to": 0.6,
+      "rough_w": 0.2
+     }
+    },
+    {
+     "id": "rock",
+     "include": [
+      {
+       "islands": [
+        2,
+        3,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+       ]
+      }
+     ],
+     "treatment": "skin",
+     "params": {
+      "source": "dif.L",
+      "grain_sigma": 2.5,
+      "amp": 0.03,
+      "undulation": 0.3,
+      "creases": {
+       "polarity": "dark",
+       "width": 1.5,
+       "thr": [
+        4,
+        12
+       ],
+       "min_area": 14,
+       "soft": 1.0,
+       "amp": 0.035,
+       "cav": 0.3
+      }
+     },
+     "par": {
+      "rough_to": 0.85,
+      "rough_w": 0.25,
+      "spec_mul": 0.9
+     }
+    }
+   ]
+  }
+ ],
+ "upscale_only": [
+  "Eye_dif"
+ ],
+ "preview": {
+  "yaws": [
+   30,
+   -150
+  ],
+  "closeup": {
+   "yaw": 30,
+   "center": [
+    0.5,
+    0.5
+   ],
+   "zoom": 3.0
+  },
+  "crop": [
+   0.22,
+   0.55
+  ],
+  "crop_set": "Body"
+ }
+}

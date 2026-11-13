@@ -1,0 +1,42 @@
+{
+ "asset": "p042_00", "num": "042", "name": "Mamoswine",
+ "notes": [
+  "Painted design: dark-brown long shaggy fur with long vertical strokes over the body (island 2) and belly (3); the leg skirts (5, 6, 7) and the fringe over the snout (9) end in painted jagged locks; tan beard around the snout (8) with a jagged edge and a pink nose with two dark nostril lines; a pale grey-white mask band and a blue eye patch on island 2; ivory tusks (14); white toes and black soles on the feet (10, 11, 12, 13); black holes with a brown star (1, 4).",
+  "So: long shaggy fur along the painted strokes, longest at the jagged lock edges (edge band) of the skirts, fringe and beard; mask band = short flat fur; blue patch = smooth skin, painted grain only; tusks = ivory: smooth, a little glossier, only a faint long grain along the tusk; toes = hoof keratin, painted grain; nose, nostrils and black parts untouched.",
+  "BodyA shader binds no normal (manifest normal null): in game only _dif and _par load."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "BodyA", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.25,
+  "flows": {"fur": [0.0, -1.0, -0.3], "tusk": [0.0, 1.0, 1.0]},
+  "regions": [
+   {"id": "black", "include": [{"lab": {"L": [0, 14]}}], "grow": 1, "treatment": "none"},
+   {"id": "nose", "include": [{"islands": [8], "lab": {"h": [330, 50], "C": [15, 200], "L": [50, 100]}}, {"islands": [8], "lab": {"L": [0, 40]}}], "grow": 2, "treatment": "none",
+    "crisp_lines": {"polarity": "dark", "width": 1.2, "thr": [8, 20], "power": 1.8}},
+   {"id": "blue_patch", "include": [{"lab": {"C": [18, 200], "h": [200, 280]}}], "grow": 1, "feather": 1.5, "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012},
+    "par": {"rough_to": 0.5, "rough_w": 0.2}},
+   {"id": "tusks", "include": [{"islands": [14]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "fallback_flow": "tusk", "coherence": [0.5, 0.9], "len_texels": 20.0, "width_texels": 1.2, "painted_mix": 0.4,
+               "clump_texels": 10.0, "clump_w": 0.3, "amp": 0.012, "alb_amp": 0.006, "cav": 0.05, "seed": 71},
+    "par": {"rough_to": 0.4, "rough_w": 0.3}},
+   {"id": "toes", "include": [{"islands": [10, 11, 12, 13], "lab": {"L": [55, 100], "C": [0, 14]}}], "grow": 1, "feather": 1.5, "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.015},
+    "par": {"rough_to": 0.55, "rough_w": 0.2}},
+   {"id": "mask_band", "include": [{"islands": [2], "lab": {"L": [55, 100], "C": [0, 14]}}], "feather": 1.5, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 4.0, "width_texels": 0.5, "painted_mix": 0.5, "clump_texels": 3.0,
+               "amp": 0.035, "alb_amp": 0.012, "cav": 0.15, "seed": 72}},
+   {"id": "locks", "include": [{"islands": [5, 6, 7, 8, 9]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 12.0, "width_texels": 0.7, "painted_mix": 0.55, "clump_texels": 8.0, "clump_w": 0.6,
+               "amp": 0.065, "alb_amp": 0.035, "cav": 0.3, "seed": 73, "edge": {"texels": 16, "len_mul": 1.5, "amp_mul": 0.75}},
+    "par": {"rough_to": 0.78, "rough_w": 0.25}},
+   {"id": "shaggy", "include": [{"islands": [1, 2, 3, 4, 10, 11, 12, 13]}], "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 11.0, "width_texels": 0.65, "painted_mix": 0.55, "clump_texels": 7.0, "clump_w": 0.55,
+               "amp": 0.06, "alb_amp": 0.035, "cav": 0.3, "seed": 74, "edge": {"texels": 10, "len_mul": 1.3, "amp_mul": 0.75}},
+    "par": {"rough_to": 0.78, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif", "Mouth_dif"],
+ "preview": {"yaws": [25, -150], "closeup": {"yaw": 25, "center": [0.5, 0.5], "zoom": 2.6}, "crop": [0.3, 0.72], "crop_set": "Body"}
+}

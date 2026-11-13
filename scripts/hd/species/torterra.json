@@ -1,0 +1,56 @@
+{
+ "asset": "p087_00", "num": "087", "name": "Torterra",
+ "notes": [
+  "Painted design, BodyA (head, neck, legs, tail, underside): smooth dark-green and brown skin with a fine soft grain and thin dark seam lines; grey-white claws and jaw spikes painted with long streaks; a black beak. BodyB (shared by materials BodyB and BodyC): the shell top (island 1) is green turf with a brown dirt patch, framed by a light grey stone rim and grey stone plates and spikes; the shell underside (island 6) grey stone; the tree canopy is many green clumps painted as soft mottled blobs; the trunk and roots brown with faint long streaks.",
+  "So: skin = painted grain only plus soft grooves on the painted seam lines (reptile skin, no scales or pebbles the artist did not paint); claws and spikes = keratin striations along their painted streaks; beak glossy, untouched. Stone = the painted mottling as low relief plus a very soft large undulation, rougher; turf = very short random blades refined from the painted grass speckle; dirt = painted grain, rough; bark = long ridges along the trunk; canopy = crinkled foliage that wraps the painted leaf clumps (curls treatment, species_ext_curls.py), low amplitude.",
+  "Neither material binds a normal (manifest normal null): in game only _dif and _par load; the relief is cache-only in BodyA_nor / BodyB_nor and faint as baked cavity in _dif / AO in _par G."
+ ],
+ "sets": [{
+  "name": "BodyA", "mat": "BodyA", "dif": "BodyA_dif", "par": "BodyA_par", "nor": "BodyA_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.25,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "beak", "include": [{"lab": {"L": [0, 18]}}], "grow": 1, "treatment": "none", "par": {"rough_to": 0.35, "rough_w": 0.3}},
+   {"id": "claws_spikes", "include": [{"lab": {"C": [0, 10], "L": [40, 100]}}], "grow": 1, "feather": 1.5, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 12.0, "width_texels": 0.7, "painted_mix": 0.65, "clump_texels": 6.0, "clump_w": 0.3,
+               "amp": 0.025, "alb_amp": 0.012, "cav": 0.1, "seed": 41},
+    "par": {"rough_to": 0.45, "rough_w": 0.2}},
+   {"id": "skin", "include": [{"lab": {"L": [0, 100]}}], "feather": 1.5, "treatment": "skin",
+    "crisp_lines": {"polarity": "dark", "width": 1.2, "thr": [5, 12], "power": 1.8},
+    "params": {"source": "dif.L", "grain_sigma": 2.5, "amp": 0.016, "undulation": 0.15,
+               "creases": {"polarity": "dark", "width": 1.2, "thr": [5, 12], "amp": 0.03, "soft": 1.2, "cav": 0.25}},
+    "par": {"rough_to": 0.55, "rough_w": 0.15}}
+  ]
+ }, {
+  "name": "BodyB", "mat": "BodyB|BodyC", "dif": "BodyB_dif", "par": "BodyB_par", "nor": "BodyB_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.3,
+  "flows": {"fur": [0.0, 1.0, 0.0]},
+  "regions": [
+   {"id": "stone", "include": [{"lab": {"C": [0, 9]}}], "feather": 1.5, "treatment": "plates_ce",
+    "params": {"seams": {"polarity": "dark", "width": 1.5, "thr": [200, 300]}, "edge_is_seam": true, "bevel_texels": 3.0, "dome": 0.25, "dome_texels": 30.0,
+               "chips": {"per_texel2": 0.0015, "radius_texels": [1.0, 2.5], "depth": 0.5, "edge_noise": 0.8},
+               "grain": {"source": "dif.L", "sigma": 3.0, "amp": 0.03, "micro": 0.3, "micro_texels": 0.8},
+               "amp": 0.04, "cav": 0.3, "seed": 45},
+    "par": {"rough_to": 0.85, "rough_w": 0.3}},
+   {"id": "dirt", "include": [{"islands": [1], "lab": {"h": [40, 110], "C": [12, 200]}}], "feather": 1.5, "treatment": "skin_ce",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.03, "undulation": 0.2},
+    "par": {"rough_to": 0.9, "rough_w": 0.3}},
+   {"id": "turf", "include": [{"islands": [1]}], "feather": 1.5, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 3.0, "width_texels": 0.45, "painted_mix": 0.5, "clump_texels": 2.5, "clump_w": 0.35,
+               "amp": 0.04, "alb_amp": 0.03, "cav": 0.25, "seed": 42, "coherence": [0.3, 0.6]},
+    "par": {"rough_to": 0.8, "rough_w": 0.25}},
+   {"id": "bark", "include": [{"lab": {"h": [40, 110], "C": [12, 200]}}], "feather": 1.5, "treatment": "fur_ce",
+    "params": {"stroke_source": "dif.L", "len_texels": 14.0, "width_texels": 0.9, "painted_mix": 0.45, "clump_texels": 7.0, "clump_w": 0.5,
+               "amp": 0.05, "alb_amp": 0.035, "cav": 0.3, "seed": 43, "coherence": [0.25, 0.55]},
+    "par": {"rough_to": 0.85, "rough_w": 0.25}},
+   {"id": "canopy", "include": [{"lab": {"L": [0, 100]}}], "treatment": "curls",
+    "params": {"source": "dif.L", "clump_sigma": 10.0, "curl_texels": 3.0, "follow_paint": 0.6, "kink": 0.8, "len_texels": 3.0, "width_texels": 0.6,
+               "painted_mix": 0.4, "clump_w": 0.5, "amp": 0.045, "alb_amp": 0.04, "cav": 0.3, "seed": 44},
+    "par": {"rough_to": 0.7, "rough_w": 0.2}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [30, -120], "closeup": {"yaw": -120, "center": [0.55, 0.42], "zoom": 2.6}, "crop": [0.28, 0.6], "crop_set": "BodyB"}
+}

@@ -1,0 +1,26 @@
+{
+ "asset": "p032_00", "num": "032", "name": "Bidoof",
+ "notes": [
+  "Painted design: flat brown fur with a faint painted grain, a cream muzzle and belly stripe, dark-grey nose and paw pads, white incisors, red mouth.",
+  "So: short soft fur along the painted grain (gravity guess where the paint has no direction), slightly longer at island edges; nose and pads stay smooth leathery skin (painted grain only); teeth and mouth untouched.",
+  "Body shader 3436703351 is flocky-parametered but has no normal sampler: in game only _dif (strands, faint baked cavity) and _par (AO, roughness) load; Body_nor is cache-only."
+ ],
+ "sets": [{
+  "name": "Body", "mat": "Body", "dif": "Body_dif", "par": "Body_par", "nor": "Body_nor",
+  "in_game": {"dif": true, "par": true, "nor": false},
+  "bake_ao": 0.3,
+  "flows": {"fur": [0.0, -1.0, -0.45]},
+  "regions": [
+   {"id": "mouth", "include": [{"islands": [2, 4, 6]}], "treatment": "none"},
+   {"id": "teeth", "include": [{"islands": [17, 18]}], "treatment": "none", "par": {"rough_to": 0.35, "rough_w": 0.25}},
+   {"id": "nose_pads", "include": [{"islands": [11, 13, 15, 16]}], "treatment": "skin",
+    "params": {"source": "dif.L", "grain_sigma": 2.0, "amp": 0.012, "undulation": 0.2}},
+   {"id": "fur", "include": [{"islands": [3, 5, 7, 8, 9, 10, 12, 14]}], "treatment": "fur",
+    "params": {"stroke_source": "dif.L", "len_texels": 6.0, "width_texels": 0.55, "painted_mix": 0.45, "clump_texels": 4.0,
+               "amp": 0.06, "alb_amp": 0.032, "cav": 0.3, "edge": {"texels": 8, "len_mul": 1.4, "amp_mul": 0.7}},
+    "par": {"rough_to": 0.74, "rough_w": 0.25}}
+  ]
+ }],
+ "upscale_only": ["Eye_dif"],
+ "preview": {"yaws": [35, -140], "closeup": {"yaw": 35, "center": [0.55, 0.45], "zoom": 3.0}, "crop": [0.25, 0.75], "crop_set": "Body"}
+}
