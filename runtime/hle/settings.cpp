@@ -34,6 +34,7 @@ std::vector<std::string> g_exported;   // env vars this layer set (so a restart 
 fs::path P(const std::string& s) { return fs::u8path(s); }
 std::string path_str(const fs::path& p) { auto u = p.u8string(); return std::string(u.begin(), u.end()); }
 
+void write_file();
 void read_file() {
   g_kv.clear();
   if (g_path.empty()) return;
@@ -44,6 +45,21 @@ void read_file() {
     size_t eq = line.find('=');
     if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
     g_kv[line.substr(0, eq)] = line.substr(eq + 1);
+  }
+  // Migration (2026-11-13): the old "gfx_draw_distance" (env SNAP_DRAW_DISTANCE, 1..4 in the UI, moved LOD switches and cull together) became
+  // "gfx_lod_dist" (switches) plus "gfx_draw_dist" (cull only), both 1..8. Carry an old value over so it keeps the same look.
+  auto old = g_kv.find("gfx_draw_distance");
+  if (old != g_kv.end()) {
+    double v = std::atof(old->second.c_str());
+    if (v >= 1.0) {
+      if (v > 8.0) v = 8.0;
+      char b[32];
+      std::snprintf(b, sizeof b, "%.2f", v);
+      if (!g_kv.count("gfx_lod_dist")) g_kv["gfx_lod_dist"] = b;
+      if (!g_kv.count("gfx_draw_dist")) g_kv["gfx_draw_dist"] = b;
+    }
+    g_kv.erase(old);
+    write_file();
   }
 }
 
@@ -69,10 +85,17 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_shadow_res", "SNAP_SHADOW_RES"},     {"ssao_quality", "SNAP_SSAO_QUALITY"}, {"gfx_lighting", "SNAP_LIGHTING"},
     {"gfx_aa", "SNAP_AA"},                     {"gfx_sharpen", "SNAP_SHARPEN"},       {"gfx_upscaler", "SNAP_UPSCALER"},
     {"gfx_upscale_quality", "SNAP_UPSCALE_QUALITY"}, {"gfx_hdr", "SNAP_HDR"},        {"gfx_hdr_peak", "SNAP_HDR_PEAK"},
-    {"gfx_hdr_paper", "SNAP_HDR_PAPER"},       {"gfx_draw_distance", "SNAP_DRAW_DISTANCE"},   // gfx_fov removed (owner 2026-11-12): a saved value is ignored
+    {"gfx_hdr_paper", "SNAP_HDR_PAPER"},       {"gfx_draw_dist", "SNAP_DRAW_DIST"}, {"gfx_lod_dist", "SNAP_LOD_DIST"}, {"gfx_lod_force0", "SNAP_LOD_FORCE0"},   // gfx_fov removed (owner 2026-11-12): a saved value is ignored
     {"gfx_full_rate_anim", "SNAP_FULL_RATE_ANIM"}, {"gfx_ui_font", "SNAP_UI_FONT_SCALE"}, {"fast_boot", "SNAP_FAST_BOOT"},
     {"gfx_ssao_samples", "SNAP_SSAO_SAMPLES"}, {"gfx_ssao_hbao", "SNAP_SSAO_HBAO"},
-    {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"},
+    {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"},    {"neo_speed", "SNAP_NEO_SPEED"}, {"film", "SNAP_FILM"},
+    {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
+};
+
+// F1 post-process rows: key -> render pass names (comma list) the host switches off through SNAP_PASS_OFF.
+const struct { const char* key; const char* passes; } kPassKeys[] = {
+    {"gfx_pass_bloom", "BloomCreate,BloomDraw"}, {"gfx_pass_dof", "DOFBlurX,DOFBlurY,DOF"},
+    {"gfx_pass_grain", "FilmGrain"},            {"gfx_pass_aberration", "ChromaticAberration"},
 };
 
 float to_float(const std::string& s, float def) { return s.empty() ? def : (float)std::atof(s.c_str()); }
@@ -163,6 +186,11 @@ void apply(bool env) {
     if (v.empty() || v == "default") continue;
     set_env_if_unset(m.env, v);
   }
+  {   // post-process toggles: every gfx_pass_* key set to "off" adds its pass names to SNAP_PASS_OFF (host/mods/gamemods.cpp)
+    std::string off;
+    for (auto& m : kPassKeys) if (get(m.key, "") == "off") off += (off.empty() ? "" : ",") + std::string(m.passes);
+    set_env_if_unset("SNAP_PASS_OFF", off);
+  }
   std::string ws = get("win_size", "");   // "WxH": windowed client size (the remembered window.json size otherwise)
   int w = 0, h = 0;
   if (std::sscanf(ws.c_str(), "%dx%d", &w, &h) == 2 && w >= 320 && h >= 180) {
@@ -174,6 +202,7 @@ void apply(bool env) {
 const char* env_name(const std::string& key) {
   if (key == "look" || key == "look_intensity") return "SNAP_LOOK";
   if (key == "win_size") return "SNAP_WINDOW_W";
+  for (auto& m : kPassKeys) if (key == m.key) return "SNAP_PASS_OFF";
   for (auto& m : kEnvKeys) if (key == m.key) return m.env;
   return nullptr;
 }

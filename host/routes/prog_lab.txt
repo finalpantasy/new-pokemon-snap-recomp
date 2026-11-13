@@ -1,0 +1,8 @@
+# fixture: prog_lvl2_b
+# Progression probe (prog worker, 2026-11-13): title (any button passes it at ~p1100), hub Down to Lab (Research is the default entry), A, then
+# slow A taps through Rita's first-visit lab tour to reach the lab menu (album / Photodex / photo editing).
+# Run: powershell -File host\run_boot.ps1 -Route prog_lab -Timeout 595 -ShotAt 60 -ShotEvery 3 -ShotMax 190
+@f1100 8 Down
+@f1350 8 Down
+@f1500 8 A
+repeat @f1700 @f16000 90 8 A

@@ -83,6 +83,11 @@ class HostFile {
         return -1;
       }
       if (got == 0) break;
+      // [perf] pass 5: mark the filled pages written from user mode, so GetWriteWatch (dirty-page buffer sync, runtime\nvn\nvn_vk.cpp)
+      // reports them after the data is final. A test (perf pass 5, results.md) showed buffered reads are seen anyway but
+      // unbuffered/DMA reads racing a watch reset leave pages stale; an atomic OR with 0 per page changes no byte.
+      for (uintptr_t p = (uintptr_t)(b + done) & ~(uintptr_t)3, e = (uintptr_t)(b + done + got); p < e; p = (p | 4095) + 1)   // one aligned dword per page (same page as the buffer bytes)
+        InterlockedOr((volatile LONG*)p, 0);
       done += got;
 #else
       ssize_t got = pread(fd_, b + done, n - done, off + (off_t)done);
@@ -582,7 +587,7 @@ uint32_t Fs::open_file(FileId* out, const std::string& path, int mode) {
   uint64_t t = p_->token();
   p_->files[t] = of;
   *out = t;
-  if (trace_flags & kTraceFs) log("fs: open %s mode %d -> %s", path.c_str(), mode, from_path(host).c_str());
+  if (trace_flags & (kTraceFs | kTraceOpen)) log("fs: open %s mode %d -> %s (file %llu)", path.c_str(), mode, from_path(host).c_str(), (unsigned long long)t);
   return kSuccess;
 }
 
@@ -591,6 +596,7 @@ uint32_t Fs::close_file(FileId f) {
   auto it = p_->files.find(f);
   if (it == p_->files.end()) return kResultInvalidArgument;
   p_->files.erase(it);
+  if (trace_flags & kTraceFs) log("fs: close file %llu", (unsigned long long)f);
   return kSuccess;
 }
 
@@ -630,6 +636,7 @@ uint32_t Fs::write_file(FileId f, int64_t off, const void* buf, size_t n, bool f
   // The host grows it either way: the game only ever writes inside the size it created.
   if (n && !of->hf.write_at(off, buf, n)) return kResultUsableSpaceNotEnough;
   if (flush) of->hf.flush();
+  if (trace_flags & kTraceFs) log("fs: write file %llu off %lld n %zu", (unsigned long long)f, (long long)off, n);
   return kSuccess;
 }
 

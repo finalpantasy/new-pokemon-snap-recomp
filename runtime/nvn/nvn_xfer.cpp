@@ -353,6 +353,7 @@ void QueueShaderWriteback(ReplayCtx& cx, PoolImpl* pool, uint64_t off, uint64_t 
   for (auto& r : *cx.readbacks) if (r.kind == 3 && r.pool == pool && r.poolOff == off && r.size == size) return;
   Readback rb;
   rb.kind = 3; rb.pool = pool; rb.poolOff = off; rb.size = size;
+  pool->wbPool.store(true, std::memory_order_relaxed);   // [perf] keep this pool on full-range syncs (photo evaluation)
   rb.map = pool->mapped + off; rb.dst = static_cast<uint8_t*>(pool->storage) + off;
   rb.expect.assign(rb.dst, rb.dst + size);
   static const bool xl = getenv("NVN_XFER_LOG") != nullptr;
@@ -424,8 +425,7 @@ void FlushReadbacks(Host* h, bool wait) {
       uint64_t out[2] = {rb.counterType == 1 ? h->samplesTotal : 0, (uint64_t)((double)ticks * h->props.limits.timestampPeriod)};
       memcpy(rb.dst, out, 16);
     }
-    vkDestroyBuffer(h->device, rb.sb.buf, nullptr);
-    vkFreeMemory(h->device, rb.sb.mem, nullptr);
+    ReleaseScratch(h, rb.sb);   // [perf] recycled (SNAP_SCRATCH_POOL_MB=0: destroyed as before)
   }
   h->readbacks.erase(h->readbacks.begin(), h->readbacks.begin() + n);
 }

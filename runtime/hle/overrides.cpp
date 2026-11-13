@@ -48,6 +48,7 @@ void init_trace_from_env() {
   if (s.find("fs") != std::string::npos) trace_flags |= kTraceFs;
   if (s.find("hid") != std::string::npos) trace_flags |= kTraceHid;
   if (s.find("svc") != std::string::npos) trace_flags |= kTraceSvc;
+  if (s.find("open") != std::string::npos) trace_flags |= kTraceOpen;
 }
 
 OsHooks& os_hooks() {

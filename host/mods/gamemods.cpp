@@ -17,7 +17,13 @@
 //                                          Unset or auto: k = 2 when the game window's client height is 1440 or more, else 1 (off). 1 = off.
 //   SNAP_GM_TRACE=1                        logs the values the game had before the override (first 8 hits of each hook).
 //   SNAP_PASS_DUMP=1                       logs each distinct render pass object once (vtable, flags, strings) for pass identification.
-//   SNAP_PASS_OFF=name,name,...            disables post passes by name (see pass_name_matches below).
+//   SNAP_PASS_OFF=name,name,...            switches render passes off by name (case-insensitive, names as SNAP_PASS_DUMP prints them; the pass
+//                                          object keeps its enable byte at +0xf0 at zero, so the game never records it). Bloom: BloomCreate,BloomDraw;
+//                                          DOF: DOFBlurX,DOFBlurY,DOF; FilmGrain; ChromaticAberration; also SSAOCreate/BlurX/BlurY/Composite.
+//                                          Photo and evaluation passes are refused (see pass_class below); names not verified safe are refused too
+//                                          unless SNAP_PASS_FORCE=1 (test aid, never for the photo passes). A pass is NOT skipped when the game
+//                                          itself wants it off: only the byte is forced to 0, the game's own writes are not touched.
+//   SNAP_PASS_AB=<P>                       test aid: the passes named in SNAP_PASS_OFF are off only in even blocks of P presents (same-view A/B).
 //
 // Addresses (module offsets, build id DDB900FF...): analysis/mods/ and docs/mod-ideas.md rows 7 and 16.
 #include <windows.h>
@@ -45,6 +51,8 @@ int g_font_k;                   // 0 = off
 bool g_font_decided;
 float g_ao_radius, g_ao_strength;  // 0 = leave the game's value
 std::vector<std::string> g_pass_off;
+int g_pass_ab;
+bool g_pass_force;
 
 void init() {
     if (g_init_done) return;
@@ -63,6 +71,8 @@ void init() {
     if (const char* r = getenv("SNAP_SSAO_STRENGTH")) { float v = (float)atof(r); if (v > 0.0f && v <= 8.0f) g_ao_strength = v; }
     g_trace = getenv("SNAP_GM_TRACE") && getenv("SNAP_GM_TRACE")[0] != '0';
     g_pass_dump = getenv("SNAP_PASS_DUMP") && getenv("SNAP_PASS_DUMP")[0] != '0';
+    g_pass_ab = getenv("SNAP_PASS_AB") ? atoi(getenv("SNAP_PASS_AB")) : 0;
+    g_pass_force = getenv("SNAP_PASS_FORCE") && getenv("SNAP_PASS_FORCE")[0] == '1';
     if (const char* o = getenv("SNAP_PASS_OFF")) {
         std::string s = o, cur;
         for (char ch : s + ",") {
@@ -119,8 +129,45 @@ extern "C" void rt_gm_ao_hbao(Cpu* c) {
     }
 }
 
+namespace {
+extern "C" uint64_t snap_present_count();   // host/boot.cpp
+struct PassState { uint8_t* pass; int orig_on; int refused; int zeroed; int seen; int game_on; uint64_t uuid[2]; };   // uuid = pass+0x30: unique per pass object, so a freed and reused address starts fresh
+std::vector<PassState> g_pass_state;
+
+// Pass objects (class at vtable main+0xcc4058, 0xf8 bytes) hold their name as a libc++ std::string at +0x40 (short form: byte0 = len << 1, text at +1;
+// long form: size at +8, pointer at +16).
+std::string pass_name(const uint8_t* pass) {
+    const uint8_t* s = pass + 0x40;
+    const char* p;
+    size_t n;
+    if ((s[0] & 1) == 0) { n = s[0] >> 1; p = (const char*)s + 1; }
+    else {
+        n = *(const uint64_t*)(s + 8);
+        p = *(const char* const*)(s + 16);
+        if (n > 64 || !p || !readable(p, n)) return "";
+    }
+    if (n > 40) return "";
+    for (size_t i = 0; i < n; i++) if (p[i] < 0x20 || p[i] > 0x7e) return "";
+    return std::string(p, n);
+}
+// 0 = never (photo, evaluation, capture, UI path), 1 = verified safe, 2 = unverified. Input is the lower-case name.
+int pass_class(const std::string& n) {
+    static const char* never[] = {"eval", "photo", "capture", "thumb", "report", "resize", "final", "ui", "fade", "downsizetarget", "compositeblendbuffer"};
+    for (auto k : never) if (n.find(k) != std::string::npos) return 0;
+    static const char* safe[] = {"bloomcreate", "bloomdraw", "dofblurx", "dofblury", "dof", "filmgrain", "chromaticaberration"};
+    for (auto k : safe) if (n == k) return 1;
+    return 2;
+}
+const char* pass_class_text(const std::string& name) {
+    std::string low;
+    for (char ch : name) low.push_back((char)tolower((unsigned char)ch));
+    int c = pass_class(low);
+    return c == 0 ? "protected" : c == 1 ? "toggle" : "unverified";
+}
+}  // namespace
+
 // Pass loop (main+0x988fe0, entries of 32 bytes at [ctx+0x1b8, ctx+0x1c0)): at main+0x989048 x20 = the entry, [x20+8] = the pass object, whose
-// byte at +0xf0 is the enable flag the loop copies to +0xf1 and tests. See pass_toggle below for how names are matched.
+// byte at +0xf0 is the enable flag the loop copies to +0xf1 and tests. Names: pass_name (libc++ string at +0x40).
 extern "C" void rt_gm_pass(Cpu* c) {
     init();
     if (!g_pass_dump && g_pass_off.empty()) return;
@@ -128,30 +175,51 @@ extern "C" void rt_gm_pass(Cpu* c) {
     if (!ent || !readable(ent, 16)) return;
     uint8_t* pass = *(uint8_t**)(ent + 8);
     if (!pass || !readable(pass, 0x100)) return;
+    std::string name = pass_name(pass);
     if (g_pass_dump) {
         static std::vector<uint8_t*> seen;
-        for (auto p : seen) if (p == pass) goto toggled;
-        if (seen.size() < 256) {
+        bool known = false;
+        for (auto p : seen) if (p == pass) known = true;
+        if (!known && seen.size() < 256) {
             seen.push_back(pass);
             uint64_t vt = *(uint64_t*)pass;
-            trace("gamemods: pass %p vtable main+%#llx type[+0x5c]=%u on[+0xf0]=%u [+0x60]=%u", (void*)pass, (unsigned long long)(vt - kMainBase),
-                  *(uint32_t*)(pass + 0x5c), pass[0xf0], pass[0x60]);
-            // printable strings anywhere in the first 0x100 bytes, and one level down through pointers (libc++ short and long strings)
-            for (int off = 0; off < 0x100; off += 8) {
-                uint64_t q = *(uint64_t*)(pass + off);
-                char buf[48];
-                int n = 0;
-                const char* cand = nullptr;
-                if (off + 1 < 0x100 && (pass[off] & 1) == 0 && (pass[off] >> 1) > 2 && (pass[off] >> 1) < 23) cand = (const char*)(pass + off + 1);
-                else if (q > 0x10000 && q < 0x7fffffffffffull && readable((const void*)q, 16)) cand = (const char*)q;
-                if (!cand) continue;
-                while (n < 40 && cand[n] >= 0x20 && cand[n] < 0x7f) n++;
-                if (n >= 4) { memcpy(buf, cand, n); buf[n] = 0; trace("gamemods:   +%#x string \"%s\"", off, buf); }
-            }
+            trace("gamemods: pass %p name \"%s\" order[+0x5c]=%u on[+0xf0]=%u vtable main+%#llx class %s", (void*)pass, name.c_str(), *(uint32_t*)(pass + 0x5c),
+                  pass[0xf0], (unsigned long long)(vt - kMainBase), pass_class_text(name));
         }
     }
-toggled:
-    return;
+    if (g_pass_off.empty() || name.empty()) return;
+    std::string low;
+    for (char ch : name) low.push_back((char)tolower((unsigned char)ch));
+    bool listed = false;
+    for (auto& n : g_pass_off) if (n == low) listed = true;
+    if (!listed) return;
+    int cls = pass_class(low);
+    PassState* st = nullptr;
+    uint64_t uu[2];
+    memcpy(uu, pass + 0x30, 16);
+    for (size_t i = 0; i < g_pass_state.size(); i++) {
+        PassState& s = g_pass_state[i];
+        if (s.pass != pass) continue;
+        if (s.uuid[0] == uu[0] && s.uuid[1] == uu[1]) st = &s;
+        else { g_pass_state.erase(g_pass_state.begin() + i); i--; }   // the address was freed and reused by another pass object
+    }
+    if (!st) {
+        if (g_pass_state.size() >= 128) return;
+        g_pass_state.push_back({pass, 0, 0, 0, 0, 0, {uu[0], uu[1]}});
+        st = &g_pass_state.back();
+        if (cls == 0) { trace("gamemods: pass \"%s\" is a photo/evaluation pass: SNAP_PASS_OFF refused", name.c_str()); st->refused = 1; }
+        else if (cls == 2 && !g_pass_force) { trace("gamemods: pass \"%s\" is not verified safe to switch off: refused (SNAP_PASS_FORCE=1 overrides)", name.c_str()); st->refused = 1; }
+        else trace("gamemods: pass \"%s\" switched off%s", name.c_str(), g_pass_ab ? " (A/B)" : "");
+    }
+    if (st->refused) return;
+    bool off = !g_pass_ab || ((snap_present_count() / (uint64_t)g_pass_ab) & 1) == 0;
+    // The game may rewrite the byte (a scene turns the pass on or off): remember its last value unless we wrote the zero ourselves.
+    if (!st->zeroed || pass[0xf0]) st->orig_on = pass[0xf0];
+    st->seen++;
+    if (pass[0xf0]) st->game_on++;
+    if (g_trace && (st->seen == 1 || st->seen % 1800 == 0)) trace("gamemods: pass \"%s\" seen %d times, game had it on %d times", name.c_str(), st->seen, st->game_on);
+    if (off) { pass[0xf0] = 0; st->zeroed = 1; }
+    else { if (st->zeroed) pass[0xf0] = (uint8_t)st->orig_on; st->zeroed = 0; }
 }
 
 // ------------------------------------------------------------------------------------------------ sharper UI fonts (#29)

@@ -154,24 +154,77 @@ struct PoolImpl {
   std::vector<std::pair<uint64_t, uint64_t>> synced;
   // Fragment-shader SSBO writes into this CPU pool that are submitted but not yet copied back to guest memory (Readback kind 3).
   std::atomic<int> wbPending{0};
+  // SNAP_POOL_LOG=1: bytes of live buffers and textures placed in this pool (sub-allocation arenas), for the B1 null-pool triage
+  std::atomic<int64_t> subLive{0}, subPeak{0};
+  std::atomic<int> subCount{0};
+  // [perf] dirty-page sync (SyncPoolRangeOnce): 0 = not set up, 1 = GetWriteWatch tracks the storage, -1 = unusable (full copies).
+  int8_t ww = 0;
+  std::atomic<bool> wbPool{false};   // has fragment-shader write-backs (photo evaluation): always full copies, as before
   bool Cpu() const { return !(flags & MP_CPU_NO_ACCESS); }
 };
 bool EnsureBacking(PoolImpl* p);
+bool PoolAcctOn();                                   // SNAP_POOL_LOG=1 (nvn_gfx.cpp)
+void PoolAcct(PoolImpl* p, uint64_t va, int64_t bytes);   // +bytes when a buffer/texture is placed in p (va = p->va), -bytes at finalize; ignored if p is gone
+void PoolAcctDump(const char* why);                  // every pool of 1 MiB or more: size, live, peak, count
+// SNAP_ARENA_LOG=1 (nvn_gfx.cpp): the game's GPU arenas (allocator main+0x911fc0): which arena a buffer/texture sits in, per guest
+// call-site owner. ArenaAcct returns an owner slot (-1 = not in an arena / off); ArenaUnacct(slot, bytes) at finalize.
+bool ArenaAcctOn();
+int ArenaAcct(const PoolImpl* p, int64_t off, int64_t bytes, int kind);   // kind 0 = buffer, 1 = texture
+void ArenaUnacct(int slot, int64_t bytes, int born = -1);   // born = present count at creation (lifetime stats)
+void ArenaDump(const char* why);
+void ArenaPoolCheck();
+void OwnPoolRetire(PoolImpl* p);        // fallback buffer pool finalized: destroy it once the GPU is past it (nvn_gfx.cpp)
+void OwnPoolReap(struct QueueImpl* q);  // called at present under queueMutex: stamps / destroys retired fallback pools
 // Copy [off, off+size) of the guest storage into the Vulkan mirror (call before the GPU reads that range).
 void SyncPoolRange(PoolImpl* p, uint64_t off, uint64_t size);
 // Replay-time variant: copies a range at most once per SubmitLists (the guest is blocked inside the submit, so the CPU bytes cannot change
 // between two draws of the same list). Draws that bind the same big buffer range repeatedly used to copy it every time.
 void SyncPoolRangeOnce(PoolImpl* p, uint64_t off, uint64_t size);
 extern uint64_t g_replayEpoch;
+extern std::atomic<unsigned long> g_replayTid;   // OS thread id inside SubmitLists (0 = none); SNAP_RACE_LOG diagnostics
 void MarkGpuWritten(PoolImpl* p, uint64_t off, uint64_t size);   // the GPU writes this range from now on
 
-struct BufferImpl { PoolImpl* pool = nullptr; int64_t offset = 0; uint64_t size = 0; };
+// ownPool: the guest passed no memory pool (its GPU arena was full, crash B1) and the host gave the buffer private storage
+struct BufferImpl { PoolImpl* pool = nullptr; int64_t offset = 0; uint64_t size = 0; uint64_t acctVa = 0; bool ownPool = false; int arenaSlot = -1; int arenaBorn = 0; };
 struct SamplerImpl { Host* host = nullptr; VkSampler sampler = VK_NULL_HANDLE; SamplerBuilder b{}; };
-struct TexSlot { TextureImpl* tex = nullptr; TexView view{}; bool hasView = false; };
-struct TexPoolImpl { Host* host = nullptr; std::unordered_map<int, TexSlot> slots; };
-struct SampPoolImpl { Host* host = nullptr; std::unordered_map<int, SamplerImpl*> slots; };
+// seq is a sequence lock: odd while TexturePoolRegisterTexture rewrites the slot, so ResolveHandle (replay thread) always copies a
+// matching {tex, view} pair (re-registration of a live id during replay used to be able to pair the old texture with the new view).
+struct TexSlot { std::atomic<uint32_t> seq{0}; TextureImpl* tex = nullptr; TexView view{}; bool hasView = false; };
+// Descriptor table indexed by pool id (20-bit texture / 12-bit sampler handle fields). Loader threads register descriptors while the
+// render thread replays draws that read them (on the GPU these are independent descriptor words). An unordered_map here crashed
+// about 1.5% of runs: an insert rehashed the buckets under a concurrent find in ResolveHandle (host read of 0x10 inside
+// QueueSubmitCommands, guest main+0x904304). Chunks are allocated once and never move, so Find needs no lock.
+template <class T> struct SlotTable {
+  static constexpr unsigned kChunkBits = 10, kChunk = 1u << kChunkBits, kIds = 1u << 20, kChunks = kIds >> kChunkBits;
+  std::atomic<T*> chunks[kChunks] = {};
+  SlotTable() = default;
+  SlotTable(const SlotTable&) = delete;
+  SlotTable& operator=(const SlotTable&) = delete;
+  ~SlotTable() { for (auto& c : chunks) delete[] c.load(std::memory_order_relaxed); }
+  // nullptr when the id is out of range or its chunk was never written (= never registered)
+  T* Find(int id) const {
+    if ((unsigned)id >= kIds) return nullptr;
+    T* c = chunks[(unsigned)id >> kChunkBits].load(std::memory_order_acquire);
+    return c ? &c[(unsigned)id & (kChunk - 1)] : nullptr;
+  }
+  T* At(int id) {   // the slot for a write (allocates its chunk); nullptr when out of range
+    if ((unsigned)id >= kIds) return nullptr;
+    std::atomic<T*>& a = chunks[(unsigned)id >> kChunkBits];
+    T* c = a.load(std::memory_order_acquire);
+    if (!c) {
+      T* fresh = new T[kChunk]();
+      if (a.compare_exchange_strong(c, fresh, std::memory_order_acq_rel, std::memory_order_acquire)) c = fresh;
+      else delete[] fresh;   // another thread installed it first; c now holds that chunk
+    }
+    return &c[(unsigned)id & (kChunk - 1)];
+  }
+};
+struct TexPoolImpl { Host* host = nullptr; SlotTable<TexSlot> slots; };
+struct SampPoolImpl { Host* host = nullptr; SlotTable<SamplerImpl*> slots; };
 
 struct TextureImpl {
+  PoolImpl* acctPool = nullptr; uint64_t acctVa = 0; int64_t acctBytes = 0;   // SNAP_POOL_LOG accounting (PoolAcct)
+  int arenaSlot = -1; int64_t arenaBytes = 0;                                  // SNAP_ARENA_LOG accounting (ArenaAcct)
   int lastDrawPresent = -10; int drawStreak = 0;   // GetPipeline: consecutive presented frames this texture was drawn to (a pending pipeline may only be skipped for per-frame targets)
   Host* host = nullptr;
   TextureBuilder b{};
@@ -183,6 +236,7 @@ struct TextureImpl {
   float scale = 1.0f;
   uint32_t HW() const { return hostW ? hostW : (uint32_t)b.width; }
   uint32_t HH() const { return hostH ? hostH : (uint32_t)b.height; }
+  TextureImpl* abAlt = nullptr; bool abTried = false;   // SNAP_MODS_AB test aid: the original-texture twin of a replaced texture (see ResolveHandle)
   bool uploaded = false;   // contents defined (static data uploaded, copied to, or rendered to)
   uint64_t srcHash = 0, hashSeq = 0;   // CPU-written (linear) pool textures: hash of the guest bytes at the last upload, replay that checked it
   std::unordered_map<std::string, VkImageView> views;   // see TextureImpl::View
@@ -261,7 +315,10 @@ void ProgramDestroy(ProgramImpl* p);
 
 // ---- replay context (shared by nvn_vk.cpp and nvn_draw.cpp) -----------------------------------------------------
 struct DrawState;
-struct ScratchBuf { VkBuffer buf = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; };
+struct ScratchBuf {
+  VkBuffer buf = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE;
+  uint64_t cap = 0; uint32_t usage = 0; uint8_t* map = nullptr;   // [perf] recyclable when cap != 0 (NewScratch / ReleaseScratch)
+};
 // GPU -> guest memory transfer finished after a timeline value completes (CopyTextureToBuffer, ReportCounter).
 struct Readback {
   VkSemaphore sem = VK_NULL_HANDLE; uint64_t value = 0;
@@ -443,12 +500,23 @@ bool InLayout(const TextureImpl* t, VkImageLayout want, const SubRange& r);   //
 SubRange RtRange(const TextureImpl* t, const TexView* v);   // nvn_vk.cpp
 // Host-visible TRANSFER_SRC buffer owned by the replaying command buffer (freed when it retires). nvn_vk.cpp
 uint8_t* NewScratch(ReplayCtx& cx, uint64_t size, VkBuffer* buf, VkBufferUsageFlags extra = 0);
+void ReleaseScratch(Host* h, const ScratchBuf& sb);   // [perf] retire a scratch buffer: recycled by size class or destroyed
 // Texture storage layout of a builder (Maxwell block-linear sizes), nvn_tex_vk.cpp
 uint64_t TextureStorageSize(const TextureBuilder& b);
 uint32_t TextureLayerCount(const TextureBuilder& b);   // nvn_vk.cpp: array layers of the VkImage (cube = 6)
 // Uploads packaged/pool-resident static texture data (deswizzle, ASTC fallback) into the image; leaves it in
 // TRANSFER_DST. No-op when already defined. nvn_tex_vk.cpp
 void UploadStaticTexture(ReplayCtx& cx, TextureImpl* t);
+// [perf] upload prefetch (nvn_tex_vk.cpp, SNAP_UPLOAD_PREFETCH_MB=0 = off): deswizzle at TextureInitialize on worker threads
+void TexPrefetch(TextureImpl* t);
+void TexPrefetchForget(const TextureImpl* t);   // DestroyTexture
+void TexPrefetchPoolGone(const void* pool);     // DestroyPool
+// [perf] VkImage + memory for a builder at host size hw x hh (nvn_vk.cpp; TextureImpl::EnsureImage and the prefetch workers)
+struct TexImage { VkImage image = VK_NULL_HANDLE; VkDeviceMemory memory = VK_NULL_HANDLE; uint32_t levels = 1, layers = 1; VkImageCreateFlags flags = 0; };
+bool CreateTexImage(Host* host, const TextureBuilder& b, const FormatInfo* fi, uint32_t hw, uint32_t hh, TexImage& out);
+bool TexPrefetchTakeImage(TextureImpl* t);   // nvn_tex_vk.cpp: EnsureImage adopts a prefetch worker's image (SNAP_UPLOAD_PREFETCH_IMAGE=1 = on)
+void TexPrefetchShutdown();                  // Host::Shutdown: drop staged jobs (and their images) before the device goes
+void ScratchPoolDrain(Host* h);              // Host::Shutdown: destroy the recycled scratch buffers (nvn_vk.cpp)
 // NVN window-origin -> Vulkan viewport. NVN follows OpenGL clip control: NDC +y is up in both origin modes and window row
 // 0 is memory row 0 (the viewport and scissor y are rows from the window origin). Vulkan's NDC +y points down, so
 // UPPER_LEFT needs a negative-height viewport: NDC +1 lands on the first row of the viewport rectangle, which is the

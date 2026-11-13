@@ -39,6 +39,8 @@ static std::unordered_map<std::string, Thunk *> g_by_name;
 static std::vector<uint64_t> g_main_import_target;
 extern "C" volatile int g_fnprof;
 extern "C" void snap_fn_observe(uint64_t a, uint64_t lr, uint64_t x0);
+extern "C" void snap_skips_observe(uint64_t a, uint64_t lr, uint64_t x0);
+extern "C" void snap_neo_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void loader_init_hit(uint64_t a);
 static thread_local GuestThread *g_cur = nullptr;
 thread_local Cpu *loader::g_tls_cpu = nullptr;   // the Cpu of the last host call on this thread (crash reports)
@@ -473,6 +475,9 @@ namespace loader {
 // runtime/os, whose stacks come from the guest) within 64 MB above the current sp.
 static bool fp_ok(Cpu *c, uint64_t fp) {
     if (fp & 7) return false;
+    // a thread that has not run guest code yet has sp = 0 and fp = 0: the stall watchdog's thread dump read [0+8] and crashed
+    // (2026-11-12/13, 6 runs, "CRASH on guest thread type 0" right after a STALL dump)
+    if (fp < 0x10000 || c->sp < 0x10000) return false;
     if (g_cur) return fp >= g_cur->stack_lo && fp + 16 <= g_cur->stack_hi;
     return fp >= c->sp && fp - c->sp < (64ull << 20);
 }
@@ -483,6 +488,7 @@ std::vector<std::string> guest_chain(Cpu *c, uint64_t pc, int depth) {
     uint64_t fp = c->x[29];
     for (int i = 0; i < depth; i++) {
         if (!fp_ok(c, fp)) break;
+        if (IsBadReadPtr((void *)fp, 16)) break;   // another thread's stack read by the stall dump can be gone (thread exited)
         uint64_t lr = ((uint64_t *)fp)[1], next = ((uint64_t *)fp)[0];
         if (lr == 0 || lr == HOST_SENTINEL) { out.push_back(lr ? "host:sentinel" : "(end)"); break; }
         out.push_back(symbolize(lr));
@@ -621,6 +627,8 @@ void loader_enable_fntrace() {
 void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
     loader_init_hit(a);
     snap_fn_observe(a, lr, x0);   // host/mods/lodanim.cpp (SNAP_TRACE_LOD); returns at once when unused
+    snap_skips_observe(a, lr, x0);   // host/mods/skips.cpp (SNAP_SKIPS_REC)
+    snap_neo_observe(a, lr, x0);   // host/mods/neofilm.cpp (dev tracer SNAP_NEO_CAMFN)
     for (int i = 0; i < g_fntrace_n; i++)
         if (g_fntrace[i] == a) { loader::trace("fn %#llx entered from %s x0=%#llx", (unsigned long long)a, loader::symbolize(lr).c_str(), (unsigned long long)x0); return; }
 }

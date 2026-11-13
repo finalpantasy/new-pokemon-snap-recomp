@@ -1,0 +1,37 @@
+# fixture: prog_lvl2_b
+# Progression (prog worker, 2026-11-13): Florio ride as florio_eval (A taps, ZL scans, stick drift), ONE photo-select cycle (Right, A, A, B twice, Plus,
+# Up, A) at f12000, then A taps every 80 presents through the evaluation dialogue, the Retry Menu (first entry = Save Photos to Album), the info
+# dialog and the album grid to the photo viewer; at f16100 Right + A press Re-snap in the viewer, then probes inside Re-snap.
+# Run: powershell -File host\run_boot.ps1 -Route prog_resnap -Timeout 595 -ShotAt 250 -ShotEvery 3 -ShotMax 115
+repeat @f300 @f12000 120 8 A
+repeat @f6000 @f12000 24 4 A
+repeat @f6000 @f11000 600 200 ZL
+repeat @f6000 @f11000 400 60 rx=0.25
+repeat @f6200 @f11000 400 60 rx=-0.25
+@f12000 10 Right
+@f12100 10 A
+@f12200 10 A
+@f12300 10 B
+@f12400 10 Right
+@f12500 10 A
+@f12600 10 A
+@f12700 10 B
+@f12800 10 Plus
+@f12880 10 Up
+@f12960 10 A
+repeat @f13040 @f16000 80 8 A
+@f16100 8 Right
+@f16160 8 A
+@f16400 40 rx=0.5
+@f16500 40 ry=0.5
+@f16600 60 ZR
+@f16750 8 A
+@f17000 8 A
+@f17250 8 B
+@f17500 8 Left
+@f17600 8 A
+@f17800 8 B
+@f18000 8 Plus
+@f18150 8 A
+@f18350 8 A
+@f18600 8 A

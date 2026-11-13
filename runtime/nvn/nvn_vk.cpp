@@ -365,6 +365,7 @@ void Host::Shutdown() {
   if (device) vkDeviceWaitIdle(device);
   if (device) UpscaleDestroy(this);   // [upscale]
   if (device) DestroyHostExtras(this);
+  if (device) { TexPrefetchShutdown(); ScratchPoolDrain(this); }   // [perf] staged prefetch images, recycled scratch buffers
   if (pipelineCache) vkDestroyPipelineCache(device, pipelineCache, nullptr);
   if (device) vkDestroyDevice(device, nullptr);
   if (messenger) {
@@ -386,8 +387,24 @@ uint32_t TextureLayerCount(const TextureBuilder& b) {
 }
 bool TextureImpl::EnsureImage() {
   if (image) return true;
+  snap_perf::Scope perfScope(snap_perf::C_ENSUREIMG);   // [perf] replay sub-scope
   if (!fi) fi = LookupFormat(b.format);
   if (!fi) { LogError("texture format 0x%x not mapped", b.format); return false; }
+  if (TexPrefetchTakeImage(this)) return true;   // [perf] created ahead by a prefetch worker
+  TexImage ti;
+  if (!CreateTexImage(host, b, fi, HW(), HH(), ti)) return false;
+  image = ti.image; memory = ti.memory;
+  layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  subLayout.clear();
+  imgLevels = ti.levels; imgLayers = ti.layers; ci_flags = ti.flags;
+  return true;
+}
+
+// [perf] The VkImage + dedicated memory of a texture, from its builder and host size alone (no TextureImpl state), so the upload
+// prefetch workers can create it ahead of the replay (nvn_tex_vk.cpp TexPrefetch). Thread-safe: device-level create calls only.
+bool CreateTexImage(Host* host, const TextureBuilder& b, const FormatInfo* fi, uint32_t hw, uint32_t hh, TexImage& out) {
+  VkImage image = VK_NULL_HANDLE;
+  VkDeviceMemory memory = VK_NULL_HANDLE;
   VkFormatProperties fp{};
   vkGetPhysicalDeviceFormatProperties(host->phys, fi->vk, &fp);
   const auto feat = fp.optimalTilingFeatures;
@@ -410,19 +427,19 @@ bool TextureImpl::EnsureImage() {
   ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   switch (b.target) {
     case TT_2D: case TT_RECTANGLE: case TT_2D_MULTISAMPLE:
-      ci.imageType = VK_IMAGE_TYPE_2D; ci.extent = {HW(), HH(), 1}; break;
+      ci.imageType = VK_IMAGE_TYPE_2D; ci.extent = {hw, hh, 1}; break;
     case TT_1D:
       ci.imageType = VK_IMAGE_TYPE_1D; ci.extent = {(uint32_t)b.width, 1, 1}; break;
     case TT_1D_ARRAY:
       ci.imageType = VK_IMAGE_TYPE_1D; ci.extent = {(uint32_t)b.width, 1, 1};
       ci.arrayLayers = (uint32_t)std::max(b.depth, 1); break;
     case TT_2D_ARRAY:
-      ci.imageType = VK_IMAGE_TYPE_2D; ci.extent = {HW(), HH(), 1};
+      ci.imageType = VK_IMAGE_TYPE_2D; ci.extent = {hw, hh, 1};
       ci.arrayLayers = (uint32_t)std::max(b.depth, 1);
       if (ci.arrayLayers >= 6 && ci.extent.width == ci.extent.height) ci.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;   // a shader may declare a cube
       break;
     case TT_CUBEMAP: case TT_CUBEMAP_ARRAY:
-      ci.imageType = VK_IMAGE_TYPE_2D; ci.extent = {HW(), HH(), 1};
+      ci.imageType = VK_IMAGE_TYPE_2D; ci.extent = {hw, hh, 1};
       ci.arrayLayers = TextureLayerCount(b); ci.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT; break;
     case TT_3D:
       ci.imageType = VK_IMAGE_TYPE_3D; ci.extent = {(uint32_t)b.width, (uint32_t)b.height, (uint32_t)std::max(b.depth, 1)}; break;
@@ -442,9 +459,8 @@ bool TextureImpl::EnsureImage() {
     LogError("image memory allocation failed"); vkDestroyImage(host->device, image, nullptr); image = VK_NULL_HANDLE; return false;
   }
   vkBindImageMemory(host->device, image, memory, 0);
-  layout = VK_IMAGE_LAYOUT_UNDEFINED;
-  subLayout.clear();
-  imgLevels = ci.mipLevels; imgLayers = ci.arrayLayers; ci_flags = ci.flags;
+  out.image = image; out.memory = memory;
+  out.levels = ci.mipLevels; out.layers = ci.arrayLayers; out.flags = ci.flags;
   return true;
 }
 
@@ -485,6 +501,7 @@ SubRange RtRange(const TextureImpl* t, const TexView* v) {
 // low byte 1 = 1D, 3 = 2D, 4 = 3D, 5 = cube, bit 8 = array) makes the view match what the shader declares.
 VkImageView TextureImpl::View(const TexView* v, bool sampled, int shaderType, const SubRange* range) {
   if (!EnsureImage()) return VK_NULL_HANDLE;
+  snap_perf::Scope perfScope(snap_perf::C_VIEW);   // [perf] replay sub-scope (key build + lookup + create on a miss)
   TexView z{};
   if (!v) v = &z;
   const FormatInfo* vf = fi;
@@ -531,8 +548,14 @@ VkImageView TextureImpl::View(const TexView* v, bool sampled, int shaderType, co
   VkImageAspectFlags asp = vf->aspect;
   if (sampled && (asp & VK_IMAGE_ASPECT_DEPTH_BIT) && (asp & VK_IMAGE_ASPECT_STENCIL_BIT))
     asp = ((v->flags & 0x10) && v->dsMode == 1) ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
-  char key[64];
-  snprintf(key, sizeof key, "%d.%d.%u.%u.%u.%u.%u.%u.%d", (int)vt, (int)vf->vk, (unsigned)asp, r.lb, r.ln, r.yb, r.yn, sampled ? 1 : 0, 0);
+  // [perf] binary key (snprintf was most of this function's cost; called per sampled texture per draw). The 0x01 lead byte keeps it
+  // apart from RenderView's text keys ("R...") in the shared map.
+  // 15 bytes so it stays in the string's small buffer (no heap allocation per lookup).
+  char kb[15];
+  kb[0] = 1; kb[1] = (char)((sampled ? 0x80 : 0) | ((unsigned)vt & 0x7f)); kb[2] = (char)(uint8_t)asp;
+  const uint32_t vkf = (uint32_t)vf->vk; memcpy(kb + 3, &vkf, 4);
+  const uint16_t lv[4] = {(uint16_t)r.lb, (uint16_t)r.ln, (uint16_t)r.yb, (uint16_t)r.yn}; memcpy(kb + 7, lv, 8);
+  const std::string key(kb, sizeof kb);
   auto it = views.find(key);
   if (it != views.end()) return it->second;
   VkImageViewCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -547,6 +570,7 @@ VkImageView TextureImpl::View(const TexView* v, bool sampled, int shaderType, co
 }
 VkImageView TextureImpl::RenderView(const TexView* v, SubRange* out) {
   if (!EnsureImage()) return VK_NULL_HANDLE;
+  snap_perf::Scope perfScope(snap_perf::C_VIEW);   // [perf] replay sub-scope
   SubRange r = RtRange(this, v);
   if (out) *out = r;
   const VkImageViewType vt = r.yn > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
@@ -565,6 +589,7 @@ VkImageView TextureImpl::RenderView(const TexView* v, SubRange* out) {
 
 void DestroyTexture(TextureImpl* t) {
   if (!t) return;
+  TexPrefetchForget(t);   // [perf] a prefetch job may be reading its guest data
   UpscaleForgetTexture(t);   // [upscale]
   if (t->bcShadow) { DestroyTexture(t->bcShadow); t->bcShadow = nullptr; }
   if (t->xferShadow) { DestroyTexture(t->xferShadow); t->xferShadow = nullptr; }
@@ -664,6 +689,80 @@ void SyncPoolRange(PoolImpl* p, uint64_t off, uint64_t size) {
   }
 }
 uint64_t g_replayEpoch = 1;
+std::atomic<unsigned long> g_replayTid{0};
+// [perf] Dirty-page sync (perf pass 4, pass2_design.md item 3). Guest memory is reserved with MEM_WRITE_WATCH
+// (runtime/os/os_memory.cpp), so GetWriteWatch(RESET) over [off, end) returns exactly the pages written since the last query
+// and clears them in the same call: a write that lands after the query is reported by the next one. Only those whole pages
+// (minus GPU-owned ranges) are copied into the mirror. The first use of a pool resets the whole storage and copies all of it.
+// Pools whose storage is not page aligned or not in a watched reservation, and pools with fragment-shader write-backs (photo
+// evaluation), keep full copies. SNAP_SYNC_FULL=1 restores full copies everywhere (also drops the reserve flag).
+static bool WriteWatchOn() {
+  static const bool on = [] {
+    const char *a = getenv("SNAP_SYNC_FULL"), *b = getenv("SNAP_WRITE_WATCH");
+    return !((a && *a == '1') || (b && *b == '0'));
+  }();
+  return on;
+}
+// Under p->gpuMutex. Copies [b, e) of the storage into the mirror, skipping GPU-owned ranges. Returns the bytes copied.
+static uint64_t CopySkippingGpu(PoolImpl* p, uint64_t b, uint64_t e) {
+  uint64_t pos = b, copied = 0;
+  while (pos < e) {
+    uint64_t next = e;
+    bool skip = false;
+    for (auto& r : p->gpuRanges) {
+      if (r.second <= pos || r.first >= e) continue;
+      if (r.first <= pos) { pos = std::max(pos, std::min(r.second, e)); skip = true; break; }
+      next = std::min(next, r.first);
+    }
+    if (skip) continue;
+    memcpy(p->mapped + pos, static_cast<uint8_t*>(p->storage) + pos, (size_t)(next - pos));
+    copied += next - pos;
+    pos = next;
+  }
+  return copied;
+}
+// Returns false when write watch cannot be used for this pool (the caller falls back to a full copy).
+static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
+  if (!p->Cpu() || !p->storage) return true;
+  if (!p->buffer && !EnsureBacking(p)) return true;
+  if (!p->mapped) return true;
+  snap_perf::Scope perfScope(snap_perf::C_POOLSYNC);
+  snap_perf::count(snap_perf::V_POOLSYNC_CALLS);
+  static thread_local std::vector<PVOID> addrs;
+  const uintptr_t base = (uintptr_t)p->storage;
+  std::lock_guard<std::mutex> lk(p->gpuMutex);
+  if (p->ww < 0) return false;
+  if (p->ww == 0) {
+    if ((base & 0xFFF) || (p->size & 0xFFF)) { p->ww = -1; return false; }
+    ULONG_PTR n = (ULONG_PTR)(p->size >> 12); DWORD gran = 0;
+    addrs.resize((size_t)std::max<ULONG_PTR>(n, 1));
+    if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, p->storage, (SIZE_T)p->size, addrs.data(), &n, &gran) != 0) {
+      p->ww = -1;
+      static int warned = 0;
+      if (warned++ < 8) Log("pool %p (0x%llx bytes): no write watch on its storage (error %lu), full copies", (void*)p, (unsigned long long)p->size, GetLastError());
+      return false;
+    }
+    p->ww = 1;
+    snap_perf::count(snap_perf::V_POOLSYNC_BYTES, CopySkippingGpu(p, 0, p->size));   // mirror == storage as of the reset
+    return true;
+  }
+  const uint64_t pb = off & ~0xFFFull, pe = std::min<uint64_t>((end + 0xFFF) & ~0xFFFull, p->size);
+  ULONG_PTR n = (ULONG_PTR)((pe - pb) >> 12); DWORD gran = 0;
+  if (!n) return true;
+  addrs.resize((size_t)n);
+  if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, (uint8_t*)p->storage + pb, (SIZE_T)(pe - pb), addrs.data(), &n, &gran) != 0) { p->ww = -1; return false; }
+  uint64_t copied = 0;
+  for (ULONG_PTR i = 0; i < n;) {   // addresses come back in ascending order: coalesce runs of adjacent pages
+    const uint64_t rb = (uint64_t)((uintptr_t)addrs[i] - base);
+    uint64_t re = rb + 0x1000;
+    ULONG_PTR j = i + 1;
+    while (j < n && (uint64_t)((uintptr_t)addrs[j] - base) == re) { re += 0x1000; j++; }
+    copied += CopySkippingGpu(p, rb, std::min<uint64_t>(re, p->size));
+    i = j;
+  }
+  snap_perf::count(snap_perf::V_POOLSYNC_BYTES, copied);
+  return true;
+}
 void SyncPoolRangeOnce(PoolImpl* p, uint64_t off, uint64_t size) {
   if (!p || off >= p->size) return;
   const uint64_t end = std::min<uint64_t>(off + size, p->size);
@@ -672,7 +771,7 @@ void SyncPoolRangeOnce(PoolImpl* p, uint64_t off, uint64_t size) {
     if (p->syncEpoch != g_replayEpoch) { p->synced.clear(); p->syncEpoch = g_replayEpoch; }
     for (auto& r : p->synced) if (r.first <= off && end <= r.second) return;
   }
-  SyncPoolRange(p, off, size);
+  if (!(WriteWatchOn() && !p->wbPool.load(std::memory_order_relaxed) && SyncDirtyPages(p, off, end))) SyncPoolRange(p, off, size);
   std::lock_guard<std::mutex> lk(p->gpuMutex);
   if (p->syncEpoch != g_replayEpoch) { p->synced.clear(); p->syncEpoch = g_replayEpoch; }
   if (p->synced.size() >= 64) p->synced.clear();
@@ -704,6 +803,7 @@ void MarkGpuWritten(PoolImpl* p, uint64_t off, uint64_t size) {
 }
 void DestroyPool(PoolImpl* p) {
   if (!p) return;
+  TexPrefetchPoolGone(p);   // [perf] no prefetch job may read the storage after this
   if (p->host) p->host->UnregisterPool(p);
   if (p->host && p->host->device) {
     if (p->mapped) vkUnmapMemory(p->host->device, p->memory);
@@ -764,7 +864,7 @@ void QueueImpl::Reap(bool wait_all) {
     if (r.value <= done) {
       freeCbs.push_back(r.cb); delete r.list;
       for (auto dp : r.pools) { vkResetDescriptorPool(host->device, dp, 0); freePools.push_back(dp); }
-      for (auto& sb : r.scratch) { vkDestroyBuffer(host->device, sb.buf, nullptr); vkFreeMemory(host->device, sb.mem, nullptr); }
+      for (auto& sb : r.scratch) ReleaseScratch(host, sb);   // [perf] recycled (or destroyed as before)
     }
     else inflight[keep++] = r;
   }
@@ -781,12 +881,49 @@ static VkAccessFlags2 AccessFor(VkImageLayout l) {
   }
 }
 
+// [perf] Scratch recycling (perf pass 4): a retired scratch buffer goes back to a free list by (power-of-two size class, usage)
+// instead of vkDestroyBuffer + vkFreeMemory, and NewScratch takes one from there before allocating (vkAllocateMemory was about
+// 0.2 ms each, 2 per course frame and one per texture in upload bursts). Classes from 64 KB to 32 MB; the free list holds at
+// most SNAP_SCRATCH_POOL_MB (default 128). SNAP_SCRATCH_POOL_MB=0 restores exact-size buffers that are freed on retire.
+static uint64_t ScratchPoolCap() {   // MB from the env, clamped to 0..4096 (a negative or garbage value used to wrap to "unlimited")
+  static const uint64_t cap = [] { const char* e = getenv("SNAP_SCRATCH_POOL_MB"); long v = e && *e ? strtol(e, nullptr, 10) : 128; return (uint64_t)std::clamp(v, 0L, 4096L) << 20; }();
+  return cap;
+}
+static std::mutex g_scratchMu;
+static std::vector<ScratchBuf> g_scratchFree;
+static uint64_t g_scratchFreeBytes = 0;
+void ScratchPoolDrain(Host* h) {   // Host::Shutdown, before vkDestroyDevice
+  std::lock_guard<std::mutex> lk(g_scratchMu);
+  for (auto& sb : g_scratchFree) { vkDestroyBuffer(h->device, sb.buf, nullptr); vkFreeMemory(h->device, sb.mem, nullptr); }
+  g_scratchFree.clear(); g_scratchFreeBytes = 0;
+}
+void ReleaseScratch(Host* h, const ScratchBuf& sb) {
+  if (sb.cap && ScratchPoolCap()) {
+    std::lock_guard<std::mutex> lk(g_scratchMu);
+    if (g_scratchFreeBytes + sb.cap <= ScratchPoolCap()) { g_scratchFree.push_back(sb); g_scratchFreeBytes += sb.cap; return; }
+  }
+  vkDestroyBuffer(h->device, sb.buf, nullptr); vkFreeMemory(h->device, sb.mem, nullptr);
+}
 uint8_t* NewScratch(ReplayCtx& cx, uint64_t size, VkBuffer* out, VkBufferUsageFlags extra) {
   Host* h = cx.h;
   snap_perf::Scope perfScope(snap_perf::C_SCRATCH); snap_perf::count(snap_perf::V_SCRATCH_ALLOCS);
   VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   bi.size = std::max<uint64_t>(size, 16); bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | extra;
   ScratchBuf sb;
+  if (ScratchPoolCap() && bi.size <= (32ull << 20)) {   // [perf] recycled size class
+    uint64_t cls = 64ull << 10;
+    while (cls < bi.size) cls <<= 1;
+    {
+      std::lock_guard<std::mutex> lk(g_scratchMu);
+      for (size_t i = 0; i < g_scratchFree.size(); i++) {
+        if (g_scratchFree[i].cap != cls || g_scratchFree[i].usage != (uint32_t)bi.usage) continue;
+        sb = g_scratchFree[i]; g_scratchFree[i] = g_scratchFree.back(); g_scratchFree.pop_back(); g_scratchFreeBytes -= cls;
+        break;
+      }
+    }
+    if (sb.buf) { cx.scratch->push_back(sb); *out = sb.buf; return sb.map; }
+    bi.size = cls; sb.cap = cls; sb.usage = (uint32_t)bi.usage;
+  }
   if (vkCreateBuffer(h->device, &bi, nullptr, &sb.buf) != VK_SUCCESS) return nullptr;
   VkMemoryRequirements mr; vkGetBufferMemoryRequirements(h->device, sb.buf, &mr);
   VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -798,6 +935,7 @@ uint8_t* NewScratch(ReplayCtx& cx, uint64_t size, VkBuffer* out, VkBufferUsageFl
   (void)fl;
   vkBindBufferMemory(h->device, sb.buf, sb.mem, 0);
   vkMapMemory(h->device, sb.mem, 0, VK_WHOLE_SIZE, 0, &map);
+  sb.map = (uint8_t*)map;
   cx.scratch->push_back(sb);
   *out = sb.buf;
   return (uint8_t*)map;
@@ -1036,6 +1174,7 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
   Host* h = q->host;
   std::lock_guard<std::mutex> lk(h->queueMutex);
   g_replayEpoch++;
+  struct TidScope { TidScope() { g_replayTid.store(GetCurrentThreadId(), std::memory_order_relaxed); } ~TidScope() { g_replayTid.store(0, std::memory_order_relaxed); } } tidScope;
   q->Reap(false);
   UpscaleBeforeSubmit(n, lists);   // [upscale] photo frames
   std::vector<VkCommandBufferSubmitInfo> infos;
@@ -1262,8 +1401,16 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   if (!src->EnsureImage()) return false;
   struct PerfFrame { QueueImpl* q; ~PerfFrame() { if (snap_perf::on) PerfFrameMark(q, (uint64_t)g_presentCount); } } perfFrame{q};   // one CSV row per present (SNAP_PERF)
   { snap_perf::Scope perfScope(snap_perf::C_PACE); Pace(w); }
+  // Test switch (off by default): SNAP_STRESS_PRESENT_MS=<ms>[:<from>:<to>] sleeps that long per present (only for presents from..to
+  // if given), like the very slow runs (4-7 presents/s) in which crash B1 (GPU arena 7 full) happened.
+  {
+    static int ms = 0, from = 0, to = 0x7fffffff;
+    static const bool on = [] { const char* e = getenv("SNAP_STRESS_PRESENT_MS"); if (e) sscanf(e, "%d:%d:%d", &ms, &from, &to); return ms > 0; }();
+    if (on && g_presentCount >= from && g_presentCount <= to) Sleep((DWORD)ms);
+  }
   std::lock_guard<std::mutex> lk(h->queueMutex);
   q->Reap(false);
+  OwnPoolReap(q);   // fallback buffer pools retired by BufferFinalize (B1 safety net)
   g_presentCount++;
   UpscaleOnPresent();   // [upscale]
   if (g_hooks.on_present) g_hooks.on_present(g_hooks.user, slot, src->b.width, src->b.height);

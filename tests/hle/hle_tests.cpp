@@ -1168,9 +1168,33 @@ static void test_services() {
   uint8_t rule[0x4000], out_cal[8] = {}, info[24] = {};
   call("_ZN2nn4time16LoadTimeZoneRuleEPNS0_12TimeZoneRuleERKNS0_12LocationNameE", {P(rule), P("UTC")});
   call("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE", {P(out_cal), P(info), P(&posix), P(rule)});
+  // zone pinned explicitly: forced UTC first, then a fixed DST zone through TZ (the CRT rule set, same path as the Windows zone)
+  _putenv_s("SNAP_TIME_ZONE", "utc");
+  call("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE", {P(out_cal), P(info), P(&posix), P(rule)});
   CHECK(std::memcmp(cal, out_cal, 7) == 0);
   CHECK_EQ(load<int32_t>(info), 5);  // Friday
   CHECK_EQ(load<int32_t>(info + 4), 60);  // day of year (0-based)
+  CHECK_EQ(load<int32_t>(info + 20), 0);
+  _putenv_s("SNAP_TIME_ZONE", "");
+  _putenv_s("TZ", "EST5EDT");
+  _tzset();
+  call("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE", {P(out_cal), P(info), P(&posix), P(rule)});
+  CHECK_EQ(out_cal[4], 7); CHECK_EQ(out_cal[5], 34); CHECK_EQ(out_cal[6], 56);  // 12:34:56 UTC = 07:34:56 EST
+  CHECK_EQ(out_cal[3], 1);
+  CHECK_EQ(load<int32_t>(info + 20), -18000);
+  CHECK_EQ(info[16], 0);
+  CHECK(std::memcmp(info + 8, "EST", 3) == 0);
+  posix = 1719835200;  // 2024-07-01 12:00:00 UTC, daylight time
+  call("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE", {P(out_cal), P(info), P(&posix), P(rule)});
+  CHECK_EQ(out_cal[4], 8); CHECK_EQ(out_cal[3], 1);
+  CHECK_EQ(load<int32_t>(info + 20), -14400);
+  CHECK_EQ(info[16], 1);
+  posix = 1709296496 - 6 * 3600;  // 2024-03-01 06:34:56 UTC = 01:34:56 EST: the local date can differ from UTC
+  posix = 1709251200 + 3600;      // 2024-03-01 01:00:00 UTC = 2024-02-29 20:00:00 EST
+  call("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE", {P(out_cal), P(info), P(&posix), P(rule)});
+  CHECK_EQ(out_cal[2], 2); CHECK_EQ(out_cal[3], 29); CHECK_EQ(out_cal[4], 20);
+  _putenv_s("TZ", "");
+  _tzset();
 
   // album PNG
   config().screenshot_dir = (g_tmp / "shots").string();
@@ -1188,6 +1212,12 @@ static void test_services() {
   CHECK(call("_ZN2nn6socket6SocketEiii", {2, 1, 0}) == (uint64_t)-1);
   CHECK_EQ(call("_ZN2nn6socket12GetLastErrnoEv"), 50u);  // ENETDOWN
   CHECK_EQ(call("_ZN2nn4nifm18IsNetworkAvailableEv") & 1, 0u);
+  // the game branches on these returns (main+0x53201c: nifm::Initialize Result, main+0x537a00: HandleNetworkRequestErrorResult bool);
+  // a stale x0 from the caller must never leak out, or the offline LenTalk / auto-upload task retries or errors out at random
+  CHECK_EQ(call("_ZN2nn4nifm10InitializeEv", {0x1234567890ull}), 0u);
+  CHECK_EQ(call("_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", {0x1234567891ull}) & 1, 0u);
+  CHECK_EQ(call("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv") & 0, 0u);
+  CHECK_EQ(call("_ZN2nn6socket10InitializeERKNS0_6ConfigE", {0x1234567891ull}), 0u);
   CHECK_EQ(call("_ZN2nn6socket9InetHtonlEj", {0x01020304}), 0x04030201u);
   char ip[16] = {};
   CHECK_EQ(call("_ZN2nn6socket8InetNtopEiPKvPcj", {2, P("\x7f\x00\x00\x01"), P(ip), 16}), P(ip));
@@ -1471,6 +1501,10 @@ static void test_padfx() {
   _putenv_s("SNAP_SSAO_QUALITY", "");
   settings::set_bool("gyro_on", false);
   settings::set_float("gyro_sens", 1.0f);
+  // migration: an old gfx_draw_distance (LOD + cull together) becomes gfx_lod_dist + gfx_draw_dist, clamped to 8; a value already set is kept
+  { std::ofstream o(f, std::ios::trunc); o << "gfx_draw_distance=12\ngfx_lod_dist=3.00\n"; }
+  settings::use_path_for_test(f);
+  CHECK(!settings::has("gfx_draw_distance") && settings::get("gfx_draw_dist") == "8.00" && settings::get("gfx_lod_dist") == "3.00");
   stdfs::remove(f);
 }
 

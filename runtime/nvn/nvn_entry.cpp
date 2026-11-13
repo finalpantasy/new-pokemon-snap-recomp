@@ -256,11 +256,24 @@ Boolean TextureInitialize(void* tex, const void* b) {
       t->hostH = (uint32_t)std::max(1.0f, std::ceil(tb->height * t->scale));
     }
   }
+  if (PoolAcctOn()) if (auto* pp = Impl<PoolImpl>(tb->pool, MAGIC_POOL)) {
+    t->acctPool = pp; t->acctVa = pp->va; t->acctBytes = (int64_t)TextureStorageSize(*tb);
+    PoolAcct(pp, pp->va, t->acctBytes);
+  }
+  if (ArenaAcctOn()) if (auto* pp = Impl<PoolImpl>(tb->pool, MAGIC_POOL)) {
+    t->arenaBytes = (int64_t)TextureStorageSize(*tb);
+    t->arenaSlot = ArenaAcct(pp, tb->poolOffset, t->arenaBytes, 1);
+  }
   Bind(tex, MAGIC_TEXTURE, t);
+  TexPrefetch(t);   // [perf] deswizzle static data off the replay thread (SNAP_UPLOAD_PREFETCH_MB=0: off)
   return 1;  // the VkImage is created lazily (first use as render target / present source)
 }
 void TextureFinalize(void* tex) {
-  if (auto* t = Impl<TextureImpl>(tex, MAGIC_TEXTURE)) DestroyTexture(t);
+  if (auto* t = Impl<TextureImpl>(tex, MAGIC_TEXTURE)) {
+    if (t->acctPool) PoolAcct(t->acctPool, t->acctVa, -t->acctBytes);
+    if (t->arenaSlot >= 0) ArenaUnacct(t->arenaSlot, t->arenaBytes);
+    DestroyTexture(t);
+  }
   Unbind(tex);
 }
 int TextureGetTarget(const void* t) { auto* i = Impl<TextureImpl>(t, MAGIC_TEXTURE); return i ? i->b.target : 0; }
@@ -582,7 +595,8 @@ float ScalePolicy::For(const TextureBuilder& b, uint32_t tag) const {
   // The 1024x1024 depth shadow maps (dynamic shadow and the three static ones) follow SNAP_SHADOW_RES only, never the render scale.
   if (IsDepthFmt(b.format) && (b.target == TT_2D || b.target == TT_2D_ARRAY) && b.width == 1024 && b.height == 1024 && b.samples <= 1)
     return shadowRes > 0 ? (float)shadowRes / 1024.0f : 1.0f;   // 512 (Very Low preset) halves the side
-  if (scale == 1.0f || scale <= 0.0f) return 1.0f;
+  // [upscale] Performance at 4K renders the scene at exactly 1.0 but the window textures are still 2x: do not take the early return then
+  if ((scale == 1.0f || scale <= 0.0f) && !((b.flags & TF_DISPLAY) && displayScale > 0.f)) return 1.0f;
   // Window textures: the game composes UI and the final image into these, so they must scale too for a real 4K frame. The Evaluation
   // depth target is not a window texture and keeps its exemption below.
   if ((b.flags & TF_DISPLAY) && displayScale > 0.f) return (b.target == TT_2D && b.samples <= 1) ? displayScale : 1.0f;   // [upscale] output size
@@ -612,7 +626,7 @@ void ApplyHostEnvPolicy() {
   if (const char* e = getenv("SNAP_ANISO")) { float v = (float)atof(e); g_anisoOverride = v > 1.f ? std::min(v, 16.f) : 0.f; }
   if (const char* e = getenv("SNAP_LOD_BIAS")) {
     if (!_stricmp(e, "auto")) g_lodBiasAuto = true; else { g_lodBiasExtra = (float)atof(e); g_lodBiasAuto = false; }
-  } else g_lodBiasAuto = g_scale.scale != 1.0f;
+  } else g_lodBiasAuto = g_scale.scale != 1.0f || (g_scale.displayScale > 0.f && g_scale.displayScale != 1.0f);   // [upscale] scene 1.0, output 2.0: bias -1
   Log("host policy: scale=%.2f shadowRes=%d aniso=%.0f lodBias=%s%.2f", g_scale.scale, g_scale.shadowRes, g_anisoOverride, g_lodBiasAuto ? "auto " : "", g_lodBiasExtra);
 }
 }  // namespace nvn

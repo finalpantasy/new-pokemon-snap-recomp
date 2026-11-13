@@ -91,8 +91,7 @@ void ov_GetThreadCoreMask(Cpu *c) {
 void ov_GetCurrentCoreNumber(Cpu *c) {
     Thread *t = self();
     std::lock_guard<std::mutex> lk(G);
-    int n = g_cfg.num_cores > 0 ? g_cfg.num_cores : 3;
-    c->x[0] = (uint64_t)(t->core >= 0 && t->core < n ? t->core : t->last_core % n);
+    c->x[0] = (uint64_t)guest_core_number(t);
 }
 void ov_YieldThread(Cpu *) { yield_thread(self()); }
 void ov_SleepThread(Cpu *c) {   // TimeoutHelperImplByHorizon::Sleep sdk+0x34a020: 0 returns at once
@@ -345,7 +344,7 @@ void ov_SetZeroToAllThreadsTls(Cpu *c) {   // ThreadManager::SetZeroToAllThreads
 }
 void ov_SetInitialThreadName(Cpu *c) { set_default_thread_name(c->x[1]); }
 void ov_GetThreadAvailableCoreMask(Cpu *c) {
-    c->x[0] = g_cfg.num_cores > 0 && g_cfg.num_cores < 64 ? (1ull << g_cfg.num_cores) - 1 : 7;
+    c->x[0] = g_cfg.app_cores > 0 && g_cfg.app_cores < 64 ? (1ull << g_cfg.app_cores) - 1 : 7;   // guest cores only (spare cores hidden)
 }
 void ov_QuickExit(Cpu *) {
     log("guest QuickExit / ExitProcess");

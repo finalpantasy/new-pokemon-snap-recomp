@@ -2,6 +2,7 @@
 // nn::nifm, nn::nsd, nn::prepo, nn::socket, nn::ssl: the console is permanently offline. Every network entry point
 // fails the way a console without a connection does (never hangs, never crashes).
 // Registration list: reg_net.inc (generated from imports_usage.tsv; one HLE_IMPL/HLE_NOOP per line).
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -71,6 +72,16 @@ void nsd_resolve_ex(Cpu* c) {
   if (arg(c, 0) && arg(c, 1)) std::memmove(ptr<void>(arg(c, 0)), ptr<void>(arg(c, 1)), 256);
   ret(c, 0);
 }
+
+// Offline notes for the log: how often the game's online task asks (auto-upload / LenTalk), with the caller address.
+void nifm_log_call(Cpu* c, const char* what) {
+  static std::atomic<int> n{0};
+  int k = n++;
+  if (k < 12) log("nifm::%s (offline) caller %s", what, hex_u64(c->x[30]).c_str());
+}
+void nifm_submit(Cpu* c) { nifm_log_call(c, "SubmitNetworkRequestAndWait"); }
+void nifm_is_available(Cpu* c) { nifm_log_call(c, "IsNetworkAvailable"); ret(c, 0); }
+void nifm_handle_error(Cpu* c) { nifm_log_call(c, "HandleNetworkRequestErrorResult"); ret(c, 0); }
 
 void register_net(std::vector<Entry>& out) {
 #include "reg_net.inc"

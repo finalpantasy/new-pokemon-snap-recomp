@@ -135,6 +135,20 @@ def nonzero_bytes(b):
     return [(hex(o), b[o]) for o in range(len(b)) if b[o]]
 
 
+ALBUM_INUSE = 0x14  # file 6 data byte: 1 = album slot in use, 0 = free (analysis/save/album.md)
+
+
+def album_slots(sf):
+    """(in-use slots, freed slots that still hold data) of the album metadata file 6."""
+    inuse, freed = [], []
+    for e in range(sf.count):
+        r = sf.read(e)
+        if r is None or not any(r[1]):
+            continue
+        (inuse if len(r[1]) > ALBUM_INUSE and r[1][ALBUM_INUSE] else freed).append(e)
+    return inuse, freed
+
+
 def cmd_dump(a):
     gdir, n = resolve_gen(a.src)
     files = open_gen(gdir)
@@ -154,6 +168,10 @@ def cmd_dump(a):
         print('file %2d %s size=%d entries=%d enc=%#x data=%#x nonzero_entries=%s bad_checksums=%s' % (
             i, NAMES[i], os.path.getsize(sf.path), sf.count, sf.enc_size, sf.dec_size,
             used if scan else '-', bad if scan else '-'))
+    if 6 in files:  # album: file 6 byte 0x14 = slot in use; Cancel Save clears it and leaves the image (a freed slot)
+        inuse, freed = album_slots(files[6])
+        print('album: %d photos in use (slots %s), %d freed slots with data%s' % (
+            len(inuse), inuse, len(freed), ' (slots %s)' % freed if a.freed else ' (--freed lists them)' if freed else ''))
     if a.entry:
         fi, e = [int(x, 0) for x in a.entry.split(':')]
         meta, data = files[fi].read(e)
@@ -339,6 +357,7 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
     d = sub.add_parser('dump')
     d.add_argument('src'); d.add_argument('--entry'); d.add_argument('--all', action='store_true')
+    d.add_argument('--freed', action='store_true', help='also list freed album slots (data left by Cancel Save)')
     u = sub.add_parser('unlock')
     u.add_argument('src'); u.add_argument('dst'); u.add_argument('--profile', default='unlock'); u.add_argument('--set', action='append')
     p = sub.add_parser('patch')

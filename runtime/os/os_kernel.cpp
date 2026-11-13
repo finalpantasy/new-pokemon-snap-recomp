@@ -383,8 +383,8 @@ uint32_t block_on_key(Thread *t, Lock &lk, uint64_t key, int kind, Deadline d) {
 // ---- virtual cores
 static int ncores() { return g_cfg.num_cores; }
 static uint64_t usable(const Thread *t) {
-    uint64_t all = (1ull << ncores()) - 1, m = t->mask & all;
-    return m ? m : all;
+    uint64_t all = (1ull << ncores()) - 1, app = (1ull << g_cfg.app_cores) - 1, m = t->mask & app;
+    return (m ? m : app) | (all & ~app);   // spare cores (load pass, SNAP_OS_SPARE_CORES) are open to every thread
 }
 static bool can_use(const Thread *t, int c) { return (usable(t) >> c) & 1; }
 static bool better_ready(const Thread *a, const Thread *b) {
@@ -890,6 +890,14 @@ void yield_thread(Thread *t) {
     SwitchToThread();
 }
 
+int guest_core_number(const Thread *t) {
+    const int n = g_cfg.app_cores > 0 ? g_cfg.app_cores : 3;
+    if (t->core >= 0 && t->core < n) return t->core;
+    if (t->last_core >= 0 && t->last_core < n) return t->last_core;
+    if (t->ideal >= 0 && t->ideal < n) return t->ideal;   // on a spare core (SNAP_OS_SPARE_CORES): report one the thread may use
+    const uint64_t m = t->mask & ((1ull << n) - 1);
+    return m ? __builtin_ctzll(m) : 0;
+}
 void set_core_mask(Thread *t, int ideal, uint64_t mask) {
     std::lock_guard<std::mutex> lk(G);
     if (ideal == -3) ideal = t->ideal;            // IdealCoreNoUpdate
@@ -966,6 +974,11 @@ extern "C" void os_init(const OsConfig *in) {
     if (const char *e = getenv("SNAP_OS_OVERCOMMIT_US")) c.overcommit_us = (uint32_t)atoi(e);
     if (const char *e = getenv("SNAP_OS_RR_US")) c.rr_slice_us = (uint32_t)atoi(e);
     if (c.num_cores > 64) c.num_cores = 64;
+    c.app_cores = c.num_cores;
+    // load pass (2026-11-13): SNAP_OS_SPARE_CORES=<n> adds n virtual cores that any thread may take whatever its core mask, so pinned
+    // loader threads (ResourceUncompress p31) do not wait for one of the 3 cores while JobWorkers hold them. Guests still see cores 0..2.
+    if (const char *e = getenv("SNAP_OS_SPARE_CORES"))
+        if (c.num_cores > 0) c.num_cores = std::min(c.num_cores + std::max(atoi(e), 0), 62);
     g_cfg = c;
     std::lock_guard<std::mutex> lk(G);
     g_cores.assign(c.num_cores > 0 ? (size_t)c.num_cores : 0, nullptr);
@@ -1134,7 +1147,7 @@ extern "C" int os_svc(Cpu *c, uint32_t imm) {
     }
     case 0x10: {   // GetCurrentProcessorNumber
         std::lock_guard<std::mutex> lk(G);
-        c->x[0] = (uint64_t)(me->core >= 0 && me->core < ncores() ? me->core : me->last_core);
+        c->x[0] = (uint64_t)guest_core_number(me);
         return 1;
     }
     case 0x1a:     // ArbitrateLock(owner w0, addr x1, tag w2)
@@ -1189,11 +1202,11 @@ extern "C" int os_svc(Cpu *c, uint32_t imm) {
         if (proc_type ? handle != PSEUDO_CURRENT_PROCESS : handle != 0) { c->x[0] = R_INVALID_HANDLE; return 1; }
         if (type != 10 && type != 11 && sub != 0) { c->x[0] = R_INVALID_COMBINATION; return 1; }
         switch (type) {
-        case 0: { int n = ncores(); v = n > 0 && n < 64 ? (1ull << n) - 1 : 7; break; }   // CoreMask
+        case 0: { int n = g_cfg.app_cores; v = n > 0 && n < 64 ? (1ull << n) - 1 : 7; break; }   // CoreMask (guest cores; spare cores are hidden)
         case 1: v = 0xffffffffffffffffull; break;                                         // PriorityMask
         case 8: v = 0; break;                                                             // DebuggerAttached
         case 10: {                                                                        // IdleTickCount: no idle accounting
-            int n = ncores() > 0 ? ncores() : 3;
+            int n = g_cfg.app_cores > 0 ? g_cfg.app_cores : 3;
             if ((int64_t)sub != -1 && sub >= (uint64_t)n) r = R_INVALID_COMBINATION;
             v = 0;
             break;

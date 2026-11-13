@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PHOTO_FILE, THUMB_FILE, META_FILE = 7, 10, 6
 META_LAYOUT = {}  # unconfirmed on purpose, e.g. {'score': (0x20, 'I')}
+META_INUSE = 0x14  # file 6 byte: 1 = album slot in use, 0 = freed (Cancel Save leaves the image on disk)
 
 
 def find_jpeg(data):
@@ -102,9 +103,10 @@ def match_album(x, photos, taken, out, png):
     return None
 
 
-def extract(files, out_dir, export_dir=None):
+def extract(files, out_dir, export_dir=None, freed=False):
     """files: {index: object with .count and .read(e) -> None | (meta, data)}. Returns the photo list.
-    export_dir: folder of PNG exports; each is joined to its album entry by the CRC32 of the album JPEG."""
+    export_dir: folder of PNG exports; each is joined to its album entry by the CRC32 of the album JPEG.
+    freed: also list freed album slots (metadata byte 0x14 == 0), marked 'freed': True; skipped by default."""
     out = Path(out_dir)
     (out / 'full').mkdir(parents=True, exist_ok=True)
     (out / 'thumb').mkdir(exist_ok=True)
@@ -116,6 +118,10 @@ def extract(files, out_dir, export_dir=None):
             jpg = find_jpeg(r[1]) if r else None
             if jpg is None:
                 continue
+            m = mf.read(e) if mf is not None and e < mf.count else None
+            is_freed = m is not None and len(m[1]) > META_INUSE and not m[1][META_INUSE]
+            if is_freed and not freed:
+                continue
             rec = {'id': e, 'full': 'full/%04d.jpg' % e, 'bytes': len(jpg), 'source': 'album',
                    'crc': '%08x' % (binascii.crc32(jpg) & 0xffffffff)}
             rec['url'] = '/data/' + rec['full']
@@ -126,9 +132,10 @@ def extract(files, out_dir, export_dir=None):
                 rec['thumb'] = 'thumb/%04d.jpg' % e
                 rec['thumb_url'] = '/data/' + rec['thumb']
                 (out / rec['thumb']).write_bytes(tj)
-            m = mf.read(e) if mf is not None and e < mf.count else None
             if m:
                 rec.update(parse_meta(m[1]))
+            if is_freed:
+                rec['freed'] = True
             photos.append(rec)
     if export_dir is not None:
         taken = set()
@@ -163,6 +170,7 @@ def main(argv=None):
     ap.add_argument('--profile', default='default')
     ap.add_argument('--save', help='save root dir (default: first under %%APPDATA%%\\SnapRecomp)')
     ap.add_argument('--out', help='output dir (default build/gallery/<profile>)')
+    ap.add_argument('--freed', action='store_true', help='also show freed album slots (photos un-saved with Cancel Save)')
     a = ap.parse_args(argv)
     roots = save_roots(a.profile)
     src = a.save or (str(roots[0]) if roots else None)
@@ -178,7 +186,7 @@ def main(argv=None):
             print('album not read:', e)
     else:
         print('no save found; listing PNG exports only')
-    photos = extract(files, out, photo_dir())
+    photos = extract(files, out, photo_dir(), freed=a.freed)
     print('%d photos -> %s' % (len(photos), out))
 
 

@@ -1,0 +1,3 @@
+# fixture: new_game
+# #18 test: A taps only until the lab cutscene starts (f2900); the dialogue is advanced by SNAP_SKIP_CUTSCENES=1 alone. Baseline: tut_full.txt (A every 50).
+repeat @f1500 @f2900 50 12 A

@@ -257,7 +257,10 @@ namespace { void fov_mark(bool end) { fov_mark_impl(end); } }
 // frames reuse the previous job, so far models update at 30 or 15 Hz. SNAP_FULL_RATE_ANIM=1 sets the counter to a large value before
 // the compare (rt_gm_anim_rate, hook main+0x33a744), so the job is rebuilt every frame like LOD0. SNAP_TRACE_LODSEL=1 logs LOD histograms.
 namespace {
-float g_dd_ratio_mul = 1.0f;   // SNAP_DRAW_DISTANCE squared
+float g_dd_ratio_mul = 1.0f;   // legacy SNAP_DRAW_DISTANCE squared (moves LOD switches and the cull together)
+float g_lod_mul2 = 1.0f;       // SNAP_LOD_DIST squared: LOD0/LOD1/LOD2 switch distances
+float g_cull_mul2 = 1.0f;      // SNAP_DRAW_DIST squared: the distance where a model stops being drawn
+bool g_lod_force0, g_lod_split;   // SNAP_LOD_FORCE0; any of the new switches set
 bool g_full_rate, g_lodsel_trace, g_lodmods_init;
 uint64_t g_dd_ab;              // SNAP_DRAW_DISTANCE_AB=<P> (test aid): the multiplier applies only while (present count / P) is odd
 uint64_t g_lod_hist[2][4], g_lod_calls, g_anim_seen, g_anim_forced;
@@ -269,18 +272,31 @@ void lodmods_init() {
         double m = atof(e);
         if (m > 0.01 && m <= 1000.0 && m != 1.0) g_dd_ratio_mul = (float)(m * m);
     }
+    auto mul2 = [](const char *name, float *out) {
+        if (const char *e = getenv(name)) {
+            double m = atof(e);
+            if (m < 1.0) m = 1.0;
+            if (m > 8.0) m = 8.0;
+            *out = (float)(m * m);
+        }
+    };
+    mul2("SNAP_LOD_DIST", &g_lod_mul2);
+    mul2("SNAP_DRAW_DIST", &g_cull_mul2);
+    { const char *f0 = getenv("SNAP_LOD_FORCE0"); g_lod_force0 = f0 && f0[0] && f0[0] != '0'; }
+    g_lod_split = g_lod_mul2 != 1.0f || g_cull_mul2 != 1.0f || g_lod_force0;
     if (const char *e = getenv("SNAP_DRAW_DISTANCE_AB")) g_dd_ab = strtoull(e, nullptr, 0);
     const char *f = getenv("SNAP_FULL_RATE_ANIM");
     g_full_rate = f && f[0] && f[0] != '0';
     const char *t = getenv("SNAP_TRACE_LODSEL");
     g_lodsel_trace = t && t[0] && t[0] != '0';
-    if (g_dd_ratio_mul != 1.0f || g_full_rate || g_lodsel_trace)
-        trace("lodanim: SNAP_DRAW_DISTANCE ratio x%g (A/B period %llu presents), SNAP_FULL_RATE_ANIM %d, SNAP_TRACE_LODSEL %d", g_dd_ratio_mul,
-              (unsigned long long)g_dd_ab, (int)g_full_rate, (int)g_lodsel_trace);
+    if (g_dd_ratio_mul != 1.0f || g_lod_split || g_full_rate || g_lodsel_trace)
+        trace("lodanim: SNAP_DRAW_DISTANCE ratio x%g, SNAP_LOD_DIST ratio x%g, SNAP_DRAW_DIST ratio x%g, SNAP_LOD_FORCE0 %d (A/B period %llu presents), SNAP_FULL_RATE_ANIM %d, SNAP_TRACE_LODSEL %d",
+              g_dd_ratio_mul, g_lod_mul2, g_cull_mul2, (int)g_lod_force0, (unsigned long long)g_dd_ab, (int)g_full_rate, (int)g_lodsel_trace);
 }
 
 extern "C" uint64_t snap_present_count();   // host/boot.cpp
-float ratio_mul() { return g_dd_ab && ((snap_present_count() / g_dd_ab) & 1) == 0 ? 1.0f : g_dd_ratio_mul; }
+bool mod_active() { return !(g_dd_ab && ((snap_present_count() / g_dd_ab) & 1) == 0); }   // false on the "original" blocks of the A/B aid
+float ratio_mul() { return mod_active() ? g_dd_ratio_mul : 1.0f; }
 
 float get_s0(Cpu *c) { uint32_t b = (uint32_t)c->v[0]; float f; memcpy(&f, &b, 4); return f; }
 void set_s0(Cpu *c, float f) { uint32_t b; memcpy(&b, &f, 4); c->v[0] = (__uint128_t)b; }
@@ -309,22 +325,46 @@ void lod_trace(Cpu *c, float ratio, int path) {
 }  // namespace
 
 // Before main+0x337ca8 (main path, group in w22) and main+0x337ab8 (sub-model path, group in w25): s0 = screen-coverage ratio.
-extern "C" void rt_gm_lod_ratio(Cpu *c) {
+// SNAP_LOD_DIST / SNAP_DRAW_DIST / SNAP_LOD_FORCE0: the chain is re-evaluated here with separate multipliers (ratios are 1/d^2, so a distance
+// multiplier m scales the ratio by m^2): LOD0/LOD1 use the LOD multiplier, the cull (LOD3) uses max(LOD, draw) so it never comes before a
+// LOD switch. FORCE0 makes every not-culled model LOD0. The result is handed back to the original compare chain by writing s0: unchanged
+// when the original LOD already matches, else the exact threshold of the wanted LOD (0 for culled).
+static void lod_apply(Cpu *c, int path) {
     lodmods_init();
-    if (g_dd_ratio_mul == 1.0f && !g_lodsel_trace) return;
-    const float m = ratio_mul();
-    float r = get_s0(c) * m;
-    if (m != 1.0f) set_s0(c, r);
-    if (g_lodsel_trace) lod_trace(c, r, 0);
+    const bool legacy = g_dd_ratio_mul != 1.0f;
+    if (!legacy && !g_lod_split && !g_lodsel_trace) return;
+    const bool act = mod_active();
+    float r0 = get_s0(c);
+    float r = r0;
+    if (act && (legacy || g_lod_split)) {
+        const uint64_t sp = c->sp;
+        const int grp = (int)(int32_t)(uint32_t)c->x[path ? 25 : 22];
+        const float *t = nullptr;
+        if (g_lod_split && grp > 0 && grp < 4096 && readable((void *)(sp + 0x28), 8)) {
+            t = *(const float **)(sp + 0x28);
+            if (t) t += grp * 3;
+            if (t && !readable(t, 12)) t = nullptr;
+        }
+        const float lm = g_lod_mul2 * g_dd_ratio_mul;
+        if (t) {
+            const float cm = (g_cull_mul2 > g_lod_mul2 ? g_cull_mul2 : g_lod_mul2) * g_dd_ratio_mul;
+            const float rl = r0 * lm, rc = r0 * cm;
+            const int orig = r0 >= t[0] ? 0 : r0 >= t[1] ? 1 : r0 >= t[2] ? 2 : 3;
+            int want = rl >= t[0] ? 0 : rl >= t[1] ? 1 : rc >= t[2] ? 2 : 3;
+            if (g_lod_force0 && want != 3) want = 0;
+            if (want == orig) r = r0;
+            else if (want == 3) r = 0.0f;
+            else r = t[want] > r0 || orig == 3 || orig > want ? t[want] : r0;
+            if (r != r0) set_s0(c, r);
+        } else if (lm != 1.0f) {   // no table (group 0 or unreadable): plain scaling, as the legacy switch did
+            r = r0 * lm;
+            set_s0(c, r);
+        }
+    }
+    if (g_lodsel_trace) lod_trace(c, r, path);
 }
-extern "C" void rt_gm_lod_ratio_sub(Cpu *c) {
-    lodmods_init();
-    if (g_dd_ratio_mul == 1.0f && !g_lodsel_trace) return;
-    const float m = ratio_mul();
-    float r = get_s0(c) * m;
-    if (m != 1.0f) set_s0(c, r);
-    if (g_lodsel_trace) lod_trace(c, r, 1);
-}
+extern "C" void rt_gm_lod_ratio(Cpu *c) { lod_apply(c, 0); }
+extern "C" void rt_gm_lod_ratio_sub(Cpu *c) { lod_apply(c, 1); }
 
 // Before main+0x33a744 `ldr w9, [x20, #0x170]` (x20 = instance+0x4000): counter +0x170, current LOD +0x174, last LOD +0x178.
 extern "C" void rt_gm_anim_rate(Cpu *c) {

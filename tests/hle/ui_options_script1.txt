@@ -18,27 +18,44 @@
 29.7 expect_opt gfx_shadow_res 512
 29.75 expect_opt gfx_render_scale 0.50
 29.8 expect_opt gfx_aa none
+29.85 expect_opt gfx_pass_bloom off
+29.86 expect_opt gfx_pass_dof off
 29.9 expect_opt gfx_preset verylow
 29.95 opt gfx_preset normal
 29.96 expect_opt gfx_shadow_res default
 29.965 expect_opt gfx_render_scale 1.00
 29.97 expect_opt gfx_preset normal
+29.975 opt gfx_pass_bloom off
+29.976 opt gfx_pass_dof off
+29.977 expect_opt gfx_pass_bloom off
+29.978 expect_opt gfx_pass_dof off
+29.979 expect_opt gfx_preset custom
+29.98 opt gfx_pass_bloom default
+29.981 opt gfx_pass_dof default
+29.982 expect_opt gfx_pass_bloom default
 30 opt gfx_render_scale 1.50
 30.2 opt gfx_aa smaa
 30.4 opt gfx_aniso 8
 30.6 opt gfx_sharpen 0.30
 30.8 opt gfx_ui_font 2
 30.9 opt gfx_full_rate_anim 1
+30.91 opt gfx_lod_dist 2.00
+30.92 opt gfx_lod_force0 1
+30.93 opt gfx_draw_dist 2.00
 31 opt look warm
 31.2 opt ssao_quality high
 31.4 opt frame_cap 60
 31.6 opt photo_export 0
+31.7 opt neo_speed 2.00
+31.75 opt film 100
+31.76 opt skip_cutscenes 1
+31.78 opt gfx_pass_grain off
 31.8 opt audio_output speakers
 32 mods toggle alpha
 32.2 mods move beta -1
 32.4 expect_mods beta:1,alpha:0
 32.5 expect_opt gfx_preset custom
-32.6 expect_pending 12
+32.6 expect_pending 19
 33 expect_opt gfx_render_scale 1.50
 34 tab Graphics
 38 scroll 0.5

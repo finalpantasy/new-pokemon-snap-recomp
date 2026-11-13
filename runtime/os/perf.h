@@ -29,14 +29,22 @@ enum Ctr {
     C_READBACK,      // FlushReadbacks / GPU->guest copies
     C_SCRATCH,       // NewScratch (vkCreateBuffer + vkAllocateMemory + map)
     C_REAP,          // QueueImpl::Reap
+    C_ENSUREIMG,     // TextureImpl::EnsureImage that creates an image (vkCreateImage + memory) (perf pass 4 replay sub-scope)
+    C_VIEW,          // image view creation (sampled and attachment views)
+    C_RENDBEGIN,     // BeginRendering (render-pass setup incl. attachment views)
     C_COUNT
 };
 enum Val {   // plain counters (no time)
     V_DRAWS = 0, V_SUBMITS, V_CMDS, V_POOLSYNC_BYTES, V_POOLSYNC_CALLS, V_UPLOADS, V_UPLOAD_BYTES, V_HASH_BYTES, V_HASH_CALLS,
-    V_PIPES_CREATED, V_SCRATCH_ALLOCS, V_DESC_SETS, V_BARRIERS, V_SHADERS, V_PIPES_SKIPPED, V_COUNT
+    V_PIPES_CREATED, V_SCRATCH_ALLOCS, V_DESC_SETS, V_BARRIERS, V_SHADERS, V_PIPES_SKIPPED,
+    V_UPLOAD_PREF,   // [perf] static uploads served from the prefetch (deswizzled off the replay thread)
+    V_UPLOAD_PREF_IMG,   // [perf] images created by a prefetch worker and adopted by EnsureImage (pass 5)
+    V_PREF_MISS_NONE, V_PREF_MISS_FAIL, V_PREF_MISS_HASH, V_PREF_MISS_LATE,   // [perf] static uploads not served by the prefetch: never queued or dropped / job failed (bytes changed during it) / bytes changed since / job not started yet
+    V_COUNT
 };
 
-inline const bool on = std::getenv("SNAP_PERF") != nullptr;
+// SNAP_PERF_SHARED=<prefix> is the same output for a run on one normal (non-exclusive) slot: A/B comparisons on a shared PC.
+inline const bool on = std::getenv("SNAP_PERF") != nullptr || std::getenv("SNAP_PERF_SHARED") != nullptr;
 
 // Blocked time by cause (perf pass 3, SNAP_PERF only). Each thread adds to its own ledger (registered on first use; the
 // sampler writes <base>_waits.csv once a second, per thread) and to process-wide sums by role: frame_mark writes the deltas of

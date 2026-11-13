@@ -113,11 +113,101 @@ const char* nutexb_problem(const std::vector<uint8_t>& d) {
 
 }  // namespace
 
+// ---- SNAP_MODS_AB=<P> (test aid, off when unset): in-run before/after of replaced textures. While (present count / P) is
+// odd the renderer shows the ORIGINAL texture, otherwise the replacement. Each replaced nutexb is paired with the original
+// file from SNAP_MODS_AB_ORIG (default extracted/drp-v262144, same relative path as in the pack); the renderer
+// (runtime/nvn/nvn_draw.cpp ResolveHandle) finds the pair by comparing the guest texture's bytes with the replacement and
+// samples a second image built from the original at bind time. Both versions stay resident; nothing is re-uploaded.
+namespace {
+struct AbEntry {
+  std::shared_ptr<const std::vector<uint8_t>> repl, orig;
+  uint32_t rw, rh, rm, ow, oh, om;   // replacement and original width, height, mip count
+  size_t cmp;                        // bytes of the replacement data compared with the guest's copy
+};
+std::mutex g_ab_mu;
+std::vector<AbEntry> g_ab;
+
+bool ab_footer(const std::vector<uint8_t>& d, uint32_t* w, uint32_t* h, uint32_t* mips, uint32_t* fmt, uint32_t* dsz) {
+  if (d.size() < 0xb0 + 16) return false;
+  uint32_t v[11];
+  std::memcpy(v, d.data() + d.size() - 0xb0 + 0x84, sizeof v);
+  if (v[9] != 0x54455820u) return false;
+  *w = v[0]; *h = v[1]; *fmt = v[3]; *mips = v[5]; *dsz = v[8];
+  return true;
+}
+
+void ab_register(const mods::Override* o, const std::shared_ptr<const std::vector<uint8_t>>& repl) {
+  static const char* e = getenv("SNAP_MODS_AB_ORIG");
+  const std::string root = e && *e ? e : "extracted/drp-v262144";
+  const std::string& dir = g_index.packs[o->pack].dir;
+  std::string f = o->file;
+  for (auto& ch : f) if (ch == '\\') ch = '/';
+  std::string d = dir;
+  for (auto& ch : d) if (ch == '\\') ch = '/';
+  if (f.size() <= d.size() + 1 || f.compare(0, d.size(), d) != 0) return;
+  auto orig = std::make_shared<std::vector<uint8_t>>();
+  if (!read_file(root + "/" + f.substr(d.size() + 1), *orig)) { fprintf(stderr, "[mods-ab] no original for %s under %s\n", o->label.c_str(), root.c_str()); return; }
+  uint32_t rw, rh, rm, rf, rd, ow, oh, om, of, od;
+  if (!ab_footer(*repl, &rw, &rh, &rm, &rf, &rd) || !ab_footer(*orig, &ow, &oh, &om, &of, &od) || rf != of) return;
+  if (rd == 0 || rd > repl->size() - 0xb0) return;   // a bad footer data size would read past the file (or match any texture of the same size)
+  std::lock_guard<std::mutex> g(g_ab_mu);
+  g_ab.push_back(AbEntry{repl, orig, rw, rh, rm, ow, oh, om, std::min<size_t>(rd, 4096)});
+  if (getenv("SNAP_MODS_AB_LOG")) fprintf(stderr, "[mods-ab] registered %s: replacement %ux%u/%u, original %ux%u/%u\n", o->label.c_str(), rw, rh, rm, ow, oh, om);
+}
+}  // namespace
+
+// Renderer side: the period (0 = off).
+extern "C" unsigned snap_mods_ab_period() {
+  static const unsigned p = getenv("SNAP_MODS_AB") ? (unsigned)strtoul(getenv("SNAP_MODS_AB"), nullptr, 0) : 0;
+  return p;
+}
+// Renderer side: `src` is the guest's copy of a texture of w x h x mips. Returns the original's data and size, or null.
+extern "C" const uint8_t* snap_mods_ab_original(const uint8_t* src, uint32_t w, uint32_t h, uint32_t mips,
+                                                 uint32_t* ow, uint32_t* oh, uint32_t* om) {
+  std::lock_guard<std::mutex> g(g_ab_mu);
+  static const bool dbg = getenv("SNAP_MODS_AB_LOG") != nullptr;
+  for (auto& e : g_ab) {
+    if (e.rw == w && e.rh == h && e.rm == mips && dbg) {
+      static int n = 0;
+      if (e.rw >= 4096 && n++ < 40) {
+        size_t k = 0;
+        while (k < e.cmp && e.repl->data()[k] == src[k]) k++;
+        fprintf(stderr, "[mods-ab] size match %ux%u/%u: first difference at byte %zu of %zu (repl %02x guest %02x, guest head %02x%02x%02x%02x, repl head %02x%02x%02x%02x)\n", w, h, mips, k, e.cmp,
+                k < e.cmp ? e.repl->data()[k] : 0, k < e.cmp ? src[k] : 0, src[0], src[1], src[2], src[3], (*e.repl)[0], (*e.repl)[1], (*e.repl)[2], (*e.repl)[3]);
+      }
+    }
+    if (e.rw != w || e.rh != h || e.rm != mips || std::memcmp(e.repl->data(), src, e.cmp) != 0) continue;
+    *ow = e.ow; *oh = e.oh; *om = e.om;
+    return e.orig->data();
+  }
+  return nullptr;
+}
+
 // Archive path (normalized, e.g. "common/ui/master/foo.drp") of the entry worker's current chunk; false when unknown.
 bool mods_archive_of(Cpu* c, std::string* out);
 
 static std::mutex g_file_mu;
 static std::unordered_map<const mods::Override*, std::shared_ptr<const std::vector<uint8_t>>> g_files;
+
+// [perf] Built-chunk cache (perf pass 4, 2026-11-13): the first hit of an override builds the replacement chunk (header +
+// payload + crc32) once; later hits whose original header is the same hand the guest that shared, read-only chunk (the worker
+// only reads it: memcpy or Oodle, then its own crc32 of the output). Before, every hit allocated, copied and crc32'd up to 22 MB
+// per entry inside the game's loader (which holds a guest lock meanwhile), so loader threads queued on it. Built chunks are
+// never freed (one per override). SNAP_MODS_CHUNK_CACHE=0 restores the per-hit build.
+namespace {
+struct BuiltChunk { std::vector<uint8_t> v; size_t hdr; };
+std::mutex g_built_mu;
+std::unordered_map<const mods::Override*, const BuiltChunk*> g_built;
+bool chunk_cache_on() {
+  static const bool on = [] { const char* e = getenv("SNAP_MODS_CHUNK_CACHE"); return !(e && *e == '0'); }();
+  return on;
+}
+// The original header bytes that the replacement keeps (resd, ext crc, name); the others are rewritten by build_chunk.
+bool same_header(const BuiltChunk* b, const uint8_t* chunk, size_t hdr) {
+  return b->hdr == hdr && std::memcmp(b->v.data() + 0x04, chunk + 0x04, 4) == 0 && std::memcmp(b->v.data() + 0x0c, chunk + 0x0c, 4) == 0 &&
+         std::memcmp(b->v.data() + 0x18, chunk + 0x18, hdr - 0x18) == 0;
+}
+}  // namespace
 
 extern "C" void rt_mod_entry(Cpu* c) {
   int st = g_state.load(std::memory_order_acquire);
@@ -137,6 +227,25 @@ extern "C" void rt_mod_entry(Cpu* c) {
   const mods::Override* o = g_index.find(archive, std::string(name, nlen), extcrc);
   if (!o) return;
   auto& buf = scratch();
+  const size_t hdr_len = mods::chunk_header_len(nlen);
+  auto count_hit = [&](size_t bytes) {
+    size_t idx = 0;
+    for (; idx < g_ovr.size(); idx++) if (g_ovr[idx] == o) break;
+    if (idx < g_ovr.size() && g_counts[idx]->n++ == 0)
+      fprintf(stderr, "[mods] hit %s <- %s (%zu bytes)\n", o->label.c_str(), g_index.packs[o->pack].id.c_str(), bytes);
+    g_hits++;
+    static const int delay_ms = getenv("SNAP_MODS_DELAY_MS") ? atoi(getenv("SNAP_MODS_DELAY_MS")) : 0;   // test aid: make each hit as slow as the old per-hit disk read
+    if (delay_ms > 0) Sleep((DWORD)delay_ms);
+  };
+  if (chunk_cache_on()) {   // [perf] fast path: a chunk built by an earlier hit
+    const BuiltChunk* b = nullptr;
+    { std::lock_guard<std::mutex> g(g_built_mu); auto it = g_built.find(o); if (it != g_built.end()) b = it->second; }
+    if (b && same_header(b, chunk, hdr_len)) {
+      count_hit(b->v.size() - b->hdr);
+      c->x[20] = (uint64_t)(uintptr_t)b->v.data();   // shared and never freed
+      return;
+    }
+  }
   // Replacement files are read and validated once, then shared: the game reloads the same entries over and over, and a
   // disk read per hit (up to 22 MB each) made loading about 15x slower with a large mod set.
   std::shared_ptr<const std::vector<uint8_t>> sp;
@@ -158,19 +267,35 @@ extern "C" void rt_mod_entry(Cpu* c) {
       }
     }
     sp = fresh;
+    if (!fresh->empty() && extcrc == 0x5c156dbcu && snap_mods_ab_period()) ab_register(o, sp);
     std::lock_guard<std::mutex> g(g_file_mu);
     g_files.emplace(o, sp);
   }
   if (sp->empty()) return;
   const std::vector<uint8_t>& data = *sp;
-  buf = mods::build_chunk(chunk, mods::chunk_header_len(nlen), data.data(), data.size());
-  size_t idx = 0;
-  for (; idx < g_ovr.size(); idx++) if (g_ovr[idx] == o) break;
-  if (idx < g_ovr.size() && g_counts[idx]->n++ == 0)
-    fprintf(stderr, "[mods] hit %s <- %s (%zu bytes)\n", o->label.c_str(), g_index.packs[o->pack].id.c_str(), data.size());
-  g_hits++;
-  static const int delay_ms = getenv("SNAP_MODS_DELAY_MS") ? atoi(getenv("SNAP_MODS_DELAY_MS")) : 0;   // test aid: make each hit as slow as the old per-hit disk read
-  if (delay_ms > 0) Sleep((DWORD)delay_ms);
+  if (chunk_cache_on()) {   // [perf] first hit (or a different original header): build once and publish if this override has none yet
+    auto* nb = new BuiltChunk{mods::build_chunk(chunk, hdr_len, data.data(), data.size()), hdr_len};
+    const BuiltChunk* use = nb;
+    {
+      std::lock_guard<std::mutex> g(g_built_mu);
+      auto it = g_built.find(o);
+      if (it == g_built.end()) g_built.emplace(o, nb);
+      else if (same_header(it->second, chunk, hdr_len)) { use = it->second; }   // another thread won the race
+      else { buf = std::move(nb->v); delete nb; nb = nullptr; use = nullptr; }  // header differs from the published one: private copy
+    }
+    if (use != nb && nb) delete nb;
+    if (use) {
+      { std::lock_guard<std::mutex> g(g_file_mu); auto f = g_files.find(o); if (f != g_files.end() && !f->second->empty()) g_files.erase(f); }   // the chunk holds the data now
+      count_hit(data.size());
+      c->x[20] = (uint64_t)(uintptr_t)use->v.data();
+      return;
+    }
+    count_hit(data.size());
+    c->x[20] = (uint64_t)(uintptr_t)buf.data();
+    return;
+  }
+  buf = mods::build_chunk(chunk, hdr_len, data.data(), data.size());
+  count_hit(data.size());
   c->x[20] = (uint64_t)(uintptr_t)buf.data();   // held until this thread's next replacement: the worker is done with it by then
 }
 

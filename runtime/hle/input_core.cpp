@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -18,6 +19,8 @@
 namespace nvn { extern int g_presentCount; }   // runtime/nvn/nvn_tex_vk.cpp: frame clock for '@f' script times
 
 namespace hle::input {
+std::atomic<uint64_t> g_inject_buttons{0};   // NpadButton bits a host mod holds down (see Hub::poll); 0 = none
+std::atomic<int64_t> g_inject_until_ns{0};   // steady_clock ns until which g_inject_buttons is held
 
 // ---------------------------------------------------------------------------------------------------------------
 // names
@@ -660,24 +663,172 @@ bool Hub::save(std::string* err) {
 //   anchor <event>                                 starts a new segment: its entries count seconds from the moment the game
 //                                                  raises <event> (script_event; "swkbd" = the name prompt opened) and the
 //                                                  entries of earlier segments stop. Until the event fires the old segment runs on.
+//   wait <cond> [timeout=<s>] [for=<n>]            the same, but the segment starts when a game-state condition holds (for n
+//                                                  presents in a row, default 1). timeout (default 300 s, 0 = none; anchors take
+//                                                  it too) counts from the start of the segment before: when it runs out the
+//                                                  run logs "input script: TIMEOUT" with the state it saw and exits (code 3).
+//     conditions (host/mods/routes.cpp, neofilm.cpp, skips.cpp report them; '!' in front negates):
+//       ui=<scene>             a Lumen UI scene (.drp base names: main_menu, map_select, photo_submit, evaluation, pause_menu,
+//                              option, result_reward, ...) is shown: its last state is not a hidden one and it got events lately
+//       ui=<scene>:<state>     that scene is in that state (a trailing '*' matches a prefix)
+//       dialog                 the dialogue / skit text window waits for A (main+0x676630 ran in the last 8 presents)
+//       ride                   the course rail is moving (NEO-ONE progress advanced in the last 20 presents)
+//       ride>=<x>              moving and the progress along the rail (rail object +0x70, about 0.9 per second) is at least x
+//       ride_end               a ride was seen and the rail has not moved for 90 presents
+//       film<=<n>              the course HUD's film counter (72 at the start) is at most n
 // Frame timing (load-independent): write the start as @f<frame> (e.g. "@f600 30 A", "repeat @f0 @f3000 90 15 A") and the whole line counts
 // guest presents (nvn present count) since the segment began, so a slow PC does not shift it; end/period/hold may carry an optional @f prefix.
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
   std::vector<ScriptEntry> e;
-  std::vector<std::string> seg_event;   // seg_event[k] raises segment k+1
+  std::vector<std::string> seg_event;   // seg_event[k] raises segment k+1 ("?<cond>" = a "wait" line)
+  std::vector<double> seg_timeout;       // seconds segment k may wait for seg_event[k] (0 = forever)
+  std::vector<int> seg_hold;             // presents the wait condition must hold
   int load_seg = 0;                      // segment being parsed
   std::atomic<int> cur{0};               // segment running
   std::atomic<uint64_t> cur_t0{0};       // start time (ns) of the running segment
   std::atomic<int> cur_f0{0};            // present count at the start of the running segment
 };
 Script g_script;
+
+// ---- route signals: game state that inline hooks report (host/mods/routes.cpp, neofilm.cpp, skips.cpp); "wait" lines read it.
+// Off (every report returns at once) unless the script has a "wait" line or SNAP_ROUTE_LOG=1 (which also logs scenes and states).
+struct UiScene { uint64_t player; char name[40]; char state[64]; int f_event, f_state; };
+struct RailSig { uint64_t obj; float prog; int f_adv, f_start; };
+std::mutex g_rs_mu;
+UiScene g_ui[64];
+int g_nui;
+RailSig g_rail[8];
+int g_nrail, g_rail_cur = -1;
+std::atomic<bool> g_route_on{false};
+bool g_route_log;
+std::atomic<int> g_dialog_f{-1000000}, g_film{-1}, g_film_f{-1000000};
+void route_enable() { g_route_on = true; }
+struct RouteInit { RouteInit() { const char* e = std::getenv("SNAP_ROUTE_LOG"); g_route_log = e && *e && *e != '0'; if (g_route_log) g_route_on = true; } } g_route_init;
+
+// a hidden layout state: the scene exists but shows nothing (names seen in probe runs; extend as needed)
+bool ui_hidden_state(const char* s) {
+  static const char* const k[] = {"", "Hide", "hide", "None", "none", "Close", "close", "Out", "out", "Off", "Invisible", "Init", "init"};
+  for (const char* h : k) if (!std::strcmp(s, h)) return true;
+  return false;
+}
+
+// evaluates one "wait" condition (text after '?'); `why` gets a short state note for the log
+bool route_cond(const std::string& c0, std::string* why) {
+  const bool neg = !c0.empty() && c0[0] == '!';
+  const std::string c = neg ? c0.substr(1) : c0;
+  const int f = nvn::g_presentCount;
+  bool r = false;
+  char b[160] = "";
+  std::lock_guard<std::mutex> lk(g_rs_mu);
+  if (c.rfind("ui=", 0) == 0) {
+    std::string scene = c.substr(3), st;
+    size_t col = scene.find(':');
+    if (col != std::string::npos) { st = scene.substr(col + 1); scene.resize(col); }
+    for (int i = 0; i < g_nui && !r; ++i) {
+      const UiScene& s = g_ui[i];
+      if (scene != s.name) continue;
+      if (!st.empty()) r = st.back() == '*' ? std::strncmp(s.state, st.c_str(), st.size() - 1) == 0 : st == s.state;
+      else r = !ui_hidden_state(s.state) && f - s.f_event < 30;
+      std::snprintf(b, sizeof b, "%s state '%s' (last event %d presents ago)", s.name, s.state, f - s.f_event);
+    }
+    if (!b[0]) std::snprintf(b, sizeof b, "scene %s not seen", scene.c_str());
+  } else if (c == "dialog") {
+    r = f - g_dialog_f.load() <= 8;
+    std::snprintf(b, sizeof b, "dialog window last waited %d presents ago", f - g_dialog_f.load());
+  } else if (c == "ride" || c.rfind("ride>=", 0) == 0 || c == "ride_end") {
+    const RailSig* rs = g_rail_cur >= 0 ? &g_rail[g_rail_cur] : nullptr;
+    if (c == "ride_end") r = rs && f - rs->f_adv > 90;
+    else r = rs && f - rs->f_adv <= 20 && (c == "ride" || rs->prog >= (float)std::atof(c.c_str() + 6));
+    if (rs) std::snprintf(b, sizeof b, "rail progress %.2f, last advance %d presents ago", rs->prog, f - rs->f_adv);
+    else std::snprintf(b, sizeof b, "no rail seen");
+  } else if (c.rfind("film<=", 0) == 0) {
+    r = g_film.load() >= 0 && g_film.load() <= std::atoi(c.c_str() + 6);
+    std::snprintf(b, sizeof b, "film counter %d", g_film.load());
+  } else {
+    std::snprintf(b, sizeof b, "unknown condition");
+  }
+  if (why) *why = b;
+  return neg ? !r : r;
+}
+
+// one line per known scene plus rail, film and dialog (timeouts)
+void route_dump() {
+  std::lock_guard<std::mutex> lk(g_rs_mu);
+  const int f = nvn::g_presentCount;
+  for (int i = 0; i < g_nui; ++i)
+    log("input script:   ui %-16s state '%s' since %d presents, last event %d presents ago", g_ui[i].name, g_ui[i].state, f - g_ui[i].f_state, f - g_ui[i].f_event);
+  if (g_rail_cur >= 0) log("input script:   rail progress %.2f, last advance %d presents ago", g_rail[g_rail_cur].prog, f - g_rail[g_rail_cur].f_adv);
+  log("input script:   film %d, dialog last waited %d presents ago, present %d", g_film.load(), f - g_dialog_f.load(), f);
+}
 }  // namespace
+
+bool route_on() { return g_route_on.load(std::memory_order_relaxed); }
+
+void route_ui(uint64_t player, const char* scene, const char* state, int event, const char* elem, uint64_t lr) {
+  const int f = nvn::g_presentCount;
+  std::lock_guard<std::mutex> lk(g_rs_mu);
+  UiScene* s = nullptr;
+  for (int i = 0; i < g_nui; ++i) if (g_ui[i].player == player) { s = &g_ui[i]; break; }
+  if (!s) {
+    if (g_nui >= 64) return;
+    s = &g_ui[g_nui++];
+    *s = UiScene{};
+    s->player = player;
+    std::snprintf(s->name, sizeof s->name, "%s", scene);
+    s->f_state = f;
+    if (g_route_log) log("route: ui scene '%s' player %#llx first %s from main+%#llx, present %d", scene, (unsigned long long)player,
+                         event < 0 ? "SetState" : "event", (unsigned long long)(lr - 0x7100000000ull), f);
+  }
+  if (event >= 0) s->f_event = f;
+  if (std::strcmp(s->state, state) != 0 && (state[0] || event < 0)) {
+    if (g_route_log) log("route: ui %s state '%s' -> '%s' (%s %d) present %d", s->name, s->state, state, event < 0 ? "SetState" : "event", event, f);
+    std::snprintf(s->state, sizeof s->state, "%s", state);
+    s->f_state = f;
+  }
+  if (g_route_log && event >= 0 && event != 22) log("route: ui %s event %d state '%s' element '%s' present %d", s->name, event, state, elem, f);
+}
+
+void route_rail(uint64_t obj, float prog) {
+  if (!route_on()) return;
+  const int f = nvn::g_presentCount;
+  std::lock_guard<std::mutex> lk(g_rs_mu);
+  int k = -1;
+  for (int i = 0; i < g_nrail; ++i) if (g_rail[i].obj == obj) { k = i; break; }
+  if (k < 0) {
+    k = g_nrail < 8 ? g_nrail++ : 7;
+    g_rail[k] = RailSig{obj, prog, -1000000, f};
+    if (g_route_log) log("route: rail object %#llx progress %.2f present %d", (unsigned long long)obj, prog, f);
+  }
+  RailSig& r = g_rail[k];
+  if (prog < r.prog - 0.5f) { r.f_start = f; if (g_route_log) log("route: rail %#llx restarts (%.2f -> %.2f) present %d", (unsigned long long)obj, r.prog, prog, f); }
+  if (prog > r.prog) {
+    if (g_route_log && f - r.f_adv > 20) log("route: rail %#llx moving at %.2f present %d", (unsigned long long)obj, prog, f);
+    r.f_adv = f;
+    g_rail_cur = k;
+  }
+  r.prog = prog;
+}
+
+void route_dialog() {
+  if (!route_on()) return;
+  const int f = nvn::g_presentCount;
+  if (g_route_log && f - g_dialog_f.load() > 8) log("route: dialog window waiting, present %d", f);
+  g_dialog_f = f;
+}
+
+void route_film(int count) {
+  if (!route_on()) return;
+  if (g_route_log && count != g_film.load()) log("route: film counter %d present %d", count, nvn::g_presentCount);
+  g_film = count;
+  g_film_f = nvn::g_presentCount;
+}
+
 namespace {
 // "@f120" or "120" -> number; sets fr when the @f prefix is present
 double script_num(const std::string& w, bool* fr = nullptr) {
@@ -727,13 +878,32 @@ void script_load() {
     std::istringstream is(line);
     std::string w;
     if (!(is >> w)) continue;
-    if (w == "anchor") {
-      std::string ev;
-      if (is >> ev) { g_script.seg_event.push_back(ev); ++g_script.load_seg; }
+    if (w == "anchor" || w == "wait") {
+      std::string ev, o;
+      double to = w == "wait" ? 300.0 : 0.0;
+      int hold = 1;
+      if (!(is >> ev)) { log("input script: bad line '%s'", line.c_str()); continue; }
+      while (is >> o) {
+        if (o.rfind("timeout=", 0) == 0) to = std::atof(o.c_str() + 8);
+        else if (o.rfind("for=", 0) == 0) hold = std::max(1, std::atoi(o.c_str() + 4));
+        else log("input script: unknown option '%s' in '%s'", o.c_str(), line.c_str());
+      }
+      if (w == "wait") { ev = "?" + ev; route_enable(); }
+      g_script.seg_event.push_back(ev); g_script.seg_timeout.push_back(to); g_script.seg_hold.push_back(hold);
+      ++g_script.load_seg;
       continue;
     }
     ScriptEntry en{};
     en.seg = g_script.load_seg;
+    if (w == "end") {   // end <start>: the route is done; the run exits with code 0 at that time of the segment
+      std::string a;
+      if (!(is >> a)) a = "0";
+      en.start = en.end = script_num(a, &en.frames);
+      en.period = 1; en.hold = 1e9; en.is_end = true;
+      g_script.e.push_back(en);
+      ++n;
+      continue;
+    }
     bool rep = w == "repeat";
     if (rep) {
       std::string a, b, c, d;
@@ -759,7 +929,47 @@ void script_load() {
 // Applies the script at time `now` (seconds since the first poll) to `p`.
 float g_script_rumble_lo = 0, g_script_rumble_hi = 0;
 bool g_script_gyro_on = false; float g_script_gyro_yaw = 0, g_script_gyro_pitch = 0;   // read by Hub::poll after script_apply
+// "wait" lines and timeouts: starts the next segment when the pending condition holds, or ends the run when time runs out.
+void script_check_wait(uint64_t now_ns_v) {
+  static int held_k = -1, held_n = 0, held_f = -1;
+  const int k = g_script.cur.load();
+  if (k >= (int)g_script.seg_event.size()) return;
+  const std::string& ev = g_script.seg_event[(size_t)k];
+  const double el = (double)(now_ns_v - g_script.cur_t0.load()) * 1e-9;
+  if (ev[0] == '?') {
+    std::string why;
+    const int f = nvn::g_presentCount;
+    if (route_cond(ev.substr(1), &why)) {
+      if (held_k != k) { held_k = k; held_n = 0; held_f = -1; }
+      if (f != held_f) { held_f = f; ++held_n; }
+      if (held_n >= g_script.seg_hold[(size_t)k]) {
+        g_script.cur_t0 = now_ns_v;
+        g_script.cur_f0 = f;
+        g_script.cur = k + 1;
+        log("input script: wait '%s' met after %.1f s at present %d (%s): segment %d", ev.c_str() + 1, el, f, why.c_str(), k + 1);
+        return;
+      }
+    } else if (held_k == k) {
+      held_n = 0;
+    }
+  }
+  const double to = g_script.seg_timeout[(size_t)k];
+  if (to > 0 && el > to) {
+    std::string why;
+    if (ev[0] == '?') route_cond(ev.substr(1), &why);
+    log("input script: TIMEOUT after %.0f s waiting for %s '%s' (segment %d, %s); game state:", el, ev[0] == '?' ? "condition" : "event",
+        ev.c_str() + (ev[0] == '?'), k, why.empty() ? "-" : why.c_str());
+    route_dump();
+    const char* e = std::getenv("SNAP_ROUTE_TIMEOUT");
+    if (e && !std::strcmp(e, "continue")) { g_script.seg_timeout[(size_t)k] = 0; return; }   // keep running (debug)
+    std::fflush(stdout);
+    std::fflush(stderr);
+    std::_Exit(3);
+  }
+}
+
 void script_apply(uint64_t now_ns_v, PadSample& p) {
+  script_check_wait(now_ns_v);
   g_script_rumble_lo = g_script_rumble_hi = 0; g_script_gyro_on = false; g_script_gyro_yaw = g_script_gyro_pitch = 0;
   static uint64_t last = ~0ull;
   uint64_t cur = 0;
@@ -777,6 +987,12 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
       on = now >= en.start && now < en.start + en.hold;
     }
     if (!on) continue;
+    if (en.is_end) {
+      log("input script: end of route reached (segment %d, present %d); exiting", seg, nvn::g_presentCount);
+      std::fflush(stdout);
+      std::fflush(stderr);
+      std::_Exit(0);
+    }
     cur |= en.buttons;
     p.buttons |= en.buttons;
     if (en.has_gyro) { g_script_gyro_on = true; g_script_gyro_yaw += en.gyro_yaw; g_script_gyro_pitch += en.gyro_pitch; }
@@ -941,6 +1157,10 @@ void Hub::poll(int min_interval_ms) {
       sr_lo = g_script_rumble_lo; sr_hi = g_script_rumble_hi;
       apply_rumble(backend_.get(), sr_lo, sr_hi, "script", pad_.buttons, true);
     }
+  }
+  if (!open) {   // host-side presses (host/mods/skips.cpp, SNAP_SKIP_CUTSCENES): OR-ed onto the pad like a script entry
+    const uint64_t inj = g_inject_buttons.load(std::memory_order_relaxed);
+    if (inj && std::chrono::steady_clock::now().time_since_epoch().count() < g_inject_until_ns.load(std::memory_order_relaxed)) { pad_.buttons |= inj; pad_.connected = true; }
   }
   ++seq_;
 }

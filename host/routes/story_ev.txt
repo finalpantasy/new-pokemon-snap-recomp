@@ -1,0 +1,4 @@
+# fixture: post_tutorial
+# Story event probe (2026-11-13, story worker): slow A taps from the title through the lab hub and any story event (cutscene/talk) up to present 4800.
+# Used by analysis\core\story_run.sh, which builds the patched save for each story point. A tap at the hub after an event starts the first course.
+repeat @f300 @f4800 120 8 A

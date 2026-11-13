@@ -93,6 +93,7 @@ struct Fiber {
 
 struct Config {
     int num_cores = 3, default_core = 0, main_priority = 16;
+    int app_cores = 3;   // load pass: cores app_cores..num_cores-1 are spare cores (SNAP_OS_SPARE_CORES) any thread may use, whatever its mask
     uint32_t overcommit_us = 2000, rr_slice_us = 10000;
     uint32_t core_rescue_ms = 20;   // an untimed core wait rechecks this often (safety net; counted in core_wake_rescues)
     size_t host_stack = 256ull << 20, fiber_host_stack = 64ull << 20;
@@ -167,6 +168,7 @@ void thread_destroy(Thread *t);
 void sleep_ns(Thread *t, int64_t ns);
 void yield_thread(Thread *t);
 void set_core_mask(Thread *t, int ideal, uint64_t mask);
+int guest_core_number(const Thread *t);   // under G: the core the guest sees (0..app_cores-1, also on a spare or overflow core)
 void change_priority(Thread *t, int prio);
 std::vector<uint64_t> all_thread_types();   // under no lock; snapshot of every live ThreadType
 void init_thread_type(uint64_t tt, uint64_t entry, uint64_t arg, uint64_t stack, uint64_t size, int prio, uint8_t state);

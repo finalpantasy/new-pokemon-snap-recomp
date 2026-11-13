@@ -66,10 +66,29 @@ void TexturePoolRegisterTexture(const void* tp, int id, const void* tex, const v
   auto* p = Impl<TexPoolImpl>(tp, MAGIC_TEXPOOL);
   auto* t = Impl<TextureImpl>(tex, MAGIC_TEXTURE);
   if (!p || !t) { LogError("TexturePoolRegisterTexture: bad pool or texture"); return; }
-  TexSlot s;
-  s.tex = t;
-  if (view) { memcpy(&s.view, view, sizeof(TexView)); s.hasView = true; }
-  p->slots[id] = s;
+  static const bool raceLog = getenv("SNAP_RACE_LOG") && atoi(getenv("SNAP_RACE_LOG")) > 0;
+  if (raceLog) {   // registrations that overlap a replay on another thread (the race the SlotTable makes safe)
+    static std::atomic<int> total{0}, overlap{0};
+    const unsigned long rt = g_replayTid.load(std::memory_order_relaxed);
+    const int o = (rt && rt != GetCurrentThreadId()) ? ++overlap : overlap.load();
+    const int n = ++total;
+    if ((rt && rt != GetCurrentThreadId() && (o <= 5 || o % 200 == 0)) || n % 2000 == 0)
+      fprintf(stderr, "[race] TexturePoolRegisterTexture id %d tid %lu during replay on tid %lu: overlap %d of %d\n", id, GetCurrentThreadId(), rt, o, n);
+  }
+  TexSlot* s = p->slots.At(id);
+  if (!s) { LogError("TexturePoolRegisterTexture: id %d out of range", id); return; }
+  // Sequence lock (TexSlot::seq): odd while writing, so a concurrent ResolveHandle retries instead of pairing old and new fields.
+  uint32_t q = s->seq.load(std::memory_order_relaxed);
+  for (;;) {
+    if (!(q & 1) && s->seq.compare_exchange_weak(q, q + 1, std::memory_order_acquire, std::memory_order_relaxed)) break;
+    YieldProcessor();
+    q = s->seq.load(std::memory_order_relaxed);
+  }
+  std::atomic_thread_fence(std::memory_order_release);
+  if (view) memcpy(&s->view, view, sizeof(TexView));
+  s->hasView = view != nullptr;
+  s->tex = t;
+  s->seq.store(q + 2, std::memory_order_release);
 }
 void TexturePoolRegisterImage(const void* tp, int id, const void* tex, const void* view) { TexturePoolRegisterTexture(tp, id, tex, view); }
 void TexturePoolSetDebugLabel(void*, const char*) {}
@@ -84,7 +103,8 @@ void SamplerPoolRegisterSampler(const void* sp, int id, const void* samp) {
   auto* p = Impl<SampPoolImpl>(sp, MAGIC_SAMPPOOL);
   auto* s = Impl<SamplerImpl>(samp, MAGIC_SAMPLER);
   if (!p || !s) { LogError("SamplerPoolRegisterSampler: bad pool or sampler"); return; }
-  p->slots[id] = s;
+  if (SamplerImpl** slot = p->slots.At(id)) *slot = s;
+  else LogError("SamplerPoolRegisterSampler: id %d out of range", id);
 }
 void SamplerPoolSetDebugLabel(void*, const char*) {}
 uint64_t DeviceGetImageHandle(const void*, int id) { return (uint64_t)(uint32_t)id; }   // [TOTK-NVN] image handle = pool index
@@ -94,16 +114,78 @@ BufferBuilder* BB(void* b) { return reinterpret_cast<BufferBuilder*>(b); }
 void BufferBuilderSetDevice(void* b, void* dev) { BB(b)->device = dev; }
 void BufferBuilderSetDefaults(void* b) { void* d = BB(b)->device; *BB(b) = {}; BB(b)->device = d; }
 void BufferBuilderSetStorage(void* b, void* pool, ptrdiff_t off, size_t size) { BB(b)->pool = pool; BB(b)->offset = off; BB(b)->size = size; }
+extern "C" { void (*snap_nvn_guest_chain)(const char* tag) = nullptr; }   // set by host/boot.cpp: prints the calling guest frames (diagnostics)
+extern "C" { void (*snap_nvn_on_buffer_init)() = nullptr; }               // set by host/boot.cpp: SNAP_STRESS_ARENA (off unless set)
 Boolean BufferInitialize(void* buf, const void* builder) {
+  if (snap_nvn_on_buffer_init) snap_nvn_on_buffer_init();
   auto* b = reinterpret_cast<const BufferBuilder*>(builder);
   auto* p = Impl<PoolImpl>(b->pool, MAGIC_POOL);
+  if (!p && snap_nvn_guest_chain) {
+    static std::atomic<int> n{0};
+    if (n++ < 8) {
+      snap_nvn_guest_chain("BufferInitialize with no memory pool");
+      if (PoolAcctOn()) PoolAcctDump("BufferInitialize with no memory pool");
+      if (ArenaAcctOn()) ArenaDump("BufferInitialize with no memory pool");
+      // the game's GPU arena allocator (main+0x911fc0, object at [main+0x12febc0]): per arena type t, +t*0x838 + 0x21e0 base,
+      // 0x21e8 size, 0x21f0 largest allowed request. A null pool here means that allocator returned no space.
+      const uint64_t* gp = reinterpret_cast<const uint64_t*>(0x7100000000ull + 0x12febc0);
+      if (!IsBadReadPtr(gp, 8) && *gp && !IsBadReadPtr(reinterpret_cast<const void*>(*gp + 9 * 0x838 + 0x21f8), 8))
+        for (int t = 0; t < 10; t++) {
+          const uint64_t* a = reinterpret_cast<const uint64_t*>(*gp + t * 0x838 + 0x21e0);
+          if (a[0]) fprintf(stderr, "[arena] type %d base=0x%llx size=0x%llx maxreq=0x%llx\n", t, (unsigned long long)a[0], (unsigned long long)a[1], (unsigned long long)a[2]);
+        }
+      if (!IsBadReadPtr(gp, 8) && *gp && !IsBadReadPtr(reinterpret_cast<const void*>(*gp + 0x10), 0x38)) {   // arena pools the free path (0x912140) compares
+        const uint64_t* pp = reinterpret_cast<const uint64_t*>(*gp + 0x10);
+        fprintf(stderr, "[arena] pools +0x10..+0x40: %llx %llx %llx %llx %llx %llx %llx\n", (unsigned long long)pp[0], (unsigned long long)pp[1],
+                (unsigned long long)pp[2], (unsigned long long)pp[3], (unsigned long long)pp[4], (unsigned long long)pp[5], (unsigned long long)pp[6]);
+      }
+    }
+  }
+  // Crash B1 (2026-11-13): the game's buffer setup main+0x8f64b0 takes vertex/index memory from its GPU arena type 7 (56 MiB,
+  // allocator main+0x911fc0) and, unlike its other paths, does not check for failure: when that arena is full it calls
+  // BufferInitialize with pool = null, offset 0. Failing here left the model's mesh unbuilt, a stale resource handle followed,
+  // and the guest crashed at main+0x95d54c (reproduced every run with SNAP_STRESS_ARENA=7:60). The function only touches the
+  // buffer through Map / FlushMappedRange / GetAddress, so the host gives it private storage instead (what the game's own
+  // fallback path, a dedicated pool, does). The arena free (0x912140) finds no arena for a null pool and changes nothing.
+  // NVN_NO_POOL_FALLBACK=1 restores the old failure (A/B).
+  if (!b->pool && b->size) {
+    static const bool off = getenv("NVN_NO_POOL_FALLBACK") && atoi(getenv("NVN_NO_POOL_FALLBACK")) > 0;
+    Host* h = g_host;
+    if (!off && h) {
+      const uint64_t sz = (b->size + 0xFFF) & ~0xFFFull;
+      void* mem = _aligned_malloc((size_t)sz, 0x1000);
+      if (mem) {
+        memset(mem, 0, (size_t)sz);
+        auto* fp = new PoolImpl();
+        fp->host = h; fp->storage = mem; fp->size = sz; fp->flags = MP_CPU_UNCACHED | MP_GPU_CACHED; fp->guest = nullptr;
+        h->RegisterPool(fp);
+        auto* i = new BufferImpl();
+        i->pool = fp; i->offset = 0; i->size = b->size; i->ownPool = true;
+        Bind(buf, MAGIC_BUFFER, i);
+        static std::atomic<int> n{0};
+        const int k = ++n;
+        if (k <= 8 || k % 100 == 0) LogError("BufferInitialize: no memory pool (game arena full), size 0x%llx: private host storage (%d so far)", (unsigned long long)b->size, k);
+        return 1;
+      }
+    }
+  }
   if (!p) { LogError("BufferInitialize: builder has no memory pool (pool=%p hdr magic=%llx impl=%p off=0x%llx size=0x%llx)", b->pool, b->pool ? (unsigned long long)static_cast<const ObjHdr*>(b->pool)->magic : 0ull, b->pool ? static_cast<const ObjHdr*>(b->pool)->impl : nullptr, (unsigned long long)b->offset, (unsigned long long)b->size); return 0; }
   auto* i = new BufferImpl();
   i->pool = p; i->offset = b->offset; i->size = b->size;
+  if (PoolAcctOn()) { i->acctVa = p->va; PoolAcct(p, p->va, (int64_t)i->size); }
+  if (ArenaAcctOn()) { i->arenaSlot = ArenaAcct(p, i->offset, (int64_t)i->size, 0); i->arenaBorn = (int)g_presentCount; }
+  ArenaPoolCheck();
   Bind(buf, MAGIC_BUFFER, i);
   return 1;
 }
-void BufferFinalize(void* buf) { delete Impl<BufferImpl>(buf, MAGIC_BUFFER); Unbind(buf); }
+void BufferFinalize(void* buf) {
+  auto* i = Impl<BufferImpl>(buf, MAGIC_BUFFER);
+  if (i && i->acctVa) PoolAcct(i->pool, i->acctVa, -(int64_t)i->size);
+  if (i && i->arenaSlot >= 0) ArenaUnacct(i->arenaSlot, (int64_t)i->size, i->arenaBorn);
+  if (i && i->ownPool) OwnPoolRetire(i->pool);   // private storage from the null-pool fallback above: freed once the GPU is past it
+  delete i;
+  Unbind(buf);
+}
 void* BufferMap(const void* buf) {
   auto* i = Impl<BufferImpl>(buf, MAGIC_BUFFER);
   return (i && i->pool->Cpu() && i->pool->storage) ? static_cast<uint8_t*>(i->pool->storage) + i->offset : nullptr;
@@ -514,6 +596,209 @@ const Entry kGfx[] = {
 const Entry* GfxEntries(int* count) {
   *count = (int)(sizeof kGfx / sizeof *kGfx);
   return kGfx;
+}
+
+// ---- SNAP_POOL_LOG: sub-allocation accounting per memory pool (B1 triage: does a game arena run full?) ----------------------
+bool PoolAcctOn() { static const bool on = getenv("SNAP_POOL_LOG") && atoi(getenv("SNAP_POOL_LOG")) > 0; return on; }
+void PoolAcct(PoolImpl* p, uint64_t va, int64_t bytes) {
+  Host* h = g_host;
+  if (!h || !p) return;
+  std::lock_guard<std::mutex> lk(h->vaMutex);
+  auto it = h->vaMap.find(va);
+  if (it == h->vaMap.end() || it->second != p) return;   // pool finalized first
+  const int64_t live = p->subLive += bytes;
+  p->subCount += bytes > 0 ? 1 : -1;
+  if (p->size >= (64u << 20)) {   // big arenas: every 1/32 step up or down, with the present count (time series)
+    const int64_t step = (int64_t)p->size / 32;
+    if ((live - bytes) / step != live / step)
+      fprintf(stderr, "[pool] %p size=0x%llx live %.1f%% count=%d at present %d\n", p->guest, (unsigned long long)p->size,
+              100.0 * (double)live / (double)p->size, p->subCount.load(), (int)g_presentCount);
+  }
+  if (live > p->subPeak) {
+    const int64_t step = std::max<int64_t>((int64_t)p->size / 16, 1);
+    if (p->size >= (1u << 20) && live / step != p->subPeak / step)
+      fprintf(stderr, "[pool] %p va=0x%llx size=0x%llx flags=0x%x live=0x%llx (%.1f%%) count=%d new peak\n", p->guest, (unsigned long long)p->va,
+              (unsigned long long)p->size, p->flags, (unsigned long long)live, 100.0 * (double)live / (double)p->size, p->subCount.load());
+    p->subPeak = live;
+  }
+}
+void PoolAcctDump(const char* why) {
+  Host* h = g_host;
+  if (!h) return;
+  std::lock_guard<std::mutex> lk(h->vaMutex);
+  fprintf(stderr, "[pool] dump (%s):\n", why);
+  for (auto& kv : h->vaMap) {
+    PoolImpl* p = kv.second;
+    if (p->size < (1u << 20) || !p->subCount) continue;
+    fprintf(stderr, "[pool]   %p size=0x%llx flags=0x%x live=0x%llx (%.1f%%) peak=0x%llx count=%d\n", p->guest, (unsigned long long)p->size, p->flags,
+            (unsigned long long)p->subLive.load(), 100.0 * (double)p->subLive.load() / (double)p->size, (unsigned long long)p->subPeak.load(), p->subCount.load());
+  }
+}
+
+// ---- Fallback pools (BufferInitialize with no memory pool): deferred destruction -------------------------------------------------
+// A finalized fallback buffer may still be read by command lists already submitted. Its pool is destroyed only after the queue's
+// timeline passes the last value submitted when the next present saw it (stamp), as the queue does for its own retired objects.
+namespace {
+struct OwnPoolGrave { PoolImpl* p; uint64_t value; };   // value 0 = not stamped yet
+std::mutex g_graveMu;
+std::vector<OwnPoolGrave> g_grave;
+}  // namespace
+void OwnPoolRetire(PoolImpl* p) {
+  if (!p) return;
+  std::lock_guard<std::mutex> lk(g_graveMu);
+  g_grave.push_back({p, 0});
+}
+void OwnPoolReap(QueueImpl* q) {
+  if (!q || !q->host) return;
+  std::vector<PoolImpl*> dead;
+  {
+    std::lock_guard<std::mutex> lk(g_graveMu);
+    if (g_grave.empty()) return;
+    uint64_t done = 0;
+    vkGetSemaphoreCounterValue(q->host->device, q->timeline, &done);
+    size_t keep = 0;
+    for (auto& g : g_grave) {
+      if (!g.value) { g.value = q->value ? q->value : 1; g_grave[keep++] = g; }
+      else if (g.value <= done) dead.push_back(g.p);
+      else g_grave[keep++] = g;
+    }
+    g_grave.resize(keep);
+  }
+  for (PoolImpl* p : dead) { void* mem = p->storage; DestroyPool(p); _aligned_free(mem); }
+}
+
+// ---- SNAP_ARENA_LOG: the game's GPU arenas (B1 follow-up: what fills arena 7?) --------------------------------------------------
+// Arena object at [main+0x12febc0]; per type t the TLSF-style heap sits at +t*0x838+0x21d0 with base +0x21e0, size +0x21e8 and free
+// bytes +0x21f0 (the allocator 0x911fc0 fails a request larger than that; 0x8db8d0 adds a freed block back to it). Each buffer /
+// texture whose storage lies in an arena is charged to its guest call site (4 return addresses); the arena's true use (size - free)
+// is logged at every 1/16 step with the charged total, so space the arena holds that no live object explains shows as "uncharged".
+extern "C" { int (*snap_nvn_guest_frames)(uint64_t* out, int max) = nullptr; }   // set by host/boot.cpp: guest return addresses
+namespace {
+struct ArenaOwner { int type, kind; uint64_t key[4]; int64_t live, peak; int count, made; int64_t lifeSum, lifeN; int lifeMax; };
+std::mutex g_arMu;
+std::vector<ArenaOwner> g_arOwners;
+std::unordered_map<std::string, int> g_arIndex;
+int64_t g_arCharged[10] = {}, g_arUsedPeak[10] = {}, g_arLastStep[10] = {};
+const uint64_t* ArenaObj() {
+  const uint64_t* gp = reinterpret_cast<const uint64_t*>(0x7100000000ull + 0x12febc0);
+  if (IsBadReadPtr(gp, 8) || !*gp || IsBadReadPtr(reinterpret_cast<const void*>(*gp + 9 * 0x838 + 0x21f8), 8)) return nullptr;
+  return reinterpret_cast<const uint64_t*>(*gp);
+}
+const uint64_t* ArenaHeap(const uint64_t* obj, int t) { return reinterpret_cast<const uint64_t*>(reinterpret_cast<uintptr_t>(obj) + t * 0x838 + 0x21e0); }
+void ArenaTopLocked(int type, int n) {   // the n owners with the most live bytes in this arena
+  std::vector<int> idx;
+  for (int i = 0; i < (int)g_arOwners.size(); i++) if (g_arOwners[i].type == type && (g_arOwners[i].live || g_arOwners[i].peak >= (1 << 20))) idx.push_back(i);
+  std::sort(idx.begin(), idx.end(), [](int a, int b) { return g_arOwners[a].live > g_arOwners[b].live; });
+  for (int k = 0; k < (int)idx.size() && k < n; k++) {
+    const ArenaOwner& o = g_arOwners[idx[k]];
+    fprintf(stderr, "[arena]     %s live=0x%llx peak=0x%llx count=%d made=%d life(presents) avg %.1f max %d  main+%llx < %llx < %llx < %llx\n", o.kind ? "tex" : "buf",
+            (unsigned long long)o.live, (unsigned long long)o.peak, o.count, o.made, o.lifeN ? (double)o.lifeSum / (double)o.lifeN : -1.0, o.lifeMax,
+            (unsigned long long)(o.key[0] - 0x7100000000ull),
+            (unsigned long long)(o.key[1] - 0x7100000000ull), (unsigned long long)(o.key[2] - 0x7100000000ull), (unsigned long long)(o.key[3] - 0x7100000000ull));
+  }
+}
+void ArenaStepLocked(int t) {   // log the arena's real use at every 1/16 step (time series), with the top owners at a new high-water mark
+  const uint64_t* obj = ArenaObj();
+  if (!obj) return;
+  const uint64_t* a = ArenaHeap(obj, t);
+  if (!a[0] || !a[1]) return;
+  const int64_t size = (int64_t)a[1], used = size - (int64_t)a[2], step = used * 16 / size;
+  if (step == g_arLastStep[t]) return;
+  g_arLastStep[t] = step;
+  const bool peak = used > g_arUsedPeak[t];
+  if (peak) g_arUsedPeak[t] = used;
+  fprintf(stderr, "[arena] type %d used 0x%llx of 0x%llx (%.1f%%) charged 0x%llx uncharged 0x%llx at present %d%s\n", t, (unsigned long long)used,
+          (unsigned long long)size, 100.0 * (double)used / (double)size, (unsigned long long)g_arCharged[t], (unsigned long long)(used - g_arCharged[t]),
+          (int)g_presentCount, peak ? " new high-water" : "");
+  if (peak && step >= 3) ArenaTopLocked(t, 12);
+}
+}  // namespace
+bool ArenaAcctOn() { static const bool on = getenv("SNAP_ARENA_LOG") && atoi(getenv("SNAP_ARENA_LOG")) > 0; return on; }
+// Once per run (always on): every game GPU arena [base, base+size) must lie inside one memory pool's storage and not overlap
+// another arena. Proves the arena-7 size hook (host/boot.cpp rt_gm_arena7_size) also sized the backing pool.
+void ArenaPoolCheck() {
+  static std::atomic<int> done{0};
+  if (done.load(std::memory_order_relaxed)) return;
+  const uint64_t* obj = ArenaObj();
+  if (!obj || !ArenaHeap(obj, 7)[0]) return;
+  Host* h = g_host;
+  if (!h || done.exchange(1)) return;
+  std::lock_guard<std::mutex> lk(h->vaMutex);
+  for (int t = 0; t < 10; t++) {
+    const uint64_t base = ArenaHeap(obj, t)[0], size = ArenaHeap(obj, t)[1];
+    if (!base) continue;
+    const PoolImpl* in = nullptr;
+    for (auto& kv : h->vaMap) {
+      const uint64_t s = reinterpret_cast<uint64_t>(kv.second->storage);
+      if (s && base >= s && base + size <= s + kv.second->size) { in = kv.second; break; }
+    }
+    bool overlap = false;
+    for (int u = 0; u < 10; u++) {
+      const uint64_t b2 = ArenaHeap(obj, u)[0], s2 = ArenaHeap(obj, u)[1];
+      if (u != t && b2 && base < b2 + s2 && b2 < base + size) overlap = true;
+    }
+    if (in && !overlap)
+      fprintf(stderr, "[arena] check: type %d size 0x%llx inside pool %p (pool size 0x%llx, arena at +0x%llx)\n", t, (unsigned long long)size, in->guest,
+              (unsigned long long)in->size, (unsigned long long)(base - reinterpret_cast<uint64_t>(in->storage)));
+    else
+      fprintf(stderr, "[arena] check ERROR: type %d base 0x%llx size 0x%llx %s\n", t, (unsigned long long)base, (unsigned long long)size,
+              in ? "overlaps another arena" : "is not inside one memory pool");
+  }
+}
+int ArenaAcct(const PoolImpl* p, int64_t off, int64_t bytes, int kind) {
+  if (!p || !p->storage || bytes <= 0) return -1;
+  const uint64_t* obj = ArenaObj();
+  if (!obj) return -1;
+  const uint64_t addr = reinterpret_cast<uint64_t>(p->storage) + (uint64_t)off;
+  int type = -1;
+  for (int t = 0; t < 10; t++) { const uint64_t* a = ArenaHeap(obj, t); if (a[0] && addr >= a[0] && addr < a[0] + a[1]) { type = t; break; } }
+  if (type < 0) {
+    std::lock_guard<std::mutex> lk(g_arMu);
+    for (int t = 0; t < 10; t++) ArenaStepLocked(t);
+    return -1;
+  }
+  uint64_t key[4] = {};
+  if (snap_nvn_guest_frames) snap_nvn_guest_frames(key, 4);
+  char ks[96];
+  snprintf(ks, sizeof ks, "%d.%d.%llx.%llx.%llx.%llx", type, kind, (unsigned long long)key[0], (unsigned long long)key[1], (unsigned long long)key[2], (unsigned long long)key[3]);
+  std::lock_guard<std::mutex> lk(g_arMu);
+  auto it = g_arIndex.find(ks);
+  int slot;
+  if (it == g_arIndex.end()) {
+    slot = (int)g_arOwners.size();
+    g_arOwners.push_back(ArenaOwner{type, kind, {key[0], key[1], key[2], key[3]}, 0, 0, 0, 0, 0, 0, 0});
+    g_arIndex.emplace(ks, slot);
+  } else slot = it->second;
+  ArenaOwner& o = g_arOwners[slot];
+  o.live += bytes; o.count++; o.made++;
+  if (o.live > o.peak) o.peak = o.live;
+  g_arCharged[type] += bytes;
+  for (int t = 0; t < 10; t++) ArenaStepLocked(t);   // all arenas: some hold memory no buffer/texture describes
+  return slot;
+}
+void ArenaUnacct(int slot, int64_t bytes, int born) {
+  if (slot < 0) return;
+  std::lock_guard<std::mutex> lk(g_arMu);
+  if (slot >= (int)g_arOwners.size()) return;
+  ArenaOwner& o = g_arOwners[slot];
+  o.live -= bytes; o.count--;
+  if (born >= 0) { const int life = (int)g_presentCount - born; o.lifeSum += life; o.lifeN++; if (life > o.lifeMax) o.lifeMax = life; }
+  { static int shown = 0; if (o.type == 7 && shown < 3 && snap_nvn_guest_chain) { shown++; snap_nvn_guest_chain("arena 7 buffer finalize"); } }
+  g_arCharged[o.type] -= bytes;
+  for (int t = 0; t < 10; t++) ArenaStepLocked(t);
+}
+void ArenaDump(const char* why) {
+  std::lock_guard<std::mutex> lk(g_arMu);
+  const uint64_t* obj = ArenaObj();
+  fprintf(stderr, "[arena] dump (%s) at present %d:\n", why, (int)g_presentCount);
+  if (!obj) return;
+  for (int t = 0; t < 10; t++) {
+    const uint64_t* a = ArenaHeap(obj, t);
+    if (!a[0]) continue;
+    fprintf(stderr, "[arena]   type %d size 0x%llx free 0x%llx charged 0x%llx high-water 0x%llx\n", t, (unsigned long long)a[1], (unsigned long long)a[2],
+            (unsigned long long)g_arCharged[t], (unsigned long long)g_arUsedPeak[t]);
+    ArenaTopLocked(t, 16);
+  }
 }
 
 }  // namespace nvn

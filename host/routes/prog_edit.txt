@@ -1,0 +1,25 @@
+# fixture: prog_lvl2_b
+# Progression (prog worker, 2026-11-13): lab tour (slow A taps, run 2-20261113_112148 reached Photo Editing > Filters at ~p7000 on the same taps),
+# then in Filters: Right (B&W), A (apply), B (back), Down x2 + A (Frames, pick the next one), B, Down + A (Save and Quit), A taps to confirm.
+# Run: powershell -File host\run_boot.ps1 -Route prog_edit -Timeout 595 -ShotAt 100 -ShotEvery 3 -ShotMax 190
+@f1100 8 Down
+@f1350 8 Down
+@f1500 8 A
+repeat @f1700 @f6960 90 8 A
+@f7300 8 Right
+@f7450 8 A
+@f7650 8 B
+@f7850 8 Down
+@f8000 8 Down
+@f8150 8 A
+@f8450 8 Right
+@f8600 8 A
+@f8800 8 B
+@f9000 8 Down
+@f9150 8 A
+@f9400 8 A
+@f9700 8 A
+@f10000 8 A
+@f10300 8 B
+@f10600 8 B
+@f10900 8 B

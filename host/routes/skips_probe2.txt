@@ -1,0 +1,10 @@
+# fixture: new_game
+# Probe 2 for #18: same A taps as skips_probe1 but recording per-50-present function histograms over f1500-f8700 (SNAP_SKIPS_REC),
+# dumps every 100 presents to label the states (name confirm dialog, cutscene lines typing / waiting).
+repeat @f1500 @f5500 50 12 A
+@f5800 8 A
+@f6050 8 A
+@f6300 8 A
+@f6550 8 A
+@f7300 8 A
+@f7900 8 A

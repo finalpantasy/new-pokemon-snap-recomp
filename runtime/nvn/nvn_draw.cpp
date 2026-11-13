@@ -492,17 +492,58 @@ bool ExcludeAttachment(SubRange& rg, const SubRange& a) {
   return false;
 }
 
+// SNAP_MODS_AB=<P> (test aid, off when unset): a texture replaced by a mod pack is paired once, on first use and before its
+// upload, with an image built from the original file (runtime/mods/mods.cpp finds it by comparing the guest bytes with the
+// replacement). While (present count / P) is odd the draw samples the original image, otherwise the replacement.
+extern "C" unsigned snap_mods_ab_period();
+extern "C" const uint8_t* snap_mods_ab_original(const uint8_t* src, uint32_t w, uint32_t h, uint32_t mips, uint32_t* ow, uint32_t* oh, uint32_t* om);
+TextureImpl* AbSubstitute(ReplayCtx&, TextureImpl* t) {
+  static const unsigned P = snap_mods_ab_period();
+  if (!P) return t;
+  if (!t->abTried && !t->uploaded) {
+    t->abTried = true;
+    const TextureBuilder& b = t->b;
+    const uint8_t* src = static_cast<const uint8_t*>(b.packaged);
+    if (!src && b.pool && !(b.flags & (TF_COMPRESSIBLE | TF_DISPLAY | TF_LINEAR_RENDER_TARGET | TF_LINEAR)))
+      if (auto* p = Impl<PoolImpl>(b.pool, MAGIC_POOL)) if (p->storage) src = static_cast<const uint8_t*>(p->storage) + b.poolOffset;
+    uint32_t ow = 0, oh = 0, om = 0;
+    if (src && t->scale == 1.0f && b.samples <= 1 && b.target == TT_2D) {
+      if (const uint8_t* orig = snap_mods_ab_original(src, (uint32_t)b.width, (uint32_t)b.height, (uint32_t)b.levels, &ow, &oh, &om)) {
+        auto* s = new TextureImpl();
+        s->host = t->host; s->fi = t->fi; s->b = b;
+        s->b.width = (int)ow; s->b.height = (int)oh; s->b.levels = (int)om; s->b.pool = nullptr; s->b.poolOffset = 0; s->b.packaged = orig;
+        t->abAlt = s;
+        static int n = 0;
+        if (n++ < 6 || n % 50 == 0) Log("[mods-ab] pair %d: texture %p %dx%d (replacement) <-> %ux%u (original)", n, (void*)t, b.width, b.height, ow, oh);
+      }
+    }
+  }
+  return (t->abAlt && ((unsigned)g_presentCount / P & 1)) ? t->abAlt : t;
+}
+
 ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool image, int shaderType) {
   ResolvedTex r;
   if (!d.tp) return r;
   const int texId = (int)(handle & 0xFFFFF), sampId = (int)(handle >> 20);
-  auto it = d.tp->slots.find(texId);
-  if (it == d.tp->slots.end() || !it->second.tex) return r;
-  r.t = it->second.tex;
+  const TexSlot* slotp = d.tp->slots.Find(texId);   // lock-free: loader threads register slots during replay (see SlotTable)
+  if (!slotp) return r;
+  struct { TextureImpl* tex; TexView view; bool hasView; } slot{};
+  for (;;) {   // sequence-lock read (TexSlot::seq): retry while a registration is rewriting this slot
+    const uint32_t a = slotp->seq.load(std::memory_order_acquire);
+    if (a & 1) { YieldProcessor(); continue; }
+    slot.tex = slotp->tex;
+    slot.hasView = slotp->hasView;
+    if (slot.hasView) slot.view = slotp->view;
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (slotp->seq.load(std::memory_order_relaxed) == a) break;
+  }
+  if (!slot.tex) return r;
+  r.t = slot.tex;
   TextureImpl* const up = image ? nullptr : UpscaleSubstitute(cx, r.t);   // [upscale] the final pass reads the upscaled scene
   if (up) r.t = up;
+  if (!image && !up) r.t = AbSubstitute(cx, r.t);   // SNAP_MODS_AB test aid
   if (!r.t->EnsureImage()) return r;
-  const TexView* tv = (it->second.hasView && !up) ? &it->second.view : nullptr;
+  const TexView* tv = (slot.hasView && !up) ? &slot.view : nullptr;
   r.range = r.t->RangeOf(tv);
   if (!image) {
     for (int i = 0; i < 9; i++) {
@@ -522,8 +563,8 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
   }
   if (!r.feedback) r.view = r.t->View(tv, !image, shaderType, &r.range);
   if (!image && d.sp) {
-    auto s = d.sp->slots.find(sampId);
-    if (s != d.sp->slots.end()) r.samp = s->second->sampler;
+    SamplerImpl* const* s = d.sp->slots.Find(sampId);
+    if (s && *s) r.samp = (*s)->sampler;   // a destroyed sampler can leave a null slot
   }
   return r;
 }
@@ -534,6 +575,7 @@ VkImageLayout SampledLayout(const TextureImpl* t) {
 }
 
 void BeginRendering(ReplayCtx& cx, const RtInfo& rt) {
+  snap_perf::Scope perfScope(snap_perf::C_RENDBEGIN);   // [perf] replay sub-scope
   VkRenderingAttachmentInfo col[8] = {};
   VkRenderingAttachmentInfo dep{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, stc{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   uint32_t w = 0, hgt = 0, layerCount = 1;

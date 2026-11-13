@@ -169,7 +169,7 @@ display-version or performance-mode query, so `display_version` is stored but no
 
 | Service | Behavior |
 | --- | --- |
-| time | UTC only. `GetCurrentTime` / `now()` from the host clock; `ToCalendarTime`, `ToPosixTimeFromUtc` real; location "UTC" |
+| time | `GetCurrentTime` / `now()` from the host clock (UTC posix). `ToCalendarTime` returns the calendar in the host's local zone (Windows setting through the CRT, DST by date; fills dayOfWeek, dayOfYear, abbreviation, isDst and utcOffset in CalendarAdditionalInfo); `SNAP_TIME_ZONE=utc` forces UTC, env `TZ` overrides the zone (tests). `ToPosixTimeFromUtc` real; `GetDeviceLocationName` still reports "UTC" (the game does not branch on it) |
 | settings | `LanguageCode::Make`, `operator==` with the 18-entry Language table (1 = en-US default); `region` is stored, not read by any import |
 | account | One local user, name from `user_name` ("Default"), uid from config `uid` (default `534e415052454331` `0000000000000001`). Network service account calls fail with the offline result |
 | err | `ApplicationErrorArg` constructor fills the real layout (error at 0, language at 8, dialog at 16, fullscreen at 2064); `ShowApplicationError` and `ShowError` log and show a message box unless `headless` |

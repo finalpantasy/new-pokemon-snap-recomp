@@ -65,11 +65,22 @@ void NoteSubgroup(VkShaderModule m, const std::vector<uint32_t>& w) {
 }
 
 // ---- SHA-256 (BCrypt) ---------------------------------------------------------------------------------------------
+// Load pass (2026-11-13): the provider is opened once (BCrypt algorithm handles are shareable between threads); opening it per
+// shader cost about as much as the hash. SNAP_SHADER_FASTIO=0 restores one open per call.
+bool ShaderFastIo() {
+  static const bool on = [] { const char* e = getenv("SNAP_SHADER_FASTIO"); return !(e && !strcmp(e, "0")); }();
+  return on;
+}
 std::string Sha256Hex(const uint8_t* d, size_t n, const std::string& extra) {
-  BCRYPT_ALG_HANDLE alg = nullptr;
+  static BCRYPT_ALG_HANDLE shared = [] {
+    BCRYPT_ALG_HANDLE a = nullptr;
+    return BCryptOpenAlgorithmProvider(&a, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0 ? nullptr : a;
+  }();
+  const bool keep = ShaderFastIo() && shared;
+  BCRYPT_ALG_HANDLE alg = keep ? shared : nullptr;
   BCRYPT_HASH_HANDLE h = nullptr;
   std::string out;
-  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return out;
+  if (!keep && BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return out;
   if (BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0) >= 0) {
     BCryptHashData(h, const_cast<PUCHAR>(d), (ULONG)n, 0);
     BCryptHashData(h, (PUCHAR)extra.data(), (ULONG)extra.size(), 0);
@@ -80,7 +91,7 @@ std::string Sha256Hex(const uint8_t* d, size_t n, const std::string& extra) {
     out.assign(hx, 64);
     BCryptDestroyHash(h);
   }
-  BCryptCloseAlgorithmProvider(alg, 0);
+  if (!keep) BCryptCloseAlgorithmProvider(alg, 0);
   return out;
 }
 
@@ -141,6 +152,21 @@ struct JP {
 };
 
 bool ReadFile(const std::string& path, std::vector<uint8_t>* out) {
+  if (ShaderFastIo()) {   // load pass: one sized Win32 read instead of a byte-wise istreambuf_iterator copy (same bytes)
+    HANDLE fh = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                            FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (fh == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz{};
+    bool ok = GetFileSizeEx(fh, &sz) && sz.QuadPart >= 0 && sz.QuadPart < (1ll << 31);
+    if (ok) {
+      out->resize((size_t)sz.QuadPart);
+      DWORD got = 0;
+      ok = sz.QuadPart == 0 || (::ReadFile(fh, out->data(), (DWORD)sz.QuadPart, &got, nullptr) && got == (DWORD)sz.QuadPart);
+    }
+    CloseHandle(fh);
+    if (!ok) out->clear();
+    return ok;
+  }
   std::ifstream f(path, std::ios::binary);
   if (!f) return false;
   out->assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());

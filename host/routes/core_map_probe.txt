@@ -1,0 +1,13 @@
+# fixture: unlock_all
+# Map navigation probe 3 (sweep worker): from the Lental Map cursor (Florio park) one D-pad step per 180 presents:
+# Up x2, Right x2, Down x2, Left x3, Up x1, Right x3, Down x3, Left x3.
+# Run: powershell -File host\run_boot.ps1 -Route core_map_probe -Timeout 330 -ShotAt 110 -ShotEvery 2 -ShotMax 100
+repeat @f3100 @f7250 40 4 A
+repeat @f7700 @f8240 180 6 Up
+repeat @f8240 @f8780 180 6 Right
+repeat @f8780 @f9320 180 6 Down
+repeat @f9320 @f9860 180 6 Left
+repeat @f9860 @f10040 180 6 Up
+repeat @f10040 @f10580 180 6 Right
+repeat @f10580 @f11120 180 6 Down
+repeat @f11120 @f11660 180 6 Left

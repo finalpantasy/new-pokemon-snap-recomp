@@ -29,7 +29,7 @@ void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 using LogSink = void (*)(const char* line, size_t n);
 void set_log_sink(LogSink sink);
 // bit 0 fs, 1 hid, 2 other services; env SNAP_HLE_TRACE=fs,hid,svc or all
-enum : unsigned { kTraceFs = 1, kTraceHid = 2, kTraceSvc = 4 };
+enum : unsigned { kTraceFs = 1, kTraceHid = 2, kTraceSvc = 4, kTraceOpen = 8 };   // kTraceOpen: SNAP_HLE_TRACE=open logs fs opens only (load-phase markers)
 extern unsigned trace_flags;
 void init_trace_from_env();
 

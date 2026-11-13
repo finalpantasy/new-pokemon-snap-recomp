@@ -4,13 +4,14 @@
 #                                               real input stays active, so you can take over at any time
 #   powershell -File host\play.ps1 -Profile "Photo run"   start with that save profile (created if new); -PickProfile always shows the profile picker
 #   powershell -File host\play.ps1 -ListPads    print every game controller the game sees and show live pad input for 15 s, then exit
+#   powershell -File host\play.ps1 -NoNativeOptions   do not (re)build the native-options pack (PC tabs in the game's Settings screen)
 # Steps: take build\heavy.lock only while build\snap\snap_boot.exe (and SDL3.dll, the PDB and nvn_cache) are copied to build\play\, release it,
 # create build\play.lock (PID; workers must not start boot runs while it exists), run the copy at normal priority with no timeout and
 # Vulkan validation off, and delete play.lock on exit, crash or Ctrl+C. The save is %APPDATA%\SnapRecomp\save (SNAP_SAVE_DIR overrides);
 # test runs (host\run_boot.ps1) use build\testsave instead. Logs: analysis\boot\play_stderr.log, play_stdout.log (device list), play_trace.log.
 [CmdletBinding(PositionalBinding=$false)]
 param([switch]$SkipIntro, [switch]$ListPads, [int]$PadSeconds = 15, [string]$Name = 'player', [int]$LockWaitMinutes = 60,
-       [string]$Profile, [switch]$PickProfile)
+       [string]$Profile, [switch]$PickProfile, [switch]$NoNativeOptions)
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $root
@@ -58,6 +59,20 @@ try {
     if (Test-Path "$src\nvn_cache") { robocopy "$src\nvn_cache" 'build\play\nvn_cache' /E /MT:8 /NFL /NDL /NJH /NJS /NP | Out-Null }   # exit codes below 8 are success
 } finally {
     Remove-Item $heavy -Force -ErrorAction SilentlyContinue
+}
+
+# 1b. the "native-options" mod pack (PC tabs in the game's own Settings screen) is built from the user's own extracted
+# option.lmb into the mods folder (%APPDATA%\SnapRecomp\mods, or SNAP_MODS_DIR) when missing or older than its generator;
+# nothing game-derived is in the repo. A failure only means no PC tabs: the game and the F1 menu still work.
+if (-not $NoNativeOptions) {
+    $py = 'tools\venv-recomp\Scripts\python.exe'
+    $lmb = 'extracted\drp-v262144\common\UI\master\Scenes\option.drp\option.lmb'
+    if ((Test-Path $py) -and (Test-Path $lmb)) {
+        $genArgs = @('-I', 'scripts\ui\make_native_options.py', '--if-stale')
+        if ($env:SNAP_MODS_DIR) { $genArgs += @('--out', $env:SNAP_MODS_DIR) }
+        & $py @genArgs
+        if ($LASTEXITCODE -ne 0) { Write-Host "native-options pack not built (exit $LASTEXITCODE): PC tabs off, the F1 menu still works" }
+    } else { Write-Host "native-options pack skipped: $lmb or $py missing" }
 }
 
 # 2. run the copy under play.lock

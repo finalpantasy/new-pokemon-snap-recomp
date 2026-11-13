@@ -6,6 +6,8 @@
 #include <cmath>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <mutex>
 #include <random>
@@ -45,7 +47,7 @@ ErrorUiFn g_error_ui = nullptr;
 void default_error_ui(const char* title, const char* message) {
   log("%s: %s", title, message);
 #ifdef _WIN32
-  if (!config().headless) MessageBoxA(nullptr, message, title, MB_OK | MB_ICONERROR);
+  if (!config().headless) MessageBoxA(nullptr, message, title, MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);  // never hide behind a fullscreen game window
 #endif
 }
 
@@ -191,7 +193,7 @@ void settings_language_code_eq(Cpu* c) {
   ret(c, code == language_code(lang) ? 1 : 0);
 }
 
-// ---- nn::time (UTC only; the game reads the calendar for save stamps and the album)
+// ---- nn::time (calendar in the host local zone; the game reads the calendar for save stamps and the album)
 void time_get_device_location_name(Cpu* c) {
   if (uint64_t p = arg(c, 0)) { std::memset(ptr<void>(p), 0, 36); std::memcpy(ptr<void>(p), "UTC", 3); }
   ret(c, 0);
@@ -202,9 +204,42 @@ void time_load_time_zone_rule(Cpu* c) {
   ret(c, 0);
 }
 
+// Zone used by ToCalendarTime: the host's local zone (Windows setting, DST by the CRT's rules for the date; env TZ overrides it,
+// which the tests use to pin a zone). SNAP_TIME_ZONE=utc forces UTC.
+struct LocalTime { int64_t offset; bool dst; char name[8]; };
+LocalTime local_zone_at(int64_t t) {
+  LocalTime z{0, false, {'U', 'T', 'C', 0, 0, 0, 0, 0}};
+  const char* e = std::getenv("SNAP_TIME_ZONE");
+  if (e && (e[0] == 'u' || e[0] == 'U')) return z;
+#ifdef _WIN32
+  __time64_t tt = (__time64_t)t;
+  struct tm lt;
+  if (_localtime64_s(&lt, &tt) == 0) {
+    int64_t days = days_from_civil(lt.tm_year + 1900, (unsigned)lt.tm_mon + 1, (unsigned)lt.tm_mday);
+    z.offset = days * 86400 + lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec - t;
+    z.dst = lt.tm_isdst > 0;
+    char nm[64] = {};
+    size_t n = 0;
+    _get_tzname(&n, nm, sizeof nm, z.dst ? 1 : 0);
+    std::memset(z.name, 0, sizeof z.name);
+    // Windows names ("Eastern Standard Time") do not fit the 8-char field: keep the initials ("EST")
+    int k = 0;
+    if (std::strchr(nm, ' ')) {
+      for (const char* q = nm; *q && k < 7; ++q) if (q == nm || q[-1] == ' ') z.name[k++] = *q;
+    } else {
+      std::strncpy(z.name, nm, 7);
+    }
+  }
+#endif
+  return z;
+}
+
 void time_to_calendar_time(Cpu* c) {
   // Result ToCalendarTime(CalendarTime*, CalendarAdditionalInfo*, const PosixTime&, const TimeZoneRule&)
-  int64_t t = load<int64_t>(ptr<void>(arg(c, 2)));
+  // CalendarAdditionalInfo: i32 dayOfWeek, i32 dayOfYear, char name[8], bool isDst (+16), i32 utcOffset (+20)
+  int64_t utc = load<int64_t>(ptr<void>(arg(c, 2)));
+  LocalTime z = local_zone_at(utc);
+  int64_t t = utc + z.offset;
   int64_t days = t >= 0 ? t / 86400 : -((-t + 86399) / 86400);
   int64_t secs = t - days * 86400;
   int64_t y; unsigned m, d;
@@ -221,7 +256,9 @@ void time_to_calendar_time(Cpu* c) {
     int64_t dow = ((days % 7) + 11) % 7;  // 1970-01-01 was a Thursday (4)
     store<int32_t>(o, (int32_t)dow);
     store<int32_t>(o + 4, (int32_t)(days - days_from_civil(y, 1, 1)));
-    std::memcpy(o + 8, "UTC", 3);
+    std::memcpy(o + 8, z.name, 8);
+    o[16] = z.dst ? 1 : 0;
+    store<int32_t>(o + 20, (int32_t)z.offset);
   }
   ret(c, 0);
 }

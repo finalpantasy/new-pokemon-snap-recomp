@@ -1,0 +1,3 @@
+# fixture: post_tutorial
+# Story ending probe (2026-11-13, story worker): slow A taps from the title; the save has scenario bits 0-26 and 32 set and flag byte 3e2d (Boss 6 photographed), so the final story event (27) is next in the lab. A taps advance dialogue and may skip the credits.
+repeat @f300 @f9500 120 8 A

@@ -38,10 +38,12 @@ Ledger::~Ledger() {
 static FILE* g_waits;
 
 static const char* kCtrName[C_COUNT] = {"replay", "qsubmit", "pace", "acquire", "acqsem", "present", "waitsync", "finish", "pipe",
-                                        "shader", "poolsync", "upload", "hash", "desc", "getpipe", "readback", "scratch", "reap"};
+                                        "shader", "poolsync", "upload", "hash", "desc", "getpipe", "readback", "scratch", "reap",
+                                        "ensureimg", "view", "rendbegin"};
 static const char* kValName[V_COUNT] = {"draws", "submits", "cmds", "poolsync_bytes", "poolsync_calls", "uploads", "upload_bytes",
                                         "hash_bytes", "hash_calls", "pipes_created", "scratch_allocs", "desc_sets", "barriers", "shaders",
-                                        "pipes_skipped"};
+                                        "pipes_skipped", "upload_pref", "upload_pref_img",
+                                        "pref_miss_none", "pref_miss_fail", "pref_miss_hash", "pref_miss_late"};
 
 static FILE *g_frames, *g_threads, *g_events;
 static std::mutex g_ev_mu;
@@ -134,6 +136,7 @@ static void sampler() {
 
 static void init() {
     const char* base = std::getenv("SNAP_PERF");
+    if (!base || !*base) base = std::getenv("SNAP_PERF_SHARED");   // non-exclusive A/B runs (see perf.h)
     if (!base || !*base) return;
     if (const char* w = std::getenv("SNAP_PERF_WAIT_MS")) g_wait_event_ns = (uint64_t)(atof(w) * 1e6);
     std::string b = base;

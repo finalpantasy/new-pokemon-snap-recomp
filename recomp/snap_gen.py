@@ -177,7 +177,21 @@ MAIN_INLINE_HOOKS = {BASE + 0x5e3a58: 'rt_mod_entry',
                      BASE + 0x641288: 'rt_gm_font_atlas_dims',  # after `str x20, [x25, #0x2188]`
                      BASE + 0x4358c0: 'rt_gm_font_glyph1',      # after GetGlyph (0xa37dc0) in the glyph cache fill 0x435560: x0 = glyph
                      BASE + 0x435eb0: 'rt_gm_font_glyph2',      # after the second (outline) GetGlyph
-                     BASE + 0x435cf0: 'rt_gm_font_fix'}         # before the entry's +0x1a/+0x1c store: x1 = glyph, x21 = entry
+                     BASE + 0x435cf0: 'rt_gm_font_fix',         # before the entry's +0x1a/+0x1c store: x1 = glyph, x21 = entry
+                     # host/mods/neofilm.cpp (NEO-ONE speed #14, photos per run #22): no-ops unless SNAP_NEO_SPEED / SNAP_FILM is set
+                     BASE + 0x4c1df4: 'rt_gm_neo_speed',        # after `str s1, [x19, #0x70]` in the rail update 0x4c0090: x19 = rail object, +0x70 = progress
+                     BASE + 0x393d9c: 'rt_gm_film_c',           # before `subs w10, w8, #1` on the photo counter [x26+0x2b8] in the live HUD update 0x393c90
+                     # host/mods/skips.cpp (skip dialogue #18): no-op unless SNAP_SKIP_CUTSCENES is set
+                     BASE + 0x676630: 'rt_gm_skip_wait',        # entry of the dialogue window's per-present wait predicate (x0 = window object)
+                     # host/boot.cpp (crash B1): GPU arena 7 size, after `mov w10, #0x3800000` in the arena setup; 112 MiB unless SNAP_ARENA7_MB
+                     BASE + 0x4d5d68: 'rt_gm_arena7_size',
+                     # host/mods/nativeopt.cpp (PC rows in the game's own Settings screen): no-ops unless the screen sends PcRow names
+                     BASE + 0x728e10: 'rt_ui_opt_event',        # entry of the option screen's event handler: x3 = std::string* tab/element name
+                     **{BASE + a: 'rt_ui_opt_state' for a in (   # blr of player->vtable[0x140](player, desc): x1 = state descriptor
+                         0x72bf84, 0x72c738, 0x72cf4c, 0x72d5e0, 0x730cc4, 0x7311b0, 0x731f98, 0x7328e4)},
+                     # host/mods/routes.cpp (route "wait ui=" signals): no-ops unless a route has wait lines or SNAP_ROUTE_LOG is set
+                     BASE + 0x6c1d90: 'rt_gm_route_ui_event',      # entry of the UI scene base's std::function operator(): x1 = int* event, x2 = Player**, x3 = std::string* state
+                     BASE + 0x79a6d0: 'rt_gm_route_ui_setstate'}   # entry of Player::SetState (player vtable +0x140): x0 = player, x1 = descriptor (state name at +0x18)
 
 
 def sdk_plan():

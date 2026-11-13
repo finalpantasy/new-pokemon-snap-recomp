@@ -72,7 +72,7 @@ std::string get_mute() { return snap_window_get_mute_in_background() ? "1" : "0"
 void set_mute(const std::string& v) { snap_window_set_mute_in_background(v != "0"); }
 std::string get_cap() { return std::to_string(snap_window_frame_cap()); }
 void set_cap(const std::string& v) { snap_window_set_frame_cap(std::atoi(v.c_str())); }
-// ---- quality presets. The preset is not stored: it is worked out from the nine rows below, so changing any row by hand shows "Custom" and
+// ---- quality presets. The preset is not stored: it is worked out from the eleven rows below, so changing any row by hand shows "Custom" and
 // setting the rows to a preset's values shows that preset. "" in the table = the row's default (the key is erased, the game's own behavior).
 // Normal is all defaults. Left out on purpose: draw distance and full-rate animation (photo scores unverified), the lighting preset and
 // upscaler rows (other workers), and the HDR/color rows (not quality).
@@ -80,19 +80,20 @@ struct PresetKey { const char* key; const char* def; };
 const PresetKey kPresetKeys[] = {
     {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", "0.00"}, {"gfx_aniso", "16"}, {"gfx_lod_bias", "auto"},
     {"gfx_shadow_res", "default"}, {"ssao_quality", "default"}, {"gfx_ssao_samples", "default"}, {"gfx_ssao_hbao", "default"},
+    {"gfx_pass_bloom", "default"}, {"gfx_pass_dof", "default"},
 };
-constexpr int kPresetKeyN = 9;
+constexpr int kPresetKeyN = 11;
 struct PresetDef { const char* id; const char* label; const char* v[kPresetKeyN]; };
 const PresetDef kPresets[] = {
     // Very Low draws at 0.5 (960 x 540). Sub-native scale used to lose the GPU device after the photo score screen: the album thumbnail
     // readback copied a 240x200 guest region out of a 120x100 scaled image; transfers are render-scale aware since 2026-11-12 (nvn_xfer.cpp).
     // The upscaler rows stay out of the presets (they need a backend DLL and pick their own scene scale).
-    {"verylow", "Very Low", {"0.50", "none", "", "0", "1", "512", "", "4", ""}},
-    {"low", "Low", {"", "off", "", "4", "", "", "", "8", ""}},
-    {"normal", "Normal", {"", "", "", "", "", "", "", "", ""}},
-    {"high", "High", {"", "ssaa2,smaa", "0.30", "", "", "2048", "high", "", ""}},
-    {"ultra", "Ultra", {"2.00", "smaa", "0.30", "", "", "4096", "ultra", "", ""}},
-    {"maximum", "Maximum", {"4.00", "smaa", "0.50", "", "", "8192", "ultra", "512", "32,128"}},
+    {"verylow", "Very Low", {"0.50", "none", "", "0", "1", "512", "", "4", "", "off", "off"}},
+    {"low", "Low", {"", "off", "", "4", "", "", "", "8", "", "", ""}},
+    {"normal", "Normal", {"", "", "", "", "", "", "", "", "", "", ""}},
+    {"high", "High", {"", "ssaa2,smaa", "0.30", "", "", "2048", "high", "", "", "", ""}},
+    {"ultra", "Ultra", {"2.00", "smaa", "0.30", "", "", "4096", "ultra", "", "", "", ""}},
+    {"maximum", "Maximum", {"4.00", "smaa", "0.50", "", "", "8192", "ultra", "512", "32,128", "", ""}},
 };
 bool preset_eq(int k, const std::string& a, const std::string& b) {
   if (a == b) return true;
@@ -183,7 +184,7 @@ std::vector<Opt>& graphics_opts() {
        "DLSS, DLAA, FSR and XeSS rebuild a sharp picture from a smaller one so you can render fewer pixels. DLSS and DLAA need an NVIDIA RTX card. It replaces the render scale and the 2x supersampling default; the game's FXAA is turned off unless you pick an anti-aliasing mode. Photos stay at native size.",
        "off", {{"off", "Off"}, {"dlaa", "DLAA (native, anti-aliased)"}, {"dlss", "DLSS"}, {"fsr", "FSR"}, {"xess", "XeSS"}}, 0, 0, "", "SNAP_UPSCALER"},
       {"gfx_upscale_quality", "Upscaler quality", kChoice, kRestart,
-       "How much smaller the picture is before the upscaler enlarges it. Native draws at full size and only cleans up edges; Quality is 1.5x smaller per side, Balanced about 1.7x, Performance 2x.", "native",
+       "How many pixels the game draws before the upscaler enlarges the picture to the window size (per side, shown for a 4K window). Native: full size (3840x2160), the upscaler only cleans up edges. Quality: 1.5x smaller (2560x1440). Balanced: about 1.7x smaller (2227x1253). Performance: 2x smaller (1920x1080). Lower modes run faster and look softer.", "native",
        {{"native", "Native (no downscale)"}, {"quality", "Quality"}, {"balanced", "Balanced"}, {"performance", "Performance"}}, 0, 0, "", "SNAP_UPSCALE_QUALITY"},
       {"", "Textures and shadows", kSection, kLive, "", ""},
       {"gfx_aniso", "Anisotropic filtering", kChoice, kRestart,
@@ -204,6 +205,18 @@ std::vector<Opt>& graphics_opts() {
       {"gfx_ssao_hbao", "Horizon occlusion", kChoice, kRestart,
        "Directions and steps per direction for the horizon-based occlusion pass (used where the game selects it). More is smoother and costs more.", "default",
        {{"default", "Default (the game's own)"}, {"12,48", "12 x 48"}, {"16,64", "16 x 64"}, {"24,96", "24 x 96"}, {"32,128", "32 x 128 (very heavy)"}}, 0, 0, "", "SNAP_SSAO_HBAO"},
+      {"gfx_pass_bloom", "Bloom", kChoice, kRestart,
+       "The soft glow around bright areas. Off skips the bloom passes: no glow is added and the picture stays sharp. Saves a little GPU time.", "default",
+       {{"default", "On (the game's own)"}, {"off", "Off"}}, 0, 0, "", "SNAP_PASS_OFF"},
+      {"gfx_pass_dof", "Depth of field", kChoice, kRestart,
+       "The blur the game puts on out-of-focus distance in some scenes. Off keeps the whole picture sharp.", "default",
+       {{"default", "On (the game's own)"}, {"off", "Off"}}, 0, 0, "", "SNAP_PASS_OFF"},
+      {"gfx_pass_grain", "Film grain", kChoice, kRestart,
+       "The film-grain noise the game lays over the picture in some scenes. Off removes it.", "default",
+       {{"default", "On (the game's own)"}, {"off", "Off"}}, 0, 0, "", "SNAP_PASS_OFF"},
+      {"gfx_pass_aberration", "Chromatic aberration", kChoice, kRestart,
+       "The red and blue color fringing at the screen edges in some scenes. Off removes it.", "default",
+       {{"default", "On (the game's own)"}, {"off", "Off"}}, 0, 0, "", "SNAP_PASS_OFF"},
       {"gfx_lighting", "Lighting preset", kChoice, kSoon,
        "One switch for shadow, ambient-occlusion and light-probe detail together. Not in this build yet; the separate shadow and occlusion options above work now.", "default",
        {{"default", "Original"}, {"high", "Enhanced"}, {"ultra", "Maximum"}}, 0, 0, "", "SNAP_LIGHTING"},
@@ -221,9 +234,14 @@ std::vector<Opt>& graphics_opts() {
       {"", "View", kSection, kLive, "", ""},
       // Field of view row removed (owner 2026-11-12: "turn off fov, hide the option, stop working on it for now"; it changes photo
       // scores). SNAP_FOV still works as a developer env switch, off by default.
-      {"gfx_draw_distance", "Draw distance", kSlider, kRestart,
-       "Pushes out the distances where scenery and Pokemon switch to simpler models or disappear (1 to 4, 1 is the game's own). May change photo scores, being tested.",
-       "1", {}, 1.0f, 4.0f, "%.1fx", "SNAP_DRAW_DISTANCE"},
+      {"gfx_lod_dist", "Detail distance", kSlider, kRestart,
+       "Pushes out the distances where scenery and Pokemon switch to simpler models (1 to 8, 1 is the game's own). Costs some speed. May change photo scores, being tested.",
+       "1", {}, 1.0f, 8.0f, "%.1fx", "SNAP_LOD_DIST"},
+      {"gfx_lod_force0", "Always full detail", kToggle, kRestart,
+       "Every model that is drawn uses its most detailed version at any distance. Costs speed.", "0", {}, 0, 0, "", "SNAP_LOD_FORCE0"},
+      {"gfx_draw_dist", "Draw distance", kSlider, kRestart,
+       "Pushes out the distance where scenery and Pokemon stop being drawn (1 to 8, 1 is the game's own). May change photo scores, being tested.",
+       "1", {}, 1.0f, 8.0f, "%.1fx", "SNAP_DRAW_DIST"},
       {"gfx_full_rate_anim", "Full-rate distant animation", kToggle, kRestart,
        "Far-away Pokemon animate every 2nd or 4th frame in the original. On animates them every frame: smoother, a little more CPU. May change photo scores, being tested.", "0", {}, 0, 0, "", "SNAP_FULL_RATE_ANIM"},
       {"", "Frame rate", kSection, kLive, "", ""},
@@ -267,7 +285,16 @@ std::vector<Opt>& photo_opts() {
       {"photo_export", "Save a PNG of every photo", kToggle, kRestart,
        "Each photo you keep is also written as a full-quality PNG file you can share, next to the game's own in-save copy. The save and scoring are not affected.", "1"},
       {"photo_dir", "PNG folder", kPath, kRestart,
-       "Where the PNG files go. Empty uses %APPDATA%\\SnapRecomp\\photos. The folder is created when the first photo is saved.", ""},
+       "Where the PNG files go. Empty uses %APPDATA%\\SnapRecomp\\photos. The folder is created when the first photo is saved.", ""},      {"", "Expedition", kSection, kLive, "", ""},
+      {"neo_speed", "NEO-ONE speed", kSlider, kRestart,
+       "How fast the NEO-ONE rides through a course (0.5 to 3, 1 is the game's own). The ride is shorter or longer, so you see less or more of each scene; Pokemon behave as before. Photos and scoring are not changed.",
+       "1", {}, 0.5f, 3.0f, "%.2fx", "SNAP_NEO_SPEED"},
+      {"film", "Photos per expedition", kChoice, kRestart,
+       "How many photos you can take before the expedition ends. The game gives 72 on most courses. Photo selection lists every shot you took.", "default",
+       {{"default", "Game's own (72)"}, {"100", "100"}, {"150", "150"}, {"200", "200"}, {"300", "300"}, {"500", "500"}}, 0, 0, "", "SNAP_FILM"},
+      {"", "Skips", kSection, kLive, "", ""},
+      {"skip_cutscenes", "Skip dialogue", kToggle, kRestart,
+       "Presses A for you whenever a cutscene or professor dialogue box is waiting, so the lines go by without button presses. Choices are not answered for you. Story progress is not changed.", "0", {}, 0, 0, "", "SNAP_SKIP_CUTSCENES"},
   };
   return v;
 }

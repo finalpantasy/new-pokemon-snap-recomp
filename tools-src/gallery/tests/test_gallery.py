@@ -19,7 +19,7 @@ class F:
 class T(unittest.TestCase):
     def test_extract(self):
         files = {7: F({3: bytes(16) + JPG + b'\0' * 9, 5: bytes(16) + JPG}), 10: F({3: bytes(16) + JPG}),
-                 6: F({3: bytes(0x148)})}
+                 6: F({3: bytes(0x14) + b'\x01' + bytes(0x133)})}
         with tempfile.TemporaryDirectory() as d:
             ph = gallery.extract(files, d)
             self.assertEqual([p['id'] for p in ph], [3, 5])
@@ -27,6 +27,14 @@ class T(unittest.TestCase):
             self.assertIn('thumb', ph[0])
             self.assertNotIn('thumb', ph[1])
             self.assertEqual(len(ph[0]['raw_words']), 0x148 // 4)
+
+    def test_freed_slots(self):  # metadata byte 0x14 == 0: un-saved photo, hidden unless freed=True
+        files = {7: F({0: bytes(16) + JPG, 1: bytes(16) + JPG}),
+                 6: F({0: bytes(0x14) + b'\x01' + bytes(0x133), 1: bytes(0x148)})}
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual([p['id'] for p in gallery.extract(files, d)], [0])
+            ph = gallery.extract(files, d, freed=True)
+            self.assertEqual([(p['id'], p.get('freed', False)) for p in ph], [(0, False), (1, True)])
 
     def test_serve(self):
         with tempfile.TemporaryDirectory() as d:

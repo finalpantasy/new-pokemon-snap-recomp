@@ -125,8 +125,8 @@ it through ImGui gamepad navigation (D-pad or left stick moves, south button act
 - **Controller tab, Gyro aim and Rumble (bottom):** gyro aim is off by default; with a pad that reports a gyroscope (SDL3 sensor API) the angular rate is added
   to the right (camera) stick, with sensitivity (1 = full deflection at 90 deg/s, dead zone 1.5 deg/s) and invert X/Y. Rumble on/off and strength (0 to 1.5) scale what the game sends through
   `SendVibrationValue`; rumble goes through `SDL_RumbleGamepad` (DualSense, Xbox, Switch Pro) with XInput as the fallback. Both apply at once.
-- **Settings menu (F1) option pages** (`runtime\ui\ui_options.cpp`, table-driven): Graphics (render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution, ambient occlusion, color look and strength, HDR + peak and paper-white nits, frame cap, UI font scale, field of view 1.0-1.4 with `SNAP_FOV_SITES=0x296400,0x38cdbc`, draw distance 1-4 and full-rate distant animation, the last three marked "may change photo scores, being tested"), Display (window mode, monitor, windowed size, pause when unfocused, mute in background, fast boot), Photos (PNG export on/off, folder, open folder, gallery), Mods (packs with enable box and load order, written to `mods.json`) and the output mode on the Audio tab. Every row shows "applies now" or "restart needed" (yellow "changed: restart to apply" once changed); a help panel on the right gives plain-language help, the default, the effective render size and the env override name. A bar under the title counts pending restart changes and "Apply and restart" calls `restart_now`.
-- **Coming soon (disabled rows, env already wired in `settings.cpp`):** Upscaler (`SNAP_UPSCALER`), Upscaler quality (`SNAP_UPSCALE_QUALITY`), Lighting preset (`SNAP_LIGHTING`). Flip `kSoon` in the option table when the feature code lands.
+- **Settings menu (F1) option pages** (`runtime\ui\ui_options.cpp`, table-driven): Graphics (render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution, ambient occlusion, color look and strength, HDR + peak and paper-white nits, frame cap, UI font scale, field of view 1.0-1.4 with `SNAP_FOV_SITES=0x296400,0x38cdbc`, detail distance 1-8, always full detail, draw distance 1-8 and full-rate distant animation, the last four marked "may change photo scores, being tested"), Display (window mode, monitor, windowed size, pause when unfocused, mute in background, fast boot), Photos (PNG export on/off, folder, open folder, gallery), Mods (packs with enable box and load order, written to `mods.json`) and the output mode on the Audio tab. Every row shows "applies now" or "restart needed" (yellow "changed: restart to apply" once changed); a help panel on the right gives plain-language help, the default, the effective render size and the env override name. A bar under the title counts pending restart changes and "Apply and restart" calls `restart_now`.
+- **Upscaler rows (live, restart):** Upscaler (`SNAP_UPSCALER`: off, DLAA, DLSS, FSR, XeSS) and Upscaler quality (`SNAP_UPSCALE_QUALITY`: native, quality, balanced, performance; the help text lists the render size of each for a 4K window). They are not part of the quality presets. **Coming soon (disabled row, env wired in `settings.cpp`):** Lighting preset (`SNAP_LIGHTING`). Flip `kSoon` in the option table when the feature code lands.
 - **Where values live:** graphics, photo and fast-boot keys in the per-profile `settings.cfg` (exported as env vars at start, a hand-set env wins; "Default" erases the key); window mode, monitor and frame cap in `window.json`; audio output in `audio.json`; mods in `mods.json`.
 - **Photos tab:** PNG export options plus the gallery: starts `tools-src\gallery\serve.py --no-open` for the active profile with `--port-file`; the server tries 8777 then any free port (8765 is taken by other software on some PCs) and the tab opens the port it reports.
 - **Options test:** `tests\hle\run_options_test.ps1 -BuildDir <dir>` runs stage A (sets options through `SNAP_UI_TEST`, toggles and reorders mods, Apply and restart) then stage B (a fresh run on the same profile: checks saved values, exported env vars and mods order) and writes `analysis\ui\options_test.log`; `tests\hle\opt_shots.py` makes `analysis\ui\f1_*.png`. Verified: stage A 23 PASS, stage B 22 checks 0 failed; the game log shows `aa: mode smaa, sharpen 0.30` and `gamemods: UI font scale 2` after the restart. Settings load only when `SNAP_PROFILES_DIR` is set (tests also set `SNAP_PROFILE` and `SNAP_PROFILE_PICKER=0`); in hidden runs the relaunched child dies with the run, hence two runs.
@@ -186,6 +186,7 @@ Locks (`host\locks.ps1`; a lock file holds `owner pid=<pid> <time> <what>`, stal
 - **Muted**: hidden runs (`run_boot.ps1`, `run_boot_mods.ps1` without `-Visible`) default to `SNAP_AUDIO_BACKEND=null`: no sound reaches the speakers, while audio timing and `SNAP_AUDIO_CAPTURE` work as before. Set `SNAP_AUDIO_BACKEND=wasapi` only for a test that needs the real device (spatial or WASAPI channel checks), and then mute the game with `SNAP_VOL_MASTER=0` unless the sound itself is under test.
 - **Own builds**: `host\build_snap.py --out build\w\<owner>` relinks into a private folder without `build\heavy.lock`; run it with `run_boot.ps1 -BuildDir build\w\<owner>` (or `$env:SNAP_BUILD_DIR`). A build dir without its own `nvn_cache` gets the warm one from `build\snap`. Take `heavy.lock` only to write `build\snap`, rebuild the main/sdk libs (`recomp\snap_build.py`) or regenerate main.
 - **Exclusive**: `-Bench`, `-Exclusive` or `SNAP_PERF` set: takes `build\slots\exclusive.lock`, then all 4 slots; new normal runs wait behind it.
+- **Shared perf runs** (2026-11-13): `SNAP_PERF_SHARED=<prefix>` writes the same `SNAP_PERF` CSVs but `run_boot.ps1` does not key on it, so the run takes one normal slot. For A/B comparisons on a shared PC only (alternate A and B in the same time window); absolute numbers are not comparable with exclusive benches.
 
 Each run copies `build\snap\snap_boot.exe`, DLLs and `nvn_cache` to `build\runs\slot<N>\` (a concurrent build may relink), uses
 `build\runs\slot<N>\save` and its own copy of the shared `%APPDATA%\SnapRecomp\shadercache` (via `SNAP_SHADERCACHE_DIR`; warm, no concurrent
@@ -207,6 +208,44 @@ wall time from the first input poll, so a loaded PC shifts the game but not the 
 `florio_photos` (A taps plus ZR) reaches the lab intro and the camera tutorial by ~190 s; later steps are unverified (see
 `analysis\recomp\integration_issues.md`). `host\routes\unlock_all.txt` is the same A-tap probe on the `unlock_all` fixture.
 
+## PC tabs in the game's own Settings screen (2026-11-13, `host/mods/nativeopt.cpp`)
+
+The game's Settings screen (lab hub gear) is data driven: `option.lmb` in `common/UI/master/Scenes/option.drp` lists states
+(tabs), elements and focus groups (format and dumper: `scripts/ui/lmb.py dump <option.lmb> [state]`). The PC settings are ten
+extra tabs in two sets of five after the game's "Other" tab (R past Other; L on Game goes to the last one): Quality, Textures,
+Effects, Output, View | Display, Controller, Mouse, Audio, Photos. They use the game's own row widgets (two-choice rows,
+pulldowns with their popup, 0..10 sliders), tab bar, help line, sounds and Restore Default Settings button.
+
+- Pack: `python -I scripts/ui/make_native_options.py [--src <option.lmb>] [--out <mods root>] [--if-stale]` writes the local
+  mod pack `native-options` (patched `option.lmb`, `rows.txt`, `pack.json`; default out `%APPDATA%\SnapRecomp\mods`) from
+  the user's own extracted `option.lmb`. It is game-derived: never commit it. `host\play.ps1` runs it with `--if-stale`
+  before every start (rebuilds when the pack is missing or the script changed; `-NoNativeOptions` skips it; a failure only
+  means no PC tabs). Rows are the `TABS` table in the script; `rows.txt` carries them to the host, so there is no second list.
+- State switches are the Lumen player's own: an element whose f2 names a state (f6 = 1) goes there on decide (tabs, pulldown
+  rows), f6 = 4 returns to the previous state (popup items), and L/R open the state named at +0x30 of the page's Prev/Next
+  element entries (BuildPage fills in the neighbor game tabs). The player then sends event 5 with the new state; for a PC
+  state `rt_ui_opt_event` (`0x728e10`) builds the page with the game's BuildPage (`0x737360`), renames it and its five tab
+  entries, points Prev/Next at the neighbor PC tabs (Other before PC tab 1, Game after the last), adds the PC variables and
+  row element entries (the cursor only reaches listed elements) and calls SetState. Calling SetState at any other time does
+  not switch states. After SetState, `player->vtable[0x158](player, &state, &element, bool)` (what the game's slider drawing
+  calls per dot sub-element `<slider>_NN`) puts each slider knob on its value and the popup cursor on the current item. The
+  first focus event when the cursor lands on a slider is never stored (it reports the knob shown, not a change).
+- `rt_ui_opt_state` (the 8 SetState `blr`s) keeps a template element entry and points the game's Other page's Next at PC tab
+  1 and the Game page's Prev at the last PC tab. Choices, popup items and sliders (focus event `PcT<t>S<s>N_<n>`) are stored where the
+  F1 overlay stores them (`snap::ui::options_test_set`: same keys, defaults, custom stores and presets; the controls mapping;
+  the master volume). "Applies after restart." is in the help line of rows that need it.
+- Restore Default Settings (Minus) on a PC tab resets that tab's rows to their defaults and redraws them; on a game tab it
+  resets only that game tab (the game's own behavior, which never touches PC settings). Each PC tab's help line says so.
+- Not in the PC tabs (F1 menu only): PNG folder path, lighting preset, stick dead zones, mouse smoothing, F1 menu scale,
+  bindings, mods, saves, test input.
+- `SNAP_NATIVE_OPT_TRACE=1` logs events, states and element lists. `SNAP_NATIVE_OPT_SETTINGS=<file>` is a test aid: runs
+  with `SNAP_SAVE_DIR` skip `settings::load()`, so the hook reads and writes this settings file instead. Set
+  `SNAP_CONFIG_DIR` to a private folder in test runs too, or Controller/Mouse/Display changes write the user's
+  `%APPDATA%` input/window/audio files.
+- Route `host\routes\native_options_tabs.txt` (`post_tutorial`): opens Settings, R to PC tab 1, then visits every PC tab with
+  one change each (a pulldown pick, a slider, choices), Minus on Photos, B closes. Run it with
+  `SNAP_MODS_DIR=build\w\<owner>_mods` (pack built with `--out` there) plus the three switches above.
+
 ## Graphics quality presets (F1 > Graphics > Quality preset)
 
 The row picks Very Low, Low, Normal, High, Ultra or Maximum and sets nine rows at once; it shows Custom when the rows match no preset (the preset itself is not stored). All rows need a restart. Blank = the row's default.
@@ -223,12 +262,12 @@ The row picks Very Low, Low, Normal, High, Ultra or Maximum and sets nine rows a
 | AO samples (`SNAP_SSAO_SAMPLES`, new row) | 4 | 8 | default | default | default | 512 |
 | HBAO dirs x steps (`SNAP_SSAO_HBAO`, new row) | default | default | default | default | default | 32 x 128 |
 
-Left out on purpose: draw distance, full-rate animation (photo scores unverified), FOV (paused), lighting preset (lighting worker), HDR, color look, frame cap. Upscaler and upscaler quality rows are now live (restart) but in no preset. The upscaler replaces the render scale and the ssaa2 default (the game's FXAA is off unless `SNAP_AA` is set); its scene scale is below 1 in a window under 1080p (works since the fix below; DLSS Quality at 1280x720 scored in run `0-20261112_174810`).
+Left out on purpose: detail distance, always full detail, draw distance, full-rate animation (photo scores unverified), FOV (paused), lighting preset (lighting worker), HDR, color look, frame cap. Upscaler and upscaler quality rows are now live (restart) but in no preset. The upscaler replaces the render scale and the ssaa2 default (the game's FXAA is off unless `SNAP_AA` is set); its scene scale is below 1 in a window under 1080p (works since the fix below; DLSS Quality at 1280x720 scored in run `0-20261112_174810`).
 
 Findings (2026-11-12, florio_eval / florio_photos, hidden 1280x720 window, RTX 4090, 2 to 4 runs at once with other workers, so absolute times are noisy):
 - Sub-native render scale lost the GPU device (`vkQueueSubmit2 failed: -4`) 20 to 30 s after the score screen in 4 of 4 runs at 0.5/0.75. Cause: the album thumbnail readback copied a 240x200 guest region out of the 120x100 scaled image. Fixed 2026-11-12 in `runtime\nvn\nvn_xfer.cpp` (render-scale-aware copies, `NVN_NO_XFER_SCALE=1` restores the old ones; runs in `AGENTS.md`, "Sub-native scale device loss fixed"). Very Low now draws at 0.5 (960 x 540) and the slider starts at 0.5. 0.5 and 0.75 each scored in 2 runs and kept running 160 to 200 s past the score screen with no device loss.
 - Scale 6 and 8 crash the guest before the title (run `0-20261112_144057`); 4 works.
-- `SNAP_SHADOW_RES=512` is new (the depth maps scale 0.5). `SNAP_PASS_OFF` does nothing yet (`rt_gm_pass` never matches names), so bloom/DOF/SSAO cannot be switched off.
+- `SNAP_SHADOW_RES=512` is new (the depth maps scale 0.5). `SNAP_PASS_OFF` works since 2026-11-12 (see "Render pass toggles" below).
 - Presents are paced to 60 Hz, so ms/frame below is mostly the limiter plus CPU load, not GPU cost: Normal 18.9 (`3-20261112_131027`), Very Low 17.7 (`0-20261112_141432`, florio_eval, photo scored, 2,375 points shown), Low 17.6 (`1-20261112_141432`), High 18.1 (`0-20261112_142450`), Ultra 18.4 (`1-20261112_142450`), Maximum 19.5 (`0-20261112_143210`, 7680x4320 scene), Maximum with a 3840x2160 window 19.7 (`0-20261112_144203`). Maximum does not lag a 4090 under this pacing; an exclusive `SNAP_PERF` bench is needed for real GPU cost.
 - AO samples and shadow size do not change the course picture (lighting worker: no SSAO in the course, shadows mostly baked).
 - Not done: the one-time preset suggestion from the GPU name; scoring on High, Ultra, Maximum (only Very Low and Low ran `florio_eval`; Normal at 1x/ssaa default scored in earlier runs); the F1 test `tests\hle\run_options_test.ps1` passes the new preset checks (25 checks, FOV expectations removed).
@@ -250,3 +289,26 @@ Load both modules, `os_init` (with the musl thread-pointer variables), main thre
 own `init_array`; calling the array again would run every static initializer twice), `nninitStartup`, `nnMain`. Trace lines are timestamped:
 first call of every host function, every SVC (first 3 per number), guest exceptions, and every initializer index. A stall watchdog prints the
 main thread's guest frame after 8 s without output. Unresolved indirect targets append to `analysis/recomp/indirect_misses.tsv`.
+
+**LOD and draw distance (2026-11-12, `host/mods/lodanim.cpp`, all off by default):** `SNAP_LOD_DIST=<1..8>` moves the LOD0/LOD1/LOD2 switch distances out by that factor, `SNAP_LOD_FORCE0=1` makes every drawn model LOD0, `SNAP_DRAW_DIST=<1..8>` moves the not-drawn (cull) distance out (never inside the LOD switches); the old `SNAP_DRAW_DISTANCE=<m>` still scales both together. `SNAP_FULL_RATE_ANIM=1` rebuilds far models' render job every frame (original: every 2nd frame at LOD1, every 4th at LOD2). F1 Graphics > View rows: Detail distance (`gfx_lod_dist`), Always full detail (`gfx_lod_force0`), Draw distance (`gfx_draw_dist`, `SNAP_DRAW_DIST`; an old saved `gfx_draw_distance` is migrated to `gfx_lod_dist` + `gfx_draw_dist` at load), Full-rate distant animation; all restart-required, in no quality preset. Test aids: `SNAP_DRAW_DISTANCE_AB=<P>` (the mod applies only on odd blocks of P presents; with the `lod_yard` route and `NVN_FRAME_DUMP_AT` at 16k+7/16k+15 the pair is the same camera pose), `SNAP_TRACE_LODSEL=1`.
+
+## Render pass toggles (2026-11-12, `host/mods/gamemods.cpp`, hook `0x989048`)
+
+- `SNAP_PASS_DUMP=1` (with `SNAP_GM_TRACE=1`) logs every pass once: `pass <ptr> name "<Name>" order=<n> on=<0|1> ... class protected|toggle|unverified`. A pass object keeps its name as a libc++ `std::string` at `+0x40` and its enable byte at `+0xf0`. 42 passes exist: DynamicShadow, StaticShadow, ZPrepass, Backmost, Opaque, OpaqueGround, HighResolutionTranslucent, SSAOCreate/BlurX/BlurY/Composite, DownsizeTarget, Effect, Sea, BlendBuffer, CompositeBlendBuffer, MipmapLevel0..5, BloomCreate, BloomDraw, Final, Evaluation, GaussianBlurX/Y, DOFBlurX/Y, DOF, ChromaticAberration, FilmGrain, Monotone, Capture3D, CaptureCompress, PhotoEditing, PhotoEditingFrame, Report, ResizeTexture, UI, Fade.
+- `SNAP_PASS_OFF=BloomCreate,BloomDraw,DOFBlurX,DOFBlurY,DOF,FilmGrain,ChromaticAberration` (case-insensitive) zeroes the enable byte before the pass loop reads it, so the pass is never recorded. Only those seven names are accepted by default. Photo and evaluation passes (Evaluation, PhotoEditing, PhotoEditingFrame, Capture3D, CaptureCompress, Report, ResizeTexture, Final, UI, Fade, thumbnail names, DownsizeTarget, CompositeBlendBuffer) are always refused with a log line; any other name is refused as unverified unless `SNAP_PASS_FORCE=1` (test aid).
+- `SNAP_PASS_AB=<P>`: the listed passes are off only in even blocks of P presents (P=1: alternate presents).
+- F1 Graphics rows Bloom, Depth of field, Film grain, Chromatic aberration (`gfx_pass_bloom`, `gfx_pass_dof`, `gfx_pass_grain`, `gfx_pass_aberration`, each `default`/`off`, restart needed) are joined into `SNAP_PASS_OFF` by `runtime/hle/settings.cpp`.
+- What the game does itself: the course view has Bloom on for the whole run; DOF, FilmGrain and ChromaticAberration are on only in a few scenes (the course has them off), so those three toggles change nothing in normal play.
+
+## Performance switches (perf pass 4, 2026-11-13; `analysis\perf\results.md` "pass 4")
+
+All on by default; each env var restores the old path.
+
+- `SNAP_SYNC_FULL=1` (or `SNAP_WRITE_WATCH=0`): full-range copies of bound pool ranges into the Vulkan mirrors, as before. Default: guest reservations carry `MEM_WRITE_WATCH` (`runtime\os\os_memory.cpp`) and `SyncPoolRangeOnce` (`runtime\nvn\nvn_vk.cpp`) copies only the pages `GetWriteWatch` reports written since the last query. Pools that are not page aligned or not in a watched reservation, and pools with fragment-shader write-backs (photo evaluation), keep full copies. `SNAP_SYNC_FULL=1` also drops the reserve flag.
+- `SNAP_MODS_CHUNK_CACHE=0`: build the replacement DRP chunk (copy + crc32 of the whole file) on every hit, as before. Default: built once per override and shared read-only (`runtime\mods\mods.cpp`).
+- `SNAP_SCRATCH_POOL_MB=0`: exact-size scratch buffers freed on retire, as before. Default: retired scratch buffers are recycled by power-of-two size class (64 KB to 32 MB), at most 128 MB kept (`SNAP_SCRATCH_POOL_MB=<n>`).
+- `SNAP_UPLOAD_PREFETCH_MB=0`: static textures are deswizzled on the replay thread at first sample, as before. Default: `TextureInitialize` queues the deswizzle on 1 to 4 below-normal workers; the upload checks the guest bytes are unchanged (hash before and after the job and at upload) and copies the result; anything else takes the old path. At most 384 MB staged (`SNAP_UPLOAD_PREFETCH_MB=<n>`, oldest dropped first). Not for ASTC, linear, multisample or textures over 48 MB.
+- `SNAP_UPLOAD_PREFETCH_IMAGE=1` (pass 5, OFF by default): the prefetch worker also creates the VkImage and its memory after a successful deswizzle (`CreateTexImage`, `runtime\nvn\nvn_vk.cpp`). `EnsureImage` adopts them when the builder and host size are unchanged (`upload_pref_img` column); otherwise the worker's image is destroyed. Two A/B pairs: `ensureimg` per burst went from 41-49 ms to 15-29 ms, but hub-burst upload time doubled and scratch allocation slowed, so it stays off.
+- `SNAP_UPLOAD_PREFETCH_HELP=1` (pass 5, OFF by default): when the replay reaches a texture whose prefetch job has not started, the replay thread runs up to 8 queued jobs from the front of the queue, then its own, while the workers keep going. Default, as before: the job is cancelled and the texture is deswizzled on the replay thread. No measured gain; burst misses are rarely "not started" (`pref_miss_*` columns: `none` never queued or dropped, `fail` bytes changed during the job, `hash` bytes changed since, `late` not started).
+- `SNAP_DUMP_EVERY=<s>` (pass 5, debug, `host\boot.cpp`): guest thread dump (wait kind, wait key, guest call chain per thread) into the trace every s seconds. For hangs that keep presenting, which the 8 s silence watchdog never sees.
+- New `SNAP_PERF` columns: `ensureimg_ms`, `view_ms`, `rendbegin_ms` (replay sub-scopes), `upload_pref` (uploads served by the prefetch); `upload_bytes` is now filled; `poolsync_bytes` counts bytes actually copied.

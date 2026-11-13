@@ -11,11 +11,11 @@
   HLE_NOOP("prepo", "_ZNK2nn5prepo10PlayReport8GetCountEv", ret_zero);
   HLE_NOOP("prepo", "_ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE", ret_ok);
   HLE_NOOP("prepo", "_ZN2nn5prepo10PlayReport4SaveEv", ret_ok);
-  HLE_NOOP("nifm", "_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", noop);
-  HLE_IMPL("nifm", "_ZN2nn4nifm18IsNetworkAvailableEv", ret_false);
-  HLE_NOOP("nifm", "_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", noop);
+  HLE_NOOP("nifm", "_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", nifm_submit);
+  HLE_IMPL("nifm", "_ZN2nn4nifm18IsNetworkAvailableEv", nifm_is_available);
+  HLE_IMPL("nifm", "_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", nifm_handle_error);  // bool: false = do not retry (offline); noop left a stale x0
   HLE_NOOP("nifm", "_ZN2nn4nifm20CancelNetworkRequestEv", noop);
-  HLE_NOOP("nifm", "_ZN2nn4nifm10InitializeEv", noop);
+  HLE_IMPL("nifm", "_ZN2nn4nifm10InitializeEv", ret_ok);  // Result: the game tests it (main+0x53201c); noop left a stale x0
   HLE_NOOP("socket", "_ZN2nn6socket10InitializeERKNS0_6ConfigE", ret_ok);
   HLE_NOOP("socket", "_ZN2nn6socket8FinalizeEv", ret_ok);
   HLE_NOOP("prepo", "_ZN2nn5prepo6StructC1Ev", ret_ok);

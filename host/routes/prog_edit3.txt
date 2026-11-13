@@ -1,0 +1,28 @@
+# fixture: prog_lvl2_b
+# Progression (prog worker, 2026-11-13): lab tour (slow A taps, run 2-20261113_112148 reached Photo Editing > Filters at ~p7000 on the same taps),
+# then in Filters: Right (B&W), A (apply), B (back), Down x2 + A (Frames, pick the next one), B, Down + A (Save and Quit), A taps to confirm.
+# Run: run_boot.ps1 -Route prog_edit2 (fixture prog_lvl2_b)
+repeat @f300 @f1400 120 8 A
+@f2800 8 Down
+@f3050 8 Down
+@f3250 8 A
+repeat @f3800 @f8400 90 8 A
+@f8740 8 Right
+@f8890 8 A
+@f9090 8 Right
+@f9240 8 A
+@f9390 8 B
+@f9590 8 Down
+@f9740 8 Down
+@f9890 8 A
+@f10190 8 Right
+@f10340 8 A
+@f10540 8 B
+@f10740 8 Down
+@f10890 8 A
+@f11140 8 A
+@f11440 8 A
+@f11740 8 A
+@f12040 8 B
+@f12340 8 B
+@f12640 8 B

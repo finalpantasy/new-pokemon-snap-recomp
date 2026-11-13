@@ -44,6 +44,83 @@ static double now_s() {
 }
 
 static Cpu *g_cpu_dbg;   // main thread's Cpu (fallback)
+// Host stack walks without the heap or dbghelp: RtlLookupFunctionEntry + RtlVirtualUnwind over x64 unwind data. With a snapshot
+// (lo..hi copied to snap) the walk reads the copy, so the watchdog can resume the thread before walking.
+static int raw_unwind(CONTEXT ctx, uint64_t *pcs, int max, uint64_t lo = 0, uint64_t hi = 0, const uint8_t *snap = nullptr) {
+    auto reb = [&](DWORD64 &r) { if (snap && r >= lo && r < hi) r = (DWORD64)(uintptr_t)(snap + (r - lo)); };
+    const uint64_t slo = snap ? (uintptr_t)snap : 0, shi = snap ? (uintptr_t)snap + (hi - lo) : ~0ull;
+    reb(ctx.Rsp); reb(ctx.Rbp);
+    int n = 0;
+    while (n < max && ctx.Rip) {
+        pcs[n++] = ctx.Rip;
+        if (ctx.Rsp < slo || ctx.Rsp + 8 > shi) break;
+        DWORD64 imgBase = 0;
+        PRUNTIME_FUNCTION fe = RtlLookupFunctionEntry(ctx.Rip, &imgBase, nullptr);
+        if (!fe) { ctx.Rip = *(DWORD64 *)ctx.Rsp; ctx.Rsp += 8; }   // leaf function: return address on top
+        else {
+            void *hd = nullptr; DWORD64 est = 0;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, imgBase, ctx.Rip, fe, &ctx, &hd, &est, nullptr);
+        }
+        reb(ctx.Rbp);
+        if (snap && (ctx.Rsp < slo || ctx.Rsp > shi)) { if (ctx.Rip && n < max) pcs[n++] = ctx.Rip; break; }
+    }
+    return n;
+}
+// dbghelp symbolization runs on its own thread, initialized at startup: inside the crash filter it could block on a heap or loader
+// lock the crashing thread held, so the filter only signals it and waits up to 3 s. g_sym_mu serializes dbghelp (not thread-safe).
+static SRWLOCK g_sym_mu = SRWLOCK_INIT;
+static HANDLE g_sym_req, g_sym_done;
+static uint64_t g_sym_pcs[32];
+static int g_sym_n;
+static void sym_line(uint64_t pc, const char *indent, bool lines, void (*out)(const char *)) {
+    HANDLE proc = GetCurrentProcess();
+    alignas(8) char buf[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO *si = (SYMBOL_INFO *)buf; si->SizeOfStruct = sizeof(SYMBOL_INFO); si->MaxNameLen = 255;
+    DWORD64 disp = 0; DWORD ldisp = 0;
+    IMAGEHLP_LINE64 ln = {}; ln.SizeOfStruct = sizeof ln;
+    const bool hasLine = lines && SymGetLineFromAddr64(proc, pc, &ldisp, &ln) != FALSE;
+    char s[512];
+    if (SymFromAddr(proc, pc, &disp, si))
+        snprintf(s, sizeof s, "%shost %s+%#llx %s:%lu", indent, si->Name, (unsigned long long)disp, hasLine ? ln.FileName : "?", hasLine ? ln.LineNumber : 0ul);
+    else snprintf(s, sizeof s, "%shost %#llx", indent, (unsigned long long)pc);
+    out(s);
+}
+static void sym_init_locked() {
+    static bool init = false;
+    if (!init) { SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS); SymInitialize(GetCurrentProcess(), nullptr, TRUE); init = true; }
+}
+static DWORD WINAPI symbolizer_thread(void *) {
+    AcquireSRWLockExclusive(&g_sym_mu); sym_init_locked(); ReleaseSRWLockExclusive(&g_sym_mu);
+    WaitForSingleObject(g_sym_req, INFINITE);
+    AcquireSRWLockExclusive(&g_sym_mu);
+    for (int i = 0; i < g_sym_n; i++) sym_line(g_sym_pcs[i], "    ", true, [](const char *s) { fprintf(stderr, "%s\n", s); });
+    ReleaseSRWLockExclusive(&g_sym_mu);
+    fflush(stderr);
+    SetEvent(g_sym_done);
+    return 0;
+}
+static void start_symbolizer() {
+    g_sym_req = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    g_sym_done = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    if (g_sym_req && g_sym_done) CloseHandle(CreateThread(nullptr, 0, symbolizer_thread, nullptr, 0, nullptr));
+}
+// Host frames of a crash: raw exe offsets first (no heap, no dbghelp; resolve with snap_boot.map), then names and lines from the
+// symbolizer thread (needs snap_boot.pdb next to the exe, which run_boot copies): "host <fn>+<off> <file>:<line>".
+static void crash_host_stack(const CONTEXT *src) {
+    static LONG once = 0;
+    if (InterlockedExchange(&once, 1)) return;   // a second crashing thread prints raw offsets only via its own filter lines
+    g_sym_n = raw_unwind(*src, g_sym_pcs, 16);
+    const uint64_t base = (uint64_t)GetModuleHandleA(nullptr);
+    for (int i = 0; i < g_sym_n; i++) {
+        const bool inexe = g_sym_pcs[i] - base < 0x10000000ull;
+        fprintf(stderr, "    raw %s%#llx\n", inexe ? "exe+" : "", (unsigned long long)(inexe ? g_sym_pcs[i] - base : g_sym_pcs[i]));
+    }
+    fflush(stderr);
+    if (g_sym_req && g_sym_done) {
+        SetEvent(g_sym_req);
+        if (WaitForSingleObject(g_sym_done, 3000) != WAIT_OBJECT_0) fprintf(stderr, "    (symbolizer timed out; use the raw offsets)\n");
+    }
+}
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     Cpu *g_cpu_dbg = g_tls_cpu ? g_tls_cpu : ::g_cpu_dbg;
     fprintf(stderr, "CRASH on guest thread type %#llx (tid %lu)\n", (unsigned long long)os_current_thread_type(), GetCurrentThreadId());
@@ -80,6 +157,8 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
         }
     }
     if (g_cpu_dbg) { for (auto &l : guest_chain(g_cpu_dbg, g_cpu_dbg->x[30], 14)) fprintf(stderr, "    %s\n", l.c_str()); }
+    fflush(stderr);
+    crash_host_stack(ep->ContextRecord);
     if (g_cpu_dbg) fprintf(stderr, "NEXT-BLOCKER crash %s\n", blocker_api(g_cpu_dbg, g_cpu_dbg->x[30]).c_str());
     if (!g_init_log.empty()) {
         auto &r = g_init_log.back();
@@ -491,23 +570,24 @@ static void summarize_run() {
 // frame chain read from its Cpu) every `stall` seconds. Reads race with the running thread; the values are only diagnostics.
 // Host call stack of a suspended thread through dbghelp (needs build\snap\snap_boot.pdb next to the exe); diagnostics only.
 #include <dbghelp.h>
-static void host_stack(HANDLE th, CONTEXT ctx) {
-    static bool init = false;
-    HANDLE proc = GetCurrentProcess();
-    if (!init) { SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS); SymInitialize(proc, nullptr, TRUE); init = true; }
-    STACKFRAME64 sf = {};
-    sf.AddrPC.Offset = ctx.Rip; sf.AddrPC.Mode = AddrModeFlat;
-    sf.AddrFrame.Offset = ctx.Rsp; sf.AddrFrame.Mode = AddrModeFlat;
-    sf.AddrStack.Offset = ctx.Rsp; sf.AddrStack.Mode = AddrModeFlat;
-    for (int i = 0; i < 28; i++) {
-        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, th, &sf, &ctx, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr)) break;
-        if (!sf.AddrPC.Offset) break;
-        alignas(8) char buf[sizeof(SYMBOL_INFO) + 256];
-        SYMBOL_INFO *si = (SYMBOL_INFO *)buf; si->SizeOfStruct = sizeof(SYMBOL_INFO); si->MaxNameLen = 255;
-        DWORD64 disp = 0;
-        if (SymFromAddr(proc, sf.AddrPC.Offset, &disp, si)) trace("        host %s+%#llx", si->Name, (unsigned long long)disp);
-        else trace("        host %#llx", (unsigned long long)sf.AddrPC.Offset);
-    }
+// Stall dump: copy a suspended thread's stack (no heap use while it is suspended: it may hold the heap lock), resume it, then
+// unwind the copy and symbolize. Single watchdog thread, so one static buffer.
+static uint8_t g_stack_snap[64 * 1024];
+static size_t snap_stack(const CONTEXT &ctx) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery((void *)(uintptr_t)ctx.Rsp, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return 0;
+    const uint64_t end = (uint64_t)(uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+    size_t n = (size_t)std::min<uint64_t>(end - ctx.Rsp, sizeof g_stack_snap);
+    memcpy(g_stack_snap, (void *)(uintptr_t)ctx.Rsp, n);
+    return n;
+}
+static void host_stack(const CONTEXT &ctx, size_t snapped) {
+    uint64_t pcs[28];
+    const int n = raw_unwind(ctx, pcs, 28, ctx.Rsp, ctx.Rsp + snapped, g_stack_snap);
+    AcquireSRWLockExclusive(&g_sym_mu);
+    sym_init_locked();
+    for (int i = 0; i < n; i++) sym_line(pcs[i], "        ", false, [](const char *s) { trace("%s", s); });
+    ReleaseSRWLockExclusive(&g_sym_mu);
 }
 extern "C" void os_dump_threads(void (*emit)(void *, uint64_t, uint64_t, int, uint64_t, uint64_t, int, int, Cpu *), void *ud);
 static void dump_thread_cb(void *, uint64_t tt, uint64_t id, int wkind, uint64_t wkey, uint64_t waddr, int core, int prio, Cpu *cpu) {
@@ -529,19 +609,27 @@ static DWORD WINAPI watchdog(LPVOID) {
         double now = trace_now();
         static const double dump_at = getenv("SNAP_DUMP_AT") ? atof(getenv("SNAP_DUMP_AT")) : 0.0;   // debug: one guest thread dump at that time, no host stacks
         static int dumped = 0;
-        const bool force = dump_at > 0 && now >= dump_at + dumped * 1.5 && dumped < 6;
+        // debug: SNAP_DUMP_EVERY=<s> dumps the guest threads every s seconds (no host stacks); for hangs that keep presenting, which
+        // the silence check below never sees (perf pass 5, the Lental loading-screen hang)
+        static const double dump_every = getenv("SNAP_DUMP_EVERY") ? atof(getenv("SNAP_DUMP_EVERY")) : 0.0;
+        static double next_every = dump_every;
+        const bool every = dump_every > 0 && now >= next_every;
+        if (every) next_every = now + dump_every;
+        const bool force = every || (dump_at > 0 && now >= dump_at + dumped * 1.5 && dumped < 6);
         if (!force && (now - g_last_trace_time < 8.0 || now - last_report < 8.0)) continue;
-        if (force) dumped++;
+        if (force && !every) dumped++;
         last_report = now;
         CONTEXT ctx = {};
         ctx.ContextFlags = CONTEXT_CONTROL;
         SuspendThread(g_main_thread_handle);
         bool ok = GetThreadContext(g_main_thread_handle, &ctx);
         uint64_t rip = ok ? ctx.Rip : 0;
+        // Resume before anything that allocates: a suspended thread can hold the heap lock, and then this thread deadlocks
+        // with every guest thread it suspended (the stall dump is on in every run, live play included).
+        ResumeThread(g_main_thread_handle);
         Cpu *c = g_main_cpu;
         std::vector<std::string> ch;
         if (c) ch = guest_chain(c, c->x[30], 12);
-        ResumeThread(g_main_thread_handle);
         trace("STALL: no trace output for %.1f s; main thread host rip=%#llx (exe+%#llx), guest x0=%#llx x30=%s", now - g_last_trace_time,
               (unsigned long long)rip, (unsigned long long)(rip - (uint64_t)GetModuleHandleA(nullptr)), c ? (unsigned long long)c->x[0] : 0ull, c ? symbolize(c->x[30]).c_str() : "-");
         for (auto &l : ch) trace("    %s", l.c_str());
@@ -556,13 +644,15 @@ static DWORD WINAPI watchdog(LPVOID) {
                 if (!h) continue;
                 CONTEXT tc = {}; tc.ContextFlags = CONTEXT_FULL;
                 if (SuspendThread(h) != (DWORD)-1) {
-                    if (GetThreadContext(h, &tc)) {
-                        host_stack(h, tc);
+                    const bool got = GetThreadContext(h, &tc) != FALSE;
+                    const size_t snapped = got ? snap_stack(tc) : 0;   // copy while suspended: no heap use here
+                    ResumeThread(h);   // before host_stack/trace: they allocate (see above); the walk reads the copy
+                    if (got) {
+                        host_stack(tc, snapped);
                         uint64_t base = (uint64_t)GetModuleHandleA(nullptr);
                         bool inexe = tc.Rip - base < 0x10000000ull;
                         trace("    thread %lu rip=%s%#llx", te.th32ThreadID, inexe ? "exe+" : "", (unsigned long long)(inexe ? tc.Rip - base : tc.Rip));
                     }
-                    ResumeThread(h);
                 }
                 CloseHandle(h);
             } while (Thread32Next(snap, &te));
@@ -646,8 +736,73 @@ static void shim_alloc_tls_slot(Cpu *c) {   // Result SdkAllocateTlsSlot(TlsSlot
     c->x[0] = 0;
 }
 
+extern "C" void (*snap_nvn_guest_chain)(const char *tag);   // runtime/nvn/nvn_gfx.cpp
+static void nvn_guest_chain(const char *tag) {
+    Cpu *c = g_tls_cpu;
+    fprintf(stderr, "[guest-chain] %s on tid %lu (guest thread type %#llx)%s\n", tag, GetCurrentThreadId(), (unsigned long long)os_current_thread_type(), c ? "" : ": no guest cpu");
+    if (c) for (auto &l : guest_chain(c, c->x[30], 16)) fprintf(stderr, "    %s\n", l.c_str());
+}
+// Crash B1 source (2026-11-13): GPU arena 7 holds the per-model-instance mesh buffers, freed a fixed number of game frames after
+// release while loader threads build the next scene at full speed. On the Switch 56 MiB covers the overlap at a scene change; on
+// the PC slow frames there (texture uploads, a busy machine) made it overflow. MAIN_INLINE_HOOKS runs this before main+0x4d5d68,
+// right after `mov w10, #0x3800000` (arena 7's size in the arena size table the setup at 0x4d5xxx builds on its stack, stored by
+// `stp x10, x8, [sp, #0xe8]` at 0x4d5d7c). Default 112 MiB; SNAP_ARENA7_MB=56 restores the original (range 56..512).
+extern "C" void rt_gm_arena7_size(Cpu *c) {
+    static const uint64_t mb = [] {
+        const char *e = getenv("SNAP_ARENA7_MB");
+        long v = e && *e ? atol(e) : 112;
+        if (v < 56 || v > 512) v = 112;
+        return (uint64_t)v;
+    }();
+    if ((uint32_t)c->x[10] != 0x3800000u) return;   // not the expected instruction stream: leave it alone
+    c->x[10] = mb << 20;
+    fprintf(stderr, "[arena] type 7 size %llu MiB (original 56; SNAP_ARENA7_MB)\n", (unsigned long long)mb);
+}
+extern "C" int (*snap_nvn_guest_frames)(uint64_t *out, int max);   // runtime/nvn/nvn_gfx.cpp (SNAP_ARENA_LOG owners)
+static int nvn_guest_frames(uint64_t *out, int max) {   // lr, then saved return addresses of the frame records
+    Cpu *c = g_tls_cpu;
+    if (!c || max <= 0) return 0;
+    int n = 0;
+    out[n++] = c->x[30];
+    uint64_t fp = c->x[29];
+    while (n < max && fp >= 0x10000 && !(fp & 7) && !IsBadReadPtr((void *)fp, 16)) {
+        const uint64_t *r = (const uint64_t *)fp;
+        if (!r[1] || r[1] == HOST_SENTINEL) break;
+        out[n++] = r[1];
+        if (r[0] <= fp) break;
+        fp = r[0];
+    }
+    return n;
+}
+// Stress switch for crash B1 (off by default): SNAP_STRESS_ARENA=<type>:<MB> takes that much space out of one of the game's GPU
+// memory arenas (allocator main+0x911fc0, object at [main+0x12febc0]) once, on the first BufferInitialize after the arena exists, so the
+// arena runs full the way it does about 1% of the time in the lab hub. Never freed.
+extern "C" void (*snap_nvn_on_buffer_init)();   // runtime/nvn/nvn_gfx.cpp
+static void stress_arena() {
+    static std::atomic<int> done{0};
+    static const char *e = getenv("SNAP_STRESS_ARENA");
+    if (!e || done.load(std::memory_order_relaxed)) return;
+    Cpu *c = g_tls_cpu;
+    const uint64_t obj = *(uint64_t *)gp(0x7100000000ull + 0x12febc0);
+    int type = 7, mb = 0;
+    if (sscanf(e, "%d:%d", &type, &mb) != 2 || !c || !obj || type < 0 || type > 9 || mb <= 0) return;
+    if (!*(uint64_t *)gp(obj + type * 0x838 + 0x21e0)) return;   // arena not set up yet
+    if (done.exchange(1)) return;
+    int got = 0;
+    for (int i = 0; i < mb; i++)   // 1 MiB pieces: the arena's largest-request limit stays out of the way
+        if (call_guest_nested(c, 0x7100000000ull + 0x911fc0, {obj, (uint64_t)type, 1ull << 20, 0x1000})) got++;
+    fprintf(stderr, "[stress] SNAP_STRESS_ARENA: took %d of %d MiB from arena type %d (size %#llx)\n", got, mb, type,
+            (unsigned long long)*(uint64_t *)gp(obj + type * 0x838 + 0x21e8));
+    for (int t = 0; t < 10; t++)
+        fprintf(stderr, "[stress]   arena type %d base %#llx size %#llx\n", t, (unsigned long long)*(uint64_t *)gp(obj + t * 0x838 + 0x21e0),
+                (unsigned long long)*(uint64_t *)gp(obj + t * 0x838 + 0x21e8));
+}
 static DWORD WINAPI run_thread(LPVOID) {
     SetUnhandledExceptionFilter(crash_filter);
+    start_symbolizer();
+    snap_nvn_guest_chain = nvn_guest_chain;
+    snap_nvn_on_buffer_init = stress_arena;
+    snap_nvn_guest_frames = nvn_guest_frames;
     const bool full = g_o.cmd == "run";
     if (!full) {
         if (g_o.cmd == "init" && !g_o.libc) {}
@@ -730,7 +885,21 @@ static DWORD WINAPI run_thread(LPVOID) {
     return fails ? 1 : 0;
 }
 
+// The whole exe is built for x86-64-v3 (host\build_snap.py -march: AVX2, BMI2, FMA; e.g. FastHash in runtime\nvn\nvn_tex_vk.cpp).
+// Say so plainly on an older CPU instead of dying on the first AVX2 instruction (static initializers may already have run).
+static bool cpu_has_v3() {
+    int r[4];
+    __cpuid(r, 0);
+    if (r[0] < 7) return false;
+    __cpuid(r, 1);
+    const bool fma = (r[2] >> 12) & 1, osxsave = (r[2] >> 27) & 1, avx = (r[2] >> 28) & 1;
+    if (!fma || !osxsave || !avx || (_xgetbv(0) & 6) != 6) return false;   // OS saves the YMM state
+    __cpuidex(r, 7, 0);
+    return ((r[1] >> 5) & 1) && ((r[1] >> 3) & 1) && ((r[1] >> 8) & 1);   // AVX2, BMI1, BMI2
+}
+
 int main(int argc, char **argv) {
+    if (!cpu_has_v3()) { fprintf(stderr, "boot: this build needs an x86-64-v3 CPU (AVX2, BMI2, FMA); this CPU lacks it\n"); return 2; }
     static char errbuf[1 << 16];
     setvbuf(stderr, errbuf, _IOLBF, sizeof errbuf);   // MSVC stderr is unbuffered (one write per character when redirected): a log burst stalls the game threads
     for (int i = 1; i < argc; i++) {

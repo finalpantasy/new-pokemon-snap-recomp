@@ -1,0 +1,11 @@
+# fixture: new_game
+# Probe for #18 (skip cutscenes/dialogue). A taps like tut_full until f5500 (the lab dialogue starts about f5580), then single A taps
+# at known presents (f5800, f6050, f6300, f6550) and Plus / X / Y holds later, with SNAP_SKIPS_REC and NVN_FRAME_DUMP_AT around them.
+repeat @f1500 @f5500 50 12 A
+@f5800 8 A
+@f6050 8 A
+@f6300 8 A
+@f6550 8 A
+@f7000 30 Plus
+@f7600 30 X
+@f8200 30 Y

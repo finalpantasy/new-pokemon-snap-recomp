@@ -1,0 +1,19 @@
+# fixture: post_tutorial
+# Offline auto-upload probe (hle audit, 2026-11-13): opens Settings from the lab hub (as native_options_tabs.txt), A closes the info popup,
+# R x4 to "Other" (rows Language, Spoiler, SNS Photo, Auto-Upload Photos, Credit), Down x3 to Auto-Upload, Right (second choice), B closes.
+# Run with SNAP_MODS_DIR pointing at an empty dir (no native-options pack) so the stock tab list shows.
+repeat @f200 @f1400 100 8 ZL
+repeat @f1500 @f30000 240 8 Up
+repeat @f1530 @f30000 240 8 A
+anchor options
+@f120 8 A
+@f300 8 R
+@f370 8 R
+@f440 8 R
+@f510 8 R
+@f650 8 Down
+@f720 8 Down
+@f790 8 Down
+@f900 8 Right
+@f1050 8 Left
+@f1200 8 B

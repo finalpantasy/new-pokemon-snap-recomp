@@ -8,6 +8,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <map>
 
 #include "os_internal.h"
@@ -22,6 +25,17 @@ constexpr uint32_t R_OUT_OF_MEMORY = 0x1003, R_OUT_OF_ADDRESS_SPACE = 0x1803, R_
 constexpr uint64_t PAGE = 0x1000;
 constexpr uint64_t HEAP_UNIT = 0x200000;           // nn::os::MemoryHeapUnitSize
 constexpr uint64_t HEAP_RESERVE = 16ull << 30;     // address space reserved for the heap (committed on demand)
+
+// [perf] Guest reservations carry MEM_WRITE_WATCH so the NVN layer can copy only the pages the game wrote into its mirrored
+// buffers (GetWriteWatch, runtime/nvn/nvn_vk.cpp SyncPoolRange; perf pass 4). The flag can only be set at reserve time.
+// SNAP_SYNC_FULL=1 or SNAP_WRITE_WATCH=0 reserve without it (old behavior; the NVN layer then copies whole ranges).
+DWORD ww_flag() {
+    static const DWORD f = [] {
+        const char *a = getenv("SNAP_SYNC_FULL"), *b = getenv("SNAP_WRITE_WATCH");
+        return ((a && *a == '1') || (b && *b == '0')) ? (DWORD)0 : (DWORD)MEM_WRITE_WATCH;
+    }();
+    return f;
+}
 
 std::mutex g_mm;
 struct Region { uint64_t size, committed; };
@@ -38,11 +52,60 @@ Region *region_of(uint64_t a, uint64_t size) {   // under g_mm: the region that 
     return &it->second;
 }
 
+// Crash main+0x99c88c / 0x99c910 (2 runs, 2026-11-12): the game's 2 MiB page heap (main+0x8dc340, nu::PageHeap) takes its large
+// blocks from AllocateAddressRegion + AllocateMemoryPages and, when either fails, its caller (0x99c7f0) memsets the NULL result.
+// On the Switch these never fail inside the game's budget; on the host they fail only under transient Windows memory pressure
+// (commit limit reached by other processes). So a failed reserve/commit with a transient error (commit limit, out of memory, no
+// system resources) is retried, without holding g_mm, with a backoff of 1, 2, 4 .. 100 ms for up to SNAP_VAMM_RETRY_MS (default 5000;
+// 0 = fail at once, the old behavior); any other error fails at once. The guest caller holds the page heap's lock meanwhile, so the
+// budget is short: it only has to outlast a brief pressure spike, and the alternative is the crash.
+// Test switch SNAP_FAULT_VAMM=<s>:<n>: from <s> seconds after the first VAMM call, fail the next n reserves/commits (simulated
+// pressure, off by default).
+uint64_t retry_ms() {
+    static const uint64_t v = [] { const char *e = getenv("SNAP_VAMM_RETRY_MS"); return e && *e ? strtoull(e, nullptr, 0) : 5000ull; }();
+    return v;
+}
+bool fault_now() {
+    static long long s = 0, n = 0;
+    static std::atomic<long long> hits{0};
+    static const bool on = [] { const char *e = getenv("SNAP_FAULT_VAMM"); return e && sscanf(e, "%lld:%lld", &s, &n) == 2 && n > 0; }();
+    if (!on) return false;
+    static const ULONGLONG t0 = GetTickCount64();
+    if (GetTickCount64() - t0 < (ULONGLONG)s * 1000) return false;
+    if (hits.fetch_add(1) >= n) return false;
+    SetLastError(ERROR_COMMITMENT_LIMIT);
+    return true;
+}
+bool vamm_wait(const char *what, uint64_t size, uint64_t &waited, DWORD err) {   // true = retry after a pause
+    const bool transient = err == ERROR_COMMITMENT_LIMIT || err == ERROR_NOT_ENOUGH_MEMORY || err == ERROR_OUTOFMEMORY ||
+                           err == ERROR_NO_SYSTEM_RESOURCES || err == ERROR_COMMITMENT_MINIMUM;
+    const uint64_t lim = transient ? retry_ms() : 0;
+    if (waited == 0)
+        fprintf(stderr, "[os-mem] %s(%#llx) failed: error %lu (reserved %#llx, committed %#llx, %zu regions)%s\n", what, (unsigned long long)size, err,
+                (unsigned long long)g_reserved_total, (unsigned long long)g_committed_total, g_regions.size(), lim ? ": retrying" : "");
+    if (waited >= lim) {
+        if (lim) fprintf(stderr, "[os-mem] %s(%#llx) still failing after %llu ms: giving up\n", what, (unsigned long long)size, (unsigned long long)waited);
+        return false;
+    }
+    static thread_local uint64_t step = 1;
+    if (waited == 0) step = 1;
+    Sleep((DWORD)step);
+    waited += step;
+    step = std::min<uint64_t>(step * 2, 100);
+    return true;
+}
 uint32_t vamm_alloc_region(uint64_t out, uint64_t size) {
     if (!size) return R_INVALID_RANGE;
     size = page_up(size);
-    void *p = VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_NOACCESS);
-    if (!p) return R_OUT_OF_ADDRESS_SPACE;
+    void *p = nullptr;
+    for (uint64_t waited = 0;;) {
+        p = fault_now() ? nullptr : VirtualAlloc(nullptr, size, MEM_RESERVE | ww_flag(), PAGE_NOACCESS);
+        if (p) {
+            if (waited) fprintf(stderr, "[os-mem] AllocateAddressRegion(%#llx) succeeded after %llu ms\n", (unsigned long long)size, (unsigned long long)waited);
+            break;
+        }
+        if (!vamm_wait("AllocateAddressRegion", size, waited, GetLastError())) return R_OUT_OF_ADDRESS_SPACE;
+    }
     std::lock_guard<std::mutex> lk(g_mm);
     g_regions[(uint64_t)(uintptr_t)p] = Region{size, 0};
     g_reserved_total += size;
@@ -52,22 +115,31 @@ uint32_t vamm_alloc_region(uint64_t out, uint64_t size) {
 uint32_t vamm_alloc_pages(uint64_t a, uint64_t size) {
     if (!size || (a & (PAGE - 1))) return R_INVALID_RANGE;
     size = page_up(size);
-    std::lock_guard<std::mutex> lk(g_mm);
-    Region *r = region_of(a, size);
-    if (!r) return R_INVALID_RANGE;
-    // Count only pages that were not committed yet (committing twice is legal and keeps the contents).
-    uint64_t fresh = 0;
-    for (uint64_t p = a; p < a + size;) {
-        MEMORY_BASIC_INFORMATION mi;
-        if (!VirtualQuery((void *)(uintptr_t)p, &mi, sizeof mi)) break;
-        uint64_t end = std::min<uint64_t>(a + size, (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize);
-        if (mi.State != MEM_COMMIT) fresh += end - p;
-        p = end;
+    for (uint64_t waited = 0;;) {
+        DWORD err = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_mm);
+            Region *r = region_of(a, size);
+            if (!r) return R_INVALID_RANGE;
+            // Count only pages that were not committed yet (committing twice is legal and keeps the contents).
+            uint64_t fresh = 0;
+            for (uint64_t p = a; p < a + size;) {
+                MEMORY_BASIC_INFORMATION mi;
+                if (!VirtualQuery((void *)(uintptr_t)p, &mi, sizeof mi)) break;
+                uint64_t end = std::min<uint64_t>(a + size, (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize);
+                if (mi.State != MEM_COMMIT) fresh += end - p;
+                p = end;
+            }
+            if (!fault_now() && VirtualAlloc((void *)(uintptr_t)a, size, MEM_COMMIT, PAGE_READWRITE)) {
+                r->committed += fresh;
+                g_committed_total += fresh;
+                if (waited) fprintf(stderr, "[os-mem] AllocateMemoryPages(%#llx) succeeded after %llu ms\n", (unsigned long long)size, (unsigned long long)waited);
+                return R_OK;
+            }
+            err = GetLastError();
+        }
+        if (!vamm_wait("AllocateMemoryPages", size, waited, err)) return R_OUT_OF_MEMORY;   // waits without g_mm: frees can proceed
     }
-    if (!VirtualAlloc((void *)(uintptr_t)a, size, MEM_COMMIT, PAGE_READWRITE)) return R_OUT_OF_MEMORY;
-    r->committed += fresh;
-    g_committed_total += fresh;
-    return R_OK;
 }
 uint32_t vamm_free_pages(uint64_t a, uint64_t size) {
     if (!size || (a & (PAGE - 1))) return R_INVALID_RANGE;
@@ -136,7 +208,7 @@ uint32_t heap_set_size(uint64_t size) {
     if (size % HEAP_UNIT || size > HEAP_RESERVE) return R_INVALID_RANGE;
     std::lock_guard<std::mutex> lk(g_mm);
     if (!g_heap_base) {
-        void *p = VirtualAlloc(nullptr, HEAP_RESERVE, MEM_RESERVE, PAGE_NOACCESS);
+        void *p = VirtualAlloc(nullptr, HEAP_RESERVE, MEM_RESERVE | ww_flag(), PAGE_NOACCESS);
         if (!p) return R_OUT_OF_ADDRESS_SPACE;
         g_heap_base = (uint64_t)(uintptr_t)p;
     }
@@ -162,7 +234,10 @@ uint32_t heap_alloc_block(uint64_t out, uint64_t size) {   // first fit, page al
         if (b.first - at >= size) break;
         at = b.first + b.second;
     }
-    if (!g_heap_base || at + size > g_heap_base + g_heap_size) return R_OUT_OF_MEMORY;
+    if (!g_heap_base || at + size > g_heap_base + g_heap_size) {
+        fprintf(stderr, "[os-mem] AllocateMemoryBlock(%#llx) failed: heap %#llx bytes, %zu blocks\n", (unsigned long long)size, (unsigned long long)g_heap_size, g_heap_blocks.size());
+        return R_OUT_OF_MEMORY;
+    }
     g_heap_blocks[at] = size;
     memset((void *)(uintptr_t)at, 0, size);
     gst<uint64_t>(out, at);
@@ -209,7 +284,7 @@ uint32_t mem_get_info(uint32_t type, uint64_t *out) {
     case 3: v = ALIAS_RESERVE; break;
     case 4:
         if (!g_heap_base) {
-            void *p = VirtualAlloc(nullptr, HEAP_RESERVE, MEM_RESERVE, PAGE_NOACCESS);
+            void *p = VirtualAlloc(nullptr, HEAP_RESERVE, MEM_RESERVE | ww_flag(), PAGE_NOACCESS);
             if (!p) return R_OUT_OF_ADDRESS_SPACE;
             g_heap_base = (uint64_t)(uintptr_t)p;
         }
