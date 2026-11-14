@@ -1,0 +1,48 @@
+{
+ "_doc": "Explicit per-species overrides of shiny_colors.txt: game number -> name and regions (hue bands with hue_shift, chroma_scale, light_scale). All *_dif textures of the model except eyes and mouths are recolored.",
+ "016": {
+  "name": "Wurmple",
+  "regions": [
+   {
+    "src_hue": [
+     330,
+     70
+    ],
+    "min_c": 0.05,
+    "hue_shift": 225,
+    "chroma_scale": 0.95,
+    "feather": 12
+   }
+  ]
+ },
+ "032": {
+  "name": "Bidoof",
+  "regions": [
+   {
+    "src_hue": [
+     15,
+     100
+    ],
+    "min_c": 0.03,
+    "hue_shift": 140,
+    "chroma_scale": 1.3,
+    "feather": 12
+   }
+  ]
+ },
+ "007": {
+  "name": "Dodrio",
+  "regions": [
+   {
+    "src_hue": [
+     10,
+     80
+    ],
+    "min_c": 0.05,
+    "hue_shift": 200,
+    "chroma_scale": 1.0,
+    "feather": 12
+   }
+  ]
+ }
+}

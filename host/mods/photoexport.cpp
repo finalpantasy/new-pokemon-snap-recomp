@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <wincodec.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -32,6 +33,8 @@
 
 using namespace loader;
 
+extern "C" void snap_shiny_photo_encoded(const uint8_t *jpg, size_t n);   // host/mods/shiny.cpp
+
 namespace {
 
 const char *kSetPixel = "_ZN2nn5image11JpegEncoder12SetPixelDataEPKvNS0_11PixelFormatERKNS0_9DimensionEi";
@@ -45,7 +48,8 @@ std::condition_variable g_cv;
 std::unordered_map<uint64_t, PixInfo> g_pix;
 std::unordered_set<uint32_t> g_seen;
 std::deque<Job> g_q;
-bool g_log, g_started;
+bool g_log, g_started, g_busy;   // g_busy: the worker holds a job (under g_mu)
+std::condition_variable g_idle_cv;
 int g_min_w = 640;
 long g_count;
 std::string g_dir;
@@ -108,6 +112,7 @@ void worker() {
             g_cv.wait(lk, [] { return !g_q.empty(); });
             j = std::move(g_q.front());
             g_q.pop_front();
+            g_busy = true;
         }
         std::string png = g_dir + "\\" + j.base + ".png";
         bool ok = write_png(j, png);
@@ -119,6 +124,8 @@ void worker() {
             if (fp) { fputs(js, fp); fclose(fp); }
         }
         fprintf(stderr, "[photo-export] %s %s (%dx%d)\n", ok ? "wrote" : "FAILED", png.c_str(), j.w, j.h);
+        { std::lock_guard<std::mutex> lk(g_mu); g_busy = false; }
+        g_idle_cv.notify_all();
     }
 }
 
@@ -130,8 +137,43 @@ void ensure_started() {
     std::thread(worker).detach();
 }
 
+// Off words (case-insensitive) disable; on words enable; anything else falls back to the profile default.
+bool parse_enabled(const char *e) {
+    if (!e || !*e) e = snapdef::def("SNAP_PHOTO_EXPORT");
+    if (!e) return false;
+    if (!_stricmp(e, "0") || !_stricmp(e, "off") || !_stricmp(e, "no") || !_stricmp(e, "false") || !_stricmp(e, "n") || !_stricmp(e, "f")) return false;
+    if (!_stricmp(e, "1") || !_stricmp(e, "on") || !_stricmp(e, "yes") || !_stricmp(e, "true") || !_stricmp(e, "y") || !_stricmp(e, "t")) return true;
+    const char *d = snapdef::def("SNAP_PHOTO_EXPORT");
+    return d && d[0] == '1';
+}
+
+// Resolved once, at the first hook call (after settings.cfg has been exported to the env).
+bool enabled() {
+    static std::once_flag once;
+    static bool on;
+    std::call_once(once, [] {
+        if (!parse_enabled(snapdef::get("SNAP_PHOTO_EXPORT"))) return;
+        g_log = getenv("SNAP_PHOTO_LOG") && getenv("SNAP_PHOTO_LOG")[0] != '0';
+        if (const char *m = getenv("SNAP_PHOTO_MIN_W")) { int v = atoi(m); if (v > 0) g_min_w = v; }
+        const char *d = getenv("SNAP_PHOTO_DIR");
+        if (d && *d) g_dir = d;
+        else if (getenv("SNAP_SAVE_DIR")) return;   // test runs (they set SNAP_SAVE_DIR) never write into the player's photo folder
+        else {
+            const char *a = getenv("APPDATA");
+            g_dir = std::string(a ? a : ".") + "\\SnapRecomp\\photos";
+        }
+        on = true;
+    });
+    return on;
+}
+
 // Source pixel format: the game passes 14 (R,G,B,A bytes); that is the only one converted. Photos are 1080x720, thumbnails 240x200 and 204x136.
 void h_setpixel(Cpu *c) {
+    if (!enabled()) {
+        uint64_t o = lookup(kSetPixel);
+        if (o) c->x[0] = call_guest_nested(c, o, {c->x[0], c->x[1], c->x[2], c->x[3], c->x[4]});
+        return;
+    }
     uint64_t self = c->x[0];
     PixInfo p{c->x[1], (int)c->x[2], 0, 0, (int)c->x[4]};
     const int *dim = (const int *)c->x[3];
@@ -147,6 +189,8 @@ void h_encode(Cpu *c) {
     uint64_t args[7] = {c->x[0], c->x[1], c->x[2], c->x[3], c->x[4], c->x[5], c->x[6]};
     uint64_t orig = lookup(kEncode);
     uint64_t res = orig ? call_guest_nested(c, orig, {args[0], args[1], args[2], args[3], args[4], args[5], args[6]}) : 0;
+    if ((uint32_t)res == 0 && psize && out) snap_shiny_photo_encoded((const uint8_t *)out, (size_t)*(const uint64_t *)psize);   // shiny mod (host/mods/shiny.cpp; off unless SNAP_SHINY=1)
+    if (!enabled()) { c->x[0] = res; return; }
     PixInfo p{};
     bool have = false;
     { std::lock_guard<std::mutex> lk(g_mu); auto it = g_pix.find(self); if (it != g_pix.end()) { p = it->second; have = true; } }
@@ -194,18 +238,17 @@ void h_encode(Cpu *c) {
 }  // namespace
 
 namespace loader {
+// The hooks are always registered; the env (SNAP_PHOTO_EXPORT / SNAP_PHOTO_DIR, which settings.cfg exports in bind_host_layers, after
+// install_libc_overrides) is read lazily at the first hook call.
 void snap_photoexport_install() {
-    const char *e = snapdef::get("SNAP_PHOTO_EXPORT");   // unset = the shared defaults table (off in the original profile)
-    if (e && (e[0] == '0' || e[0] == 'n' || e[0] == 'N' || e[0] == 'f' || e[0] == 'F')) return;
-    g_log = getenv("SNAP_PHOTO_LOG") && getenv("SNAP_PHOTO_LOG")[0] != '0';
-    if (const char *m = getenv("SNAP_PHOTO_MIN_W")) { int v = atoi(m); if (v > 0) g_min_w = v; }
-    if (const char *d = getenv("SNAP_PHOTO_DIR")) g_dir = d;
-    else if (getenv("SNAP_SAVE_DIR")) return;   // test runs (they set SNAP_SAVE_DIR) never write into the player's photo folder
-    else {
-        const char *a = getenv("APPDATA");
-        g_dir = std::string(a ? a : ".") + "\\SnapRecomp\\photos";
-    }
     add_override(kSetPixel, h_setpixel);
     add_override(kEncode, h_encode);
+}
+
+// Waits (bounded) until every queued photo export is written. Called by snap_fs_drain_for_exit (runtime/hle/fs.cpp), which the
+// WM_CLOSE path and ov_QuickExit (runtime/os/os_thread.cpp) both call.
+extern "C" void snap_photoexport_drain_for_exit(int ms) {
+    std::unique_lock<std::mutex> lk(g_mu);
+    g_idle_cv.wait_for(lk, std::chrono::milliseconds(ms), [] { return g_q.empty() && !g_busy; });
 }
 }  // namespace loader

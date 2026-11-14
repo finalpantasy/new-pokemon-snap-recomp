@@ -1,0 +1,17 @@
+# fixture: unlock_all
+# sweep2 map probe 3: R x5, U, U, L, D, then A, dwell; 360 presents per step
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f120 6 Right
+@f480 6 Right
+@f840 6 Right
+@f1200 6 Right
+@f1560 6 Right
+@f1920 6 Up
+@f2280 6 Up
+@f2640 6 Left
+@f3000 6 Down
+@f3500 6 A
+@f4100 6 A
+end @f4600

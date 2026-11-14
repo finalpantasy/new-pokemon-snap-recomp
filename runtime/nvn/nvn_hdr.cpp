@@ -24,19 +24,23 @@ namespace {
 float EnvF(const char* n, float d) { const char* e = getenv(n); return (e && *e) ? (float)atof(e) : d; }
 // SNAP_HDR=off|hdr10|scrgb (1 = hdr10, 0 = off). g_active is what the swapchain actually uses after the fallback chain scrgb -> hdr10 -> SDR.
 enum Mode { M_OFF, M_HDR10, M_SCRGB };
-Mode g_want = [] {
-  const char* e = getenv("SNAP_HDR");
-  if (!e || !*e || !strcmp(e, "0") || !_stricmp(e, "off")) return M_OFF;
-  if (!_stricmp(e, "scrgb")) return M_SCRGB;
-  return M_HDR10;
-}();
+// Read lazily (first use), not in a static initializer: settings::load exports gfx_hdr as SNAP_HDR after process start.
+Mode Want() {
+  static const Mode m = [] {
+    const char* e = getenv("SNAP_HDR");
+    if (!e || !*e || !strcmp(e, "0") || !_stricmp(e, "off")) return M_OFF;
+    if (!_stricmp(e, "scrgb")) return M_SCRGB;
+    return M_HDR10;
+  }();
+  return m;
+}
 Mode g_active = M_OFF;
-bool g_req = g_want != M_OFF;
+bool Req() { return Want() != M_OFF; }
 float EnvF2(const char* a, const char* b, float d) { const char* e = getenv(a); if (e && *e) return (float)atof(e); return EnvF(b, d); }
 float g_peak = 1000.f;      // resolved in PickFormat (SNAP_HDR_PEAK_NITS, else the display's MaxLuminance, else 1000)
 float g_paper = 200.f;
 bool g_peakResolved = false;
-float g_expand = std::clamp(EnvF("SNAP_HDR_EXPAND", 0.3f), 0.f, 1.f);   // how far near-white is lifted (a plain SDR frame cannot tell UI white from a highlight)
+float Expand() { static const float v = std::clamp(EnvF("SNAP_HDR_EXPAND", 0.3f), 0.f, 1.f); return v; }   // how far near-white is lifted (a plain SDR frame cannot tell UI white from a highlight)
 
 // DXGI_OUTPUT_DESC1::MaxLuminance of the output the window is on (0 when unavailable, e.g. no HDR display or a hidden desktop).
 float QueryDisplayPeak(void* hwnd) {
@@ -193,14 +197,14 @@ bool IsSrgb(VkFormat f) { return f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_
 
 }  // namespace
 
-bool Requested() { return g_req; }
+bool Requested() { return Req(); }
 bool IsScrgb() { return g_active == M_SCRGB; }
 float Peak() { return g_peak; }
 float Paper() { return g_paper; }
 const char* ModeName() { return g_active == M_SCRGB ? "scrgb (inverse tone map)" : "hdr10 (inverse tone map)"; }
 
 void AppendInstanceExt(std::vector<const char*>& ext) {
-  if (!g_req) return;
+  if (!Req()) return;
   uint32_t n = 0;
   vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
   std::vector<VkExtensionProperties> p(n);
@@ -211,7 +215,7 @@ void AppendInstanceExt(std::vector<const char*>& ext) {
 }
 
 void AppendDeviceExt(VkPhysicalDevice phys, std::vector<const char*>& ext) {
-  if (!g_req) return;
+  if (!Req()) return;
   uint32_t n = 0;
   vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, nullptr);
   std::vector<VkExtensionProperties> p(n);
@@ -230,7 +234,7 @@ bool PickFormat(const VkSurfaceFormatKHR* fm, uint32_t n, VkSurfaceFormatKHR* ou
   if (S.failed) { fprintf(stderr, "hdr: the HDR pass failed earlier; staying SDR\n"); return false; }
   std::string l;
   for (uint32_t i = 0; i < n; i++) { char b[40]; snprintf(b, sizeof b, " %d/%d", (int)fm[i].format, (int)fm[i].colorSpace); l += b; }
-  if (g_want == M_SCRGB) {
+  if (Want() == M_SCRGB) {
     for (uint32_t i = 0; i < n; i++)
       if (fm[i].format == VK_FORMAT_R16G16B16A16_SFLOAT && fm[i].colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) { *out = fm[i]; g_active = M_SCRGB; return true; }
     fprintf(stderr, "hdr: RGBA16F + EXTENDED_SRGB_LINEAR (scRGB) not offered (surface formats format/colorspace:%s); trying HDR10\n", l.c_str());
@@ -361,7 +365,7 @@ bool Record(const Frame& f) {
   vkCmdSetViewport(cb, 0, 1, &vp);
   vkCmdSetScissor(cb, 0, 1, &sc);
   const float iw = 1.0f / (float)f.srcW, ih = 1.0f / (float)f.srcH;
-  const float pc[12] = {f.sx * iw, f.sy * ih, f.sw * iw, f.sh * ih, g_paper, g_peak, IsSrgb(f.srcFmt) ? 1.f : 0.f, g_expand, g_active == M_SCRGB ? 1.f : 0.f, 0.f, 0.f, 0.f};
+  const float pc[12] = {f.sx * iw, f.sy * ih, f.sw * iw, f.sh * ih, g_paper, g_peak, IsSrgb(f.srcFmt) ? 1.f : 0.f, Expand(), g_active == M_SCRGB ? 1.f : 0.f, 0.f, 0.f, 0.f};
   vkCmdPushConstants(cb, S.pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
   vkCmdDraw(cb, 3, 1, 0, 0);
   vkCmdEndRendering(cb);

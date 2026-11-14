@@ -14,6 +14,7 @@
 #include <unordered_map>
 
 #include "hle_config.h"
+#include "save_gen.h"
 
 // runtime/os releases the caller's virtual core around blocking reads. These no-op weak defaults keep builds without
 // runtime/os (tests/hle) linking; snap_boot links the real ones from os_kernel.cpp.
@@ -164,6 +165,36 @@ static bool replace_file(const stdfs::path& from, const stdfs::path& to) {
 #endif
 }
 
+// True when nothing exists at `p` (not even a dangling link). An unreadable status counts as present.
+static bool gone(const stdfs::path& p) {
+  std::error_code ec;
+  return stdfs::symlink_status(p, ec).type() == stdfs::file_type::not_found;
+}
+// Removes a file or tree and proves it is gone. remove_all can stop part-way (a file held open without FILE_SHARE_DELETE).
+static bool remove_checked(const stdfs::path& p) {
+  std::error_code ec;
+  stdfs::remove_all(p, ec);
+  return !ec && gone(p);
+}
+
+// The result a failed commit returns, by cause. Only a full disk is the game's "not enough space" error; every other cause (a
+// file held by another program, a permission or I/O error) returns TargetLocked, which the game's result mapper also handles
+// (main 0x60362c, game error 0x11), instead of telling the player the disk is full.
+static uint32_t commit_result(const std::error_code& ec) {
+#ifdef _WIN32
+  if (ec.category() == std::system_category() && (ec.value() == ERROR_DISK_FULL || ec.value() == ERROR_HANDLE_DISK_FULL)) return kResultUsableSpaceNotEnough;
+#endif
+  if (ec == std::errc::no_space_on_device || ec == std::errc::file_too_large) return kResultUsableSpaceNotEnough;
+  return kResultTargetLocked;
+}
+static std::error_code last_os_error() {
+#ifdef _WIN32
+  return std::error_code((int)GetLastError(), std::system_category());
+#else
+  return std::error_code(errno, std::generic_category());
+#endif
+}
+
 bool split_path(const std::string& path, std::string* mount, std::string* rel) {
   size_t c = path.find(':');
   if (c == std::string::npos || c == 0 || c > 32) return false;
@@ -218,25 +249,67 @@ struct Save {
   int keep = 5;
   std::string lock_key;  // key of the folder lock in Fs::Impl::locks (empty: none)
   std::set<std::string> dirty, deleted, dirs;  // dirs: directories created since the last commit
+  std::string work_name = "working";           // "working", or "working.<k>" when an old one could not be removed
+  std::set<uint64_t> orphans;                  // complete but never published (marker stuck after a failed commit)
 
   stdfs::path gens() const { return root / "gens"; }
   stdfs::path gen_dir(uint64_t n) const { return gens() / std::to_string(n); }
   stdfs::path gen_ok(uint64_t n) const { return gens() / (std::to_string(n) + ".ok"); }
-  stdfs::path working() const { return root / "working"; }
+  // <n>.orphan: written when a failed commit cannot remove <n>.ok; such a generation is not valid (removed with it)
+  stdfs::path gen_orphan(uint64_t n) const { return gens() / (std::to_string(n) + ".orphan"); }
+  stdfs::path working() const { return root / work_name; }
+
+  // Generation numbers present under gens/ (directories and markers alike).
+  std::set<uint64_t> gen_numbers() const {
+    std::set<uint64_t> v;
+    std::error_code ec;
+    for (stdfs::directory_iterator it(gens(), ec), end; !ec && it != end; it.increment(ec)) {
+      const std::string stem = from_path(it->path().stem());
+      if (stem.empty() || !std::all_of(stem.begin(), stem.end(), [](char c) { return c >= '0' && c <= '9'; })) continue;
+      v.insert(std::strtoull(stem.c_str(), nullptr, 10));
+    }
+    return v;
+  }
+  // Removes a generation marker first, then its directory, so a partly removed directory never sits under a valid marker.
+  // A marker that cannot be removed gets an orphan mark beside it, so the generation stops counting either way.
+  // The orphan mark is written before the marker is touched, so neither a stuck marker nor a crash part-way through leaves a
+  // valid-looking generation behind. If the mark itself cannot be written, the in-memory set still covers this session.
+  bool mark_orphan(uint64_t g) {
+    orphans.insert(g);
+    {
+      std::ofstream f(gen_orphan(g), std::ios::binary | std::ios::trunc);
+      f << "orphan\n";
+      f.flush();
+      if (!f) { log("fs: save: cannot write the orphan mark %s", from_path(gen_orphan(g)).c_str()); return false; }
+    }
+    flush_path(gen_orphan(g));
+    return true;
+  }
+  bool drop_generation(uint64_t g) {
+    if (!gone(gen_ok(g))) mark_orphan(g);
+    if (!remove_checked(gen_ok(g))) {
+      log("fs: save: cannot remove %s; generation %llu is kept whole but orphaned", from_path(gen_ok(g)).c_str(), (unsigned long long)g);
+      return false;
+    }
+    if (!remove_checked(gen_dir(g))) { log("fs: save: cannot fully remove %s (in use?); it has no marker and is never loaded", from_path(gen_dir(g)).c_str()); return false; }
+    std::error_code ec;
+    stdfs::remove(gen_orphan(g), ec);   // last: harmless once the marker is gone (fresh_generation clears a leftover)
+    return true;
+  }
+  // A new, empty scratch directory "working" or "working.<k>" (k from 1) under root; false if none can be created.
+  bool fresh_working(std::string* name) const {
+    for (int k = 0; k < 64; ++k) {
+      std::string nm = k ? "working." + std::to_string(k) : std::string("working");
+      std::error_code ec;
+      if (stdfs::create_directory(root / nm, ec) && !ec) { *name = nm; return true; }
+    }
+    return false;
+  }
   stdfs::path committed() const { return gen_dir(cur); }
 
   static uint32_t check_of(uint64_t n) { return (uint32_t)(n * 2654435761u) ^ 0x534e4150u; }
 
-  bool read_pointer(uint64_t* n) const {
-    std::ifstream f(root / kPointerName, std::ios::binary);
-    if (!f) return false;
-    std::string magic;
-    unsigned long long g = 0, chk = 0;
-    if (!(f >> magic >> g >> chk) || magic != "SNAPSAVE1") return false;
-    if ((uint32_t)chk != check_of(g)) return false;
-    *n = g;
-    return true;
-  }
+  bool read_pointer(uint64_t* n) const { return savegen::read_pointer_file(root / kPointerName, n); }
   bool write_pointer(uint64_t n, const std::function<void(const char*)>& hook) const {
     stdfs::path tmp = root / "CURRENT.tmp";
     {
@@ -250,24 +323,10 @@ struct Save {
     if (hook) hook("commit:pointer-done");
     return true;
   }
-  bool gen_valid(uint64_t n) const {
-    std::error_code ec;
-    return stdfs::exists(gen_ok(n), ec) && stdfs::is_directory(gen_dir(n), ec);
-  }
+  bool gen_valid(uint64_t n) const { return !orphans.count(n) && savegen::gen_valid(root, n); }   // shared rule (save_gen.h)
 
   // Finds the newest complete generation at or below `limit` (no limit: any).
-  bool scan(uint64_t* out) const {
-    std::error_code ec;
-    bool found = false;
-    uint64_t best = 0;
-    for (auto& e : stdfs::directory_iterator(gens(), ec)) {
-      if (e.path().extension() != ".ok") continue;
-      uint64_t n = std::strtoull(e.path().stem().string().c_str(), nullptr, 10);
-      if (gen_valid(n) && (!found || n > best)) { best = n; found = true; }
-    }
-    if (found) *out = best;
-    return found;
-  }
+  bool scan(uint64_t* out) const { return savegen::newest_valid(root, out, [&](uint64_t n) { return orphans.count(n) != 0; }); }
 
   // Opens the save: finds the committed generation, drops every uncommitted or half-built leftover.
   bool open(int keep_gens) {
@@ -275,39 +334,41 @@ struct Save {
     std::error_code ec;
     stdfs::create_directories(gens(), ec);
     uint64_t n = 0;
-    bool have = read_pointer(&n) && gen_valid(n);
+    // CURRENT, else a valid CURRENT.tmp (the interrupted replace), else the newest valid generation: the rule profile copies use
+    bool have = savegen::committed_gen(root, &n, nullptr, [&](uint64_t g) { return orphans.count(g) != 0; });
     if (!have) {
-      // the pointer is missing or torn: a CURRENT.tmp that is valid and complete is the interrupted replace
-      stdfs::path tmp = root / "CURRENT.tmp";
-      if (stdfs::exists(tmp, ec)) {
-        std::ifstream f(tmp, std::ios::binary);
-        std::string magic; unsigned long long g = 0, chk = 0;
-        if (f && (f >> magic >> g >> chk) && magic == "SNAPSAVE1" && (uint32_t)chk == check_of(g) && gen_valid(g)) {
-          n = g; have = true;
-        }
-      }
-    }
-    if (!have) have = scan(&n);
-    if (!have) {
+      // no save: an empty generation, built on a number whose leftovers (if any) are gone, never on top of them
       n = 0;
-      stdfs::create_directories(gen_dir(0), ec);
-      std::ofstream(gen_ok(0)) << "ok\n";
+      for (uint64_t g = 0; g < 64; ++g) {
+        if (!drop_generation(g)) continue;
+        std::error_code e1;
+        if (!stdfs::create_directory(gen_dir(g), e1) || e1) continue;
+        n = g;
+        break;
+      }
+      orphans.erase(n);
+      std::ofstream(gen_ok(n)) << "ok\n";
     }
     cur = n;
-    // leftovers newer than the committed generation never became current: an interrupted commit
-    for (auto& e : stdfs::directory_iterator(gens(), ec)) {
-      uint64_t g = std::strtoull(e.path().stem().string().c_str(), nullptr, 10);
-      if (g > cur) stdfs::remove_all(e.path(), ec);
-    }
+    // leftovers newer than the committed generation never became current: an interrupted commit. One that cannot be removed
+    // (a file held open) stays without a marker; the next commit skips its number.
+    for (uint64_t g : gen_numbers()) if (g > cur) drop_generation(g);
     stdfs::remove(root / "CURRENT.tmp", ec);
-    std::error_code ec2;
     if (!read_pointer(&n) || n != cur) {
       std::function<void(const char*)> none;
-      write_pointer(cur, none);
+      if (!write_pointer(cur, none)) log("fs: save: cannot rewrite %s (generation %llu stays the newest complete one)", from_path(root / kPointerName).c_str(), (unsigned long long)cur);
     }
-    stdfs::remove_all(working(), ec);
-    stdfs::create_directories(working(), ec);
+    // working/ (and working.<k> from earlier runs) hold the last session's uncommitted changes: all are dropped. If one cannot be
+    // removed it must not be reused (its files would show up as this session's), so a fresh name is taken.
+    std::vector<stdfs::path> old_work;
+    for (stdfs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+      const std::string nm = from_path(it->path().filename());
+      if (nm == "working" || nm.rfind("working.", 0) == 0) old_work.push_back(it->path());
+    }
+    for (auto& p : old_work)
+      if (!remove_checked(p)) log("fs: save: cannot remove the old scratch folder %s; using a new one", from_path(p).c_str());
     dirty.clear(); deleted.clear(); dirs.clear();
+    if (!fresh_working(&work_name)) { log("fs: save: cannot create a scratch folder in %s", from_path(root).c_str()); return false; }
     return true;
   }
 
@@ -370,57 +431,128 @@ struct Save {
     return out;
   }
 
-  void carry(const stdfs::path& from, const stdfs::path& to, const std::string& rel) {
+  // Copies (hard-links where possible) every unchanged file of the committed generation into the new one. Any failure is returned:
+  // a generation missing a carried file must never be published.
+  bool carry(const stdfs::path& from, const stdfs::path& to, const std::string& rel, std::error_code& why) {
     std::error_code ec;
-    for (auto& e : stdfs::directory_iterator(from, ec)) {
+    stdfs::directory_iterator it(from, ec);
+    if (ec) { why = ec; return false; }
+    for (const stdfs::directory_iterator end; it != end; it.increment(ec)) {
+      if (ec) { why = ec; return false; }
+      const auto& e = *it;
       std::string name = from_path(e.path().filename());
       std::string child = rel.empty() ? name : rel + "/" + name;
       if (deleted.count(child)) continue;
-      if (e.is_directory(ec)) {
-        stdfs::create_directories(to / name, ec);
-        carry(e.path(), to / name, child);
+      std::error_code e2;
+      const bool isdir = e.is_directory(e2);
+      if (e2) { why = e2; return false; }
+      // replaced this session by an entry of the other type (file -> directory or directory -> file, also below a replaced
+      // parent): the session's entry is in working/ and is written by the dirty / dirs passes; the old one is not carried
+      const stdfs::file_type wt = stdfs::symlink_status(working() / to_path(child), e2).type();
+      if (wt == stdfs::file_type::none || wt == stdfs::file_type::unknown) { why = e2 ? e2 : std::make_error_code(std::errc::io_error); return false; }
+      if (wt != stdfs::file_type::not_found && (wt == stdfs::file_type::directory) != isdir) continue;
+      if (isdir ? dirty.count(child) != 0 : dirs.count(child) != 0) continue;   // same, from the session's own records
+      e2.clear();
+      if (isdir) {
+        stdfs::create_directories(to / name, e2);
+        if (e2) { why = e2; return false; }
+        if (!carry(e.path(), to / name, child, why)) return false;
       } else if (!dirty.count(child)) {
-        stdfs::create_hard_link(e.path(), to / name, ec);
-        if (ec) { ec.clear(); stdfs::copy_file(e.path(), to / name, stdfs::copy_options::overwrite_existing, ec); }
+        // `to` is a directory this commit created itself, so the name is new; copy_options::none refuses an existing entry
+        // instead of writing through it (an existing entry could be a hard link into a committed generation).
+        stdfs::create_hard_link(e.path(), to / name, e2);
+        if (e2) {
+          e2.clear();
+          stdfs::copy_file(e.path(), to / name, stdfs::copy_options::none, e2);
+          if (e2) { why = e2; return false; }
+          flush_path(to / name);   // a real copy must be on disk before the .ok marker, like every written file
+        }
       }
     }
+    if (ec) why = ec;
+    return !ec;
+  }
+
+  // Picks the number for the next generation and creates its directory fresh. A leftover gens/<n> (an interrupted or failed
+  // commit whose cleanup was blocked, e.g. a file held open by a scanner) is never built on: its entries may be hard links into
+  // committed generations (writing to one writes through into CURRENT and the backups) and may hold files deleted since. When
+  // it cannot be fully removed, the next unused number is taken; the leftover never has a .ok marker, so it is never loaded.
+  bool fresh_generation(uint64_t* out) {
+    std::error_code ec;
+    stdfs::create_directories(gens(), ec);
+    for (uint64_t n = cur + 1, tries = 0; tries < 64; ++n, ++tries) {
+      if (!remove_checked(gen_ok(n))) { log("fs: save: cannot remove the stale marker %s; skipping generation %llu", from_path(gen_ok(n)).c_str(), (unsigned long long)n); continue; }
+      if (!remove_checked(gen_dir(n))) { log("fs: save: cannot remove the stale %s; skipping generation %llu", from_path(gen_dir(n)).c_str(), (unsigned long long)n); continue; }
+      if (!remove_checked(gen_orphan(n))) continue;   // a leftover orphan mark would make the new generation invalid
+      orphans.erase(n);
+      std::error_code e1;
+      if (!stdfs::create_directory(gen_dir(n), e1) || e1) continue;   // false: something re-created it; never reuse an existing directory
+      *out = n;
+      return true;
+    }
+    return false;
   }
 
   uint32_t do_commit(const std::function<void(const char*)>& hook) {
     auto stage = [&](const char* s) { if (hook) hook(s); };
     std::error_code ec;
     stage("commit:begin");
-    uint64_t n = cur + 1;
+    uint64_t n = 0;
+    if (!fresh_generation(&n)) { log("fs: save: no free generation number in %s (stale generations held open)", from_path(gens()).c_str()); return kResultTargetLocked; }
     stdfs::path ng = gen_dir(n);
-    stdfs::remove_all(ng, ec);
-    stdfs::remove(gen_ok(n), ec);
-    stdfs::create_directories(ng, ec);
-    if (ec) return result(2, 6010);
-    carry(committed(), ng, "");
+    // From here a failure removes the half-built generation and returns an error; CURRENT keeps pointing at the old one.
+    // If the marker cannot be removed the generation is complete (the marker is written last), so it stays whole rather than
+    // torn under a valid marker, but it is marked orphaned: never listed, restored, loaded or counted as a backup.
+    // A directory that cannot be removed is skipped by the next commit (fresh_generation).
+    auto fail = [&](const std::error_code& why, const char* what) {
+      const uint32_t rc = commit_result(why);
+      log("fs: save: commit failed at %s: %s (result %#x)", what, why.message().c_str(), rc);
+      // drop_generation marks it orphaned first when the .ok was already written; a folder it cannot remove is skipped later
+      if (!drop_generation(n)) log("fs: save: the failed generation %llu could not be fully removed; the next commit uses a new number", (unsigned long long)n);
+      return rc;
+    };
+    if (!carry(committed(), ng, "", ec)) return fail(ec, "carry");
     stage("commit:carried");
     for (const std::string& rel : dirty) {
       stdfs::path src = working() / to_path(rel), dst = ng / to_path(rel);
-      if (!stdfs::exists(src, ec)) continue;  // created then deleted in the same session
+      const bool have = stdfs::exists(src, ec);
+      if (ec) return fail(ec, "file status");   // unknown is not "deleted": never drop a file on an I/O error
+      if (!have) continue;  // created then deleted in the same session
       stdfs::create_directories(dst.parent_path(), ec);
-      stdfs::copy_file(src, dst, stdfs::copy_options::overwrite_existing, ec);
-      if (ec) return kResultUsableSpaceNotEnough;
+      if (ec) return fail(ec, "directory");
+      // never write through an existing entry (it could be a hard link into a committed generation): remove it, prove it is
+      // gone, then create the file new
+      if (!gone(dst) && !remove_checked(dst)) return fail(std::make_error_code(std::errc::device_or_resource_busy), "replace");
+      stdfs::copy_file(src, dst, stdfs::copy_options::none, ec);
+      if (ec) return fail(ec, "file copy");
       flush_path(dst);
       stage("commit:file");
     }
-    for (const std::string& rel : dirs) stdfs::create_directories(ng / to_path(rel), ec);
+    for (const std::string& rel : dirs) {
+      stdfs::create_directories(ng / to_path(rel), ec);
+      if (ec) return fail(ec, "directory");
+    }
     stage("commit:files-done");
-    { std::ofstream f(gen_ok(n), std::ios::binary); f << "ok\n"; }
+    {
+      std::ofstream f(gen_ok(n), std::ios::binary);
+      f << "ok\n";
+      f.flush();
+      if (!f) return fail(std::error_code(errno ? errno : EIO, std::generic_category()), "marker");
+    }
     flush_path(gen_ok(n));
     stage("commit:marker");
-    if (!write_pointer(n, hook)) return kResultUsableSpaceNotEnough;
+    if (!write_pointer(n, hook)) return fail(last_os_error(), "pointer");
+    orphans.erase(n);
     cur = n;
     dirty.clear(); deleted.clear(); dirs.clear();
-    // automatic backups: keep the current generation and `keep` before it
-    if (keep >= 0 && cur > (uint64_t)keep) {
-      for (auto& e : stdfs::directory_iterator(gens(), ec)) {
-        uint64_t g = std::strtoull(e.path().stem().string().c_str(), nullptr, 10);
-        if (g + (uint64_t)keep < cur) stdfs::remove_all(e.path(), ec);
-      }
+    // automatic backups: keep the current generation and the `keep` newest complete ones before it (numbers can have gaps
+    // where a stale leftover was skipped); everything else below the current one goes, leftovers included
+    if (keep >= 0) {
+      std::set<uint64_t> nums, valid;
+      for (uint64_t g : gen_numbers()) if (g < cur) { nums.insert(g); if (gen_valid(g)) valid.insert(g); }
+      int kept = 0;
+      for (auto it = valid.rbegin(); it != valid.rend() && kept < keep; ++it, ++kept) nums.erase(*it);
+      for (uint64_t g : nums) drop_generation(g);
     }
     return kSuccess;
   }
@@ -542,11 +674,15 @@ uint32_t Fs::mount_save(const std::string& name, const uint64_t uid[2]) {
     const std::string key = from_path(root);
     m->save->lock_key = key;
     if (!p_->locks.count(key)) {
-      HANDLE h = CreateFileW((root / ".snap.lock").c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      // No FILE_SHARE_DELETE: while a game holds the lock, nothing can delete or rename it away (profile Clear/Delete, cleanup
+      // scripts), so a second copy can never create a fresh lock file and mount the same folder.
+      HANDLE h = CreateFileW((root / ".snap.lock").c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
       OVERLAPPED ov{};
       if (h == INVALID_HANDLE_VALUE) {
-        log("fs: cannot open the save lock file in %s (error %lu); continuing without the single-instance guard", key.c_str(), GetLastError());
+        DWORD e = GetLastError();   // no guard, no mount: Save::open would wipe a running copy's working/ and newer generations
+        log("fs: cannot open the save lock file in %s (error %lu); not mounting the save folder", key.c_str(), e);
+        return (e == ERROR_SHARING_VIOLATION || e == ERROR_LOCK_VIOLATION || e == ERROR_ACCESS_DENIED) ? kResultTargetLocked : kResultUsableSpaceNotEnough;
       } else if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)) {
         DWORD e = GetLastError();
         CloseHandle(h);
@@ -564,7 +700,10 @@ uint32_t Fs::mount_save(const std::string& name, const uint64_t uid[2]) {
     for (auto f = p_->files.begin(); f != p_->files.end();) { if (f->second->mount == name) f = p_->files.erase(f); else ++f; }
     p_->mounts.erase(old);   // OpenFile::keep holds the Save of a handle a writer still has in flight
   }
-  m->save->open(p_->save_backups);
+  if (!m->save->open(p_->save_backups)) {
+    p_->release_lock(m->save->lock_key);
+    return kResultUsableSpaceNotEnough;
+  }
   p_->mounts[name] = m;
   if (trace_flags & kTraceFs) log("fs: mounted %s: save %s generation %llu", name.c_str(), from_path(m->save->root).c_str(), (unsigned long long)m->save->cur);
   return kSuccess;
@@ -814,8 +953,11 @@ uint32_t Fs::create_directory(const std::string& path) {
     Save& s = *r.m->save;
     std::string parent = r.rel.find('/') == std::string::npos ? "" : r.rel.substr(0, r.rel.rfind('/'));
     if (s.kind(parent) != 1) return kResultPathNotFound;
-    s.deleted.erase(r.rel);
     stdfs::create_directories(s.working() / to_path(r.rel), ec);
+    if (ec) return kResultTargetLocked;
+    // un-deleting the path is fine even if a committed *file* had this name: carry() sees the type change (working/ holds a
+    // directory, dirs lists it) and does not carry the old file
+    s.deleted.erase(r.rel);
     s.dirs.insert(r.rel);
   } else {
     stdfs::path h = r.m->layers[0] / to_path(r.rel);
@@ -875,8 +1017,10 @@ uint32_t Fs::rename_file(const std::string& from, const std::string& to) {
   if (a.kind != 2) return kResultPathNotFound;
   if (b.kind != 0) return kResultPathAlreadyExists;
   std::error_code ec;
+  const std::string to_parent = b.rel.find('/') == std::string::npos ? "" : b.rel.substr(0, b.rel.rfind('/'));
   if (a.m->kind == Mount::SaveData) {
     Save& s = *a.m->save;
+    if (s.kind(to_parent) != 1) return kResultPathNotFound;   // as on hardware: the destination folder must exist (and be a folder)
     stdfs::path src;
     if (!s.ensure_working(a.rel, &src)) return kResultUsableSpaceNotEnough;
     stdfs::path dst = s.working() / to_path(b.rel);
@@ -888,6 +1032,7 @@ uint32_t Fs::rename_file(const std::string& from, const std::string& to) {
     s.deleted.erase(b.rel);
     s.dirty.insert(b.rel);
   } else {
+    if (!stdfs::is_directory(a.m->layers[0] / to_path(to_parent), ec)) return kResultPathNotFound;
     stdfs::rename(a.m->layers[0] / to_path(a.rel), a.m->layers[0] / to_path(b.rel), ec);
     if (ec) return kResultTargetLocked;
   }
@@ -1000,12 +1145,8 @@ std::vector<SaveGeneration> Fs::list_generations(const std::string& mount) {
   std::vector<SaveGeneration> v;
   auto m = p_->find_mount(mount);
   if (!m || m->kind != Mount::SaveData) return v;
-  std::error_code ec;
-  for (auto& e : stdfs::directory_iterator(m->save->gens(), ec)) {
-    if (e.path().extension() != ".ok") continue;
-    uint64_t n = std::strtoull(e.path().stem().string().c_str(), nullptr, 10);
-    if (m->save->gen_valid(n)) v.push_back({n, n == m->save->cur});
-  }
+  for (uint64_t n : m->save->gen_numbers())   // digits-only stems, each number once (a stray "1a.ok" is not generation 1)
+    if (n <= m->save->cur && m->save->gen_valid(n)) v.push_back({n, n == m->save->cur});   // above CURRENT: never published
   std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.gen < b.gen; });
   return v;
 }
@@ -1015,33 +1156,76 @@ uint32_t Fs::restore_generation(const std::string& mount, uint64_t gen) {
   auto m = p_->find_mount(mount);
   if (!m || m->kind != Mount::SaveData) return kResultNotMounted;
   Save& s = *m->save;
-  if (!s.gen_valid(gen)) return kResultPathNotFound;
-  // working := a copy of the chosen generation; every file counts as dirty so the commit writes it all
-  std::error_code ec;
-  stdfs::remove_all(s.working(), ec);
-  stdfs::create_directories(s.working(), ec);
-  s.dirty.clear(); s.deleted.clear(); s.dirs.clear();
-  stdfs::path src = s.gen_dir(gen);
-  for (auto& e : stdfs::recursive_directory_iterator(src, ec)) {
-    std::string rel = stdfs::relative(e.path(), src, ec).generic_string();
-    if (e.is_directory(ec)) { stdfs::create_directories(s.working() / to_path(rel), ec); s.dirs.insert(rel); }
-    else {
-      stdfs::create_directories((s.working() / to_path(rel)).parent_path(), ec);
-      stdfs::copy_file(e.path(), s.working() / to_path(rel), stdfs::copy_options::overwrite_existing, ec);
-      s.dirty.insert(rel);
+  if (gen > s.cur || !s.gen_valid(gen)) return kResultPathNotFound;
+  // The restore is staged in a new scratch folder: a copy of the chosen generation where every file counts as dirty, so the
+  // commit writes it all. Any copy or listing error drops the stage and leaves the session (working folder, pending changes)
+  // as it was; a partial restore is never committed. The session's old scratch folder goes only after the commit succeeded.
+  std::string stage_name;
+  if (!s.fresh_working(&stage_name)) return kResultTargetLocked;
+  const stdfs::path stage = s.root / stage_name, src = s.gen_dir(gen);
+  std::set<std::string> dirty, deleted, dirs;
+  std::error_code why;   // first failure; decides the result code
+  {
+    std::error_code ec;
+    stdfs::recursive_directory_iterator it(src, ec), end;
+    for (; !why && !ec && it != end; it.increment(ec)) {
+      std::error_code e1;
+      const auto u = it->path().lexically_relative(src).generic_u8string();
+      const std::string rel(u.begin(), u.end());
+      const bool isdir = it->is_directory(e1);
+      if (!e1 && (rel.empty() || rel == ".")) e1 = std::make_error_code(std::errc::io_error);
+      if (!e1 && isdir) {
+        stdfs::create_directories(stage / to_path(rel), e1);
+        dirs.insert(rel);
+      } else if (!e1) {
+        stdfs::create_directories((stage / to_path(rel)).parent_path(), e1);
+        if (!e1) stdfs::copy_file(it->path(), stage / to_path(rel), stdfs::copy_options::none, e1);
+        dirty.insert(rel);
+      }
+      if (e1) why = e1;
     }
+    if (ec && !why) why = ec;
   }
-  // files of the current generation that the restored one lacks must disappear
-  std::function<void(const stdfs::path&, const std::string&)> walk = [&](const stdfs::path& d, const std::string& rel) {
-    for (auto& e : stdfs::directory_iterator(d, ec)) {
-      std::string name = from_path(e.path().filename());
+  // entries of the current generation that the restored one lacks must disappear. One the restored generation has with the
+  // other type (file vs directory) is left to carry(), which skips type-changed entries; nothing below it is walked, so no path
+  // runs through a file.
+  std::function<bool(const stdfs::path&, const std::string&)> walk = [&](const stdfs::path& d, const std::string& rel) -> bool {
+    std::error_code e1;
+    for (stdfs::directory_iterator it(d, e1), end; it != end; it.increment(e1)) {
+      if (e1) { why = e1; return false; }
+      std::string name = from_path(it->path().filename());
       std::string child = rel.empty() ? name : rel + "/" + name;
-      if (e.is_directory(ec)) walk(e.path(), child);
-      if (!stdfs::exists(src / to_path(child), ec)) s.deleted.insert(child);
+      std::error_code e2;
+      const bool isdir = it->is_directory(e2);
+      if (e2) { why = e2; return false; }
+      const stdfs::file_type t = stdfs::symlink_status(src / to_path(child), e2).type();
+      if (t == stdfs::file_type::not_found) { deleted.insert(child); continue; }
+      if (t == stdfs::file_type::none || t == stdfs::file_type::unknown) { why = e2 ? e2 : std::make_error_code(std::errc::io_error); return false; }
+      if (isdir && t == stdfs::file_type::directory && !walk(it->path(), child)) return false;
     }
+    if (e1) why = e1;
+    return !e1;
   };
-  walk(s.committed(), "");
-  return s.do_commit(p_->hook);
+  if (!why) walk(s.committed(), "");
+  if (why) {
+    if (!remove_checked(stage)) log("fs: save: cannot remove the restore stage %s", from_path(stage).c_str());
+    log("fs: save: restore of generation %llu failed while copying (%s); nothing changed", (unsigned long long)gen, why.message().c_str());
+    return commit_result(why);
+  }
+  // swap the stage in; a failed commit swaps the session back
+  std::string old_name = s.work_name;
+  std::set<std::string> old_dirty = std::move(s.dirty), old_deleted = std::move(s.deleted), old_dirs = std::move(s.dirs);
+  s.work_name = stage_name;
+  s.dirty = std::move(dirty); s.deleted = std::move(deleted); s.dirs = std::move(dirs);
+  uint32_t rc = s.do_commit(p_->hook);
+  if (rc != kSuccess) {
+    s.work_name = old_name;
+    s.dirty = std::move(old_dirty); s.deleted = std::move(old_deleted); s.dirs = std::move(old_dirs);
+    if (!remove_checked(stage)) log("fs: save: cannot remove the restore stage %s", from_path(stage).c_str());
+    return rc;
+  }
+  if (!remove_checked(s.root / old_name)) log("fs: save: cannot remove the old scratch folder %s (dropped at the next mount)", from_path(s.root / old_name).c_str());
+  return rc;
 }
 
 Fs& instance() {

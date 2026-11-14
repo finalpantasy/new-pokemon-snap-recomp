@@ -26,6 +26,7 @@
 #include "nvn_aa.h"
 #include "nvn_internal.h"
 #include "nvn_pipeline.h"
+#include "nvn_rt.h"   // [rt]
 #include "os/perf.h"   // SNAP_PERF instrumentation
 
 namespace nvn {
@@ -229,6 +230,29 @@ void FreeStage(Host* h, StageProg& s) {
   s = StageProg{};
 }
 
+// SNAP_XLATE_AB test aid (see XlateAbVariant in nvn_internal.h): loads the same fragment program translated by the other revision
+// (SNAP_XLATE_AB_REV, cache dir SNAP_XLATE_AB_DIR) as StageProg::modAlt/spvAlt, with the same post-processing as the normal module.
+void LoadAbAlt(Host* h, const uint8_t* data, uint32_t dataSize, int stage, uint32_t codeOff, bool eft, const std::string& baseKey, StageProg* sp) {
+  const char* dir = getenv("SNAP_XLATE_AB_DIR");
+  if (!dir || !*dir) return;
+  const char* r = getenv("SNAP_XLATE_AB_REV");
+  std::string salt = "nvn-xlate-v2|binding-model-1|interlock-off|clip7";
+  if (r && *r && strcmp(r, "0")) salt += std::string("|xlate-r") + r;
+  const std::string key = Sha256Hex(data, dataSize, salt + "|" + std::to_string(stage) + "|" + std::to_string(codeOff));
+  std::vector<uint8_t> spv;
+  if (key.empty() || !ReadFile(std::string(dir) + "\\" + key + ".spv", &spv)) { Log("xlate A/B: no alternate translation for %s", baseKey.c_str()); return; }
+  std::vector<uint32_t> words(spv.size() / 4);
+  memcpy(words.data(), spv.data(), words.size() * 4);
+  if (eft) SpvAddEarlyFragmentTests(words);
+  SpvAddStorageImageCaps(words);
+  AaPatchFragment(words, baseKey.c_str());
+  VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+  ci.codeSize = words.size() * 4; ci.pCode = words.data();
+  if (vkCreateShaderModule(h->device, &ci, nullptr, &sp->modAlt) != VK_SUCCESS) { sp->modAlt = VK_NULL_HANDLE; return; }
+  NoteSubgroup(sp->modAlt, words);
+  sp->spvAlt = std::move(words);
+}
+
 bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   PoolImpl* pool = nullptr; uint64_t off = 0;
   if (!h->ResolveAddress(sd.data, &pool, &off) || !pool->storage) {
@@ -263,17 +287,32 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   const std::string base = h->cacheDir + "\\" + key;
   const std::string spvPath = base + ".spv", jsonPath = base + ".json";
   std::vector<uint8_t> spv, js;
-  if (!ReadFile(spvPath, &spv) || !ReadFile(jsonPath, &js)) {
-    const std::string binPath = base + ".bin";
+  // cache I/O (2026-11-14): entries are written to .tmp and renamed (json last), and validated on load, so a kill mid-write cannot leave a permanent bad entry
+  J m;
+  bool loaded = false;
+  for (int attempt = 0; attempt < 2 && !loaded; ++attempt) {
+    if (ReadFile(spvPath, &spv) && ReadFile(jsonPath, &js)) {
+      if (spv.size() >= 20 && (spv.size() & 3) == 0) {
+        JP jp{reinterpret_cast<const char*>(js.data()), reinterpret_cast<const char*>(js.data()) + js.size()};
+        m = J();
+        if (jp.parse(m)) { loaded = true; break; }
+        LogError("bad shader manifest %s; retranslating", jsonPath.c_str());
+      } else {
+        LogError("bad shader cache entry %s (spv %zu bytes); retranslating", base.c_str(), spv.size());
+      }
+      DeleteFileA(spvPath.c_str()); DeleteFileA(jsonPath.c_str());
+    }
+    if (attempt) break;
+    const std::string binPath = base + ".bin", spvTmp = spvPath + ".tmp", jsonTmp = jsonPath + ".tmp";
     WriteFile(binPath, data, dataSize);
     Log("translating shader %s (stage %d)", key.c_str(), stage);
-    bool ok = RunHarness(binPath, spvPath, jsonPath, stage, constOff, codeOff);
+    DeleteFileA(spvTmp.c_str()); DeleteFileA(jsonTmp.c_str());
+    bool ok = RunHarness(binPath, spvTmp, jsonTmp, stage, constOff, codeOff);
     DeleteFileA(binPath.c_str());
-    if (!ok || !ReadFile(spvPath, &spv) || !ReadFile(jsonPath, &js)) return false;
+    if (ok) ok = MoveFileExA(spvTmp.c_str(), spvPath.c_str(), MOVEFILE_REPLACE_EXISTING) && MoveFileExA(jsonTmp.c_str(), jsonPath.c_str(), MOVEFILE_REPLACE_EXISTING);
+    if (!ok) { DeleteFileA(spvTmp.c_str()); DeleteFileA(jsonTmp.c_str()); return false; }
   }
-  J m;
-  JP jp{reinterpret_cast<const char*>(js.data()), reinterpret_cast<const char*>(js.data()) + js.size()};
-  if (!jp.parse(m)) { LogError("bad shader manifest %s", jsonPath.c_str()); return false; }
+  if (!loaded) { LogError("shader cache entry %s unusable after retranslation", base.c_str()); DeleteFileA(spvPath.c_str()); DeleteFileA(jsonPath.c_str()); return false; }
   StageProg sp;
   sp.valid = true; sp.stage = stage; snprintf(sp.key, sizeof sp.key, "%.12s", key.c_str()); sp.fragOutputMap = m.i("fragmentOutputMap");
   snprintf(sp.fkey, sizeof sp.fkey, "%s", key.c_str());
@@ -301,13 +340,16 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
     if (!ReadFile(base + ".efz", &mark)) WriteFile(base + ".efz", "1", 1);   // the cache key hashes only the data section, so the pipeline service needs this marker
   }
   SpvAddStorageImageCaps(words);   // the translator omits StorageImageRead/WriteWithoutFormat for storage images of unknown format
+  if (stage == 1) GtaoPatchFragment(words, key.c_str());   // SNAP_SSAO_GTAO (nvn_gtao.cpp)
   if (stage == 1) AaPatchFragment(words, key.c_str());   // SNAP_AA=off/smaa: FXAA tonemap shaders lose their edge test (nvn_aa.cpp)
+  if (stage == 0) snap_rt::PatchVertexXfb(words, key.c_str());   // [rt] SNAP_RT=1: gl_Position transform feedback decorations (no-op otherwise)
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
   ci.codeSize = words.size() * 4; ci.pCode = words.data();
   if (vkCreateShaderModule(h->device, &ci, nullptr, &sp.mod) != VK_SUCCESS) { LogError("vkCreateShaderModule failed for %s", key.c_str()); return false; }
   NoteSubgroup(sp.mod, words);
   if (stage == 0) sp.inputMask = SpvVertexInputMask(words);
   if (stage == 1) { sp.spv = words; sp.outLocs = SpvFragmentOutputs(words); }
+  if (stage == 1 && getenv("SNAP_XLATE_AB")) LoadAbAlt(h, data, dataSize, stage, codeOff, (Rd32(sd.control, 0x718) & 1) != 0, key, &sp);
   // c[1]: the constant-data blob that follows the code (data section tail)
   sp.constSize = dataSize - constOff;
   bool needC1 = false;
@@ -349,7 +391,9 @@ bool LoadStageFromCacheImpl(Host* h, const std::string& key, StageProg* out, boo
   memcpy(words.data(), spv.data(), words.size() * 4);
   { std::vector<uint8_t> mark; if (sp.stage == 1 && (eft || ReadFile(base + ".efz", &mark)) && SpvAddEarlyFragmentTests(words) && eftApplied) *eftApplied = true; }
   SpvAddStorageImageCaps(words);
+  if (sp.stage == 1) GtaoPatchFragment(words, key.c_str());
   if (sp.stage == 1) AaPatchFragment(words, key.c_str());   // same patch for pipelines built by the pipeline service
+  if (sp.stage == 0) snap_rt::PatchVertexXfb(words, key.c_str());   // [rt]
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
   ci.codeSize = words.size() * 4; ci.pCode = words.data();
   if (vkCreateShaderModule(h->device, &ci, nullptr, &sp.mod) != VK_SUCCESS) return false;

@@ -1,0 +1,5 @@
+# Build output and local proof shots stay out of git (shots can show game content).
+/target/
+/shots/
+*.png
+*.ron

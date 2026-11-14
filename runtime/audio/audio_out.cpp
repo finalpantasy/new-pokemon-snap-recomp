@@ -69,6 +69,9 @@ struct Globals {
   OutSlot slots[kMaxOuts];
 
   std::atomic<float> vol[SNAP_VOL_COUNT];
+  std::atomic<uint32_t> muted{0};              // session-only mute (focus loss): applied in core_mix, never written to audio.json
+  std::atomic<float> fileVol[SNAP_VOL_COUNT];  // what audio.json holds; SNAP_VOL_* env overrides live only in vol[]
+  std::atomic<uint32_t> envMask{0};            // bit per category overridden by SNAP_VOL_*; set_volume on it is session-only
   std::atomic<float> deviceVol[4];
   int activeDevice = 2;  // AudioTvOutput
   float curGain = 1.0f;  // device-thread private (smoothed)
@@ -77,6 +80,7 @@ struct Globals {
 
   std::atomic<void*> notifyEvent{nullptr};
   std::atomic<SnapAudioSignalEventFn> signalFn{nullptr};
+  std::atomic<SnapAudioSignalEventFn> initEventFn{nullptr};  // creates the guest SystemEvent (autoclear) before it is stored in notifyEvent
 
   // stats
   std::atomic<uint64_t> framesMixed{0}, framesFromGuest{0}, underruns{0}, underrunFrames{0};
@@ -101,6 +105,9 @@ struct Globals {
   double sumsq = 0; float peak = 0; uint64_t nacc = 0; uint64_t secs = 0;
 
   Globals();
+  // Backends hold a joinable std::thread and only join in stop(); without this a normal exit (nnMain returns, exit(3))
+  // destroys a joinable thread during static destruction and std::terminate runs. stop() is idempotent.
+  ~Globals() { if (backend) backend->stop(); }
 };
 
 #if defined(_WIN32)
@@ -154,13 +161,13 @@ void load_volumes(Globals& g) {
       if (!p) continue;
       char* end = nullptr;
       float v = std::strtof(p + 1, &end);
-      if (end != p + 1 && v == v) g.vol[i].store(std::clamp(v, 0.0f, 1.0f));
+      if (end != p + 1 && v == v) { g.vol[i].store(std::clamp(v, 0.0f, 1.0f)); g.fileVol[i].store(std::clamp(v, 0.0f, 1.0f)); }
     }
   }
   // env overrides (tests, scripts); not persisted
   for (int i = 0; i < SNAP_VOL_COUNT; ++i) {
     std::string name = std::string("SNAP_VOL_") + (i == 0 ? "MASTER" : i == 1 ? "BGM" : i == 2 ? "SE" : "VOICE");
-    if (const char* e = std::getenv(name.c_str()); e && *e) g.vol[i].store(std::clamp((float)std::atof(e), 0.0f, 1.0f));
+    if (const char* e = std::getenv(name.c_str()); e && *e) { g.vol[i].store(std::clamp((float)std::atof(e), 0.0f, 1.0f)); g.envMask.fetch_or(1u << i); }
   }
 }
 
@@ -214,7 +221,7 @@ void save_volumes(Globals& g) {
   FILE* f = fopen_u8(tmp, FOPEN_WB);
   if (!f) return;
   std::fprintf(f, "{\n  \"master\": %.4f,\n  \"bgm\": %.4f,\n  \"se\": %.4f,\n  \"voice\": %.4f,\n  \"output\": \"%s\",\n  \"channels\": %d,\n  \"speakers\": %d\n}\n",
-               g.vol[0].load(), g.vol[1].load(), g.vol[2].load(), g.vol[3].load(), mode_name(g.cfgOutMode), g.cfgGameCh, g.cfgSpk);
+               g.fileVol[0].load(), g.fileVol[1].load(), g.fileVol[2].load(), g.fileVol[3].load(), mode_name(g.cfgOutMode), g.cfgGameCh, g.cfgSpk);
   // a short write (disk full) or failed close must not replace the good file with a truncated one
   const bool wrote = std::ferror(f) == 0;
   const bool closed = std::fclose(f) == 0;
@@ -228,6 +235,7 @@ void save_volumes(Globals& g) {
 
 Globals::Globals() {
   for (auto& v : vol) v.store(1.0f);
+  for (auto& v : fileVol) v.store(1.0f);
   for (auto& v : deviceVol) v.store(1.0f);
   load_volumes(*this);
   load_output(*this);
@@ -448,7 +456,7 @@ void core_mix(float* dst, uint32_t frames) {
   }
   if (g.upmixOn && dc >= 6) g.upmix.process(dst, dc, frames);
   // master x device volume, ramped over the block
-  const float target = g.vol[SNAP_VOL_MASTER].load(std::memory_order_relaxed) * g.deviceVol[g.activeDevice].load(std::memory_order_relaxed);
+  const float target = g.muted.load(std::memory_order_relaxed) ? 0.0f : g.vol[SNAP_VOL_MASTER].load(std::memory_order_relaxed) * g.deviceVol[g.activeDevice].load(std::memory_order_relaxed);
   const float start = g.curGain;
   g.curGain = target;
   const float step = frames ? (target - start) / (float)frames : 0.0f;
@@ -631,6 +639,7 @@ SNAP_AUDIO_API int snap_nn_audio_GetActiveAudioDeviceChannelCountForOutput(void)
 }
 
 SNAP_AUDIO_API uint32_t snap_nn_audio_AcquireAudioDeviceNotificationForOutput(void* systemEvent) {
+  if (SnapAudioSignalEventFn init = G().initEventFn.load(); init && systemEvent) init(systemEvent);  // the game polls it with TryWaitSystemEvent: it must be a created event
   G().notifyEvent.store(systemEvent);
   return 0;
 }
@@ -682,10 +691,13 @@ SNAP_AUDIO_API void snap_audio_set_volume(int c, float v) {
   if (c < 0 || c >= SNAP_VOL_COUNT || v != v) return;
   Globals& g = G();
   g.vol[c].store(std::clamp(v, 0.0f, 1.0f));
+  if (!(g.envMask.load() & (1u << c))) g.fileVol[c].store(std::clamp(v, 0.0f, 1.0f));  // an env-overridden category (tests, focus mute) never reaches audio.json
   if (c > 0) g.bgmSeSet.fetch_or(1u << c);
   g.volGen.fetch_add(1);
   save_volumes(g);
 }
+SNAP_AUDIO_API void snap_audio_set_muted(int muted) { G().muted.store(muted ? 1u : 0u); }
+SNAP_AUDIO_API int snap_audio_get_muted(void) { return (int)G().muted.load(); }
 SNAP_AUDIO_API uint32_t snap_audio_volume_generation(void) { return G().volGen.load(); }
 // 1 once category c (BGM/SE/VOICE) has ever been below 1.0 this run or in the config; lets the guest bridge leave the
 // original mix completely untouched until then.
@@ -711,6 +723,7 @@ SNAP_AUDIO_API int snap_audio_spatial_available(void) {
   return g.backend ? g.backend->spatial_available() : 0;
 }
 SNAP_AUDIO_API void snap_audio_set_os_hooks(SnapAudioSignalEventFn signal) { G().signalFn.store(signal); }
+SNAP_AUDIO_API void snap_audio_set_event_init_hook(SnapAudioSignalEventFn init) { G().initEventFn.store(init); }
 
 SNAP_AUDIO_API void snap_audio_get_stats(SnapAudioStats* s) {
   Globals& g = G();

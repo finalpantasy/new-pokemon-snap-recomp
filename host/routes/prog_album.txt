@@ -1,0 +1,16 @@
+# fixture: prog_edited
+# Album full-size view of the edited (gray) photo: lab, Down (MyPhoto), A, album grid (first thumbnail = newest = the edited copy), A opens it.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=240
+@f200 8 Down
+@f400 8 A
+repeat @f800 @f30000 120 8 A
+wait ui=main_menu:Laboratory timeout=300
+@f90 8 Down
+@f200 8 A
+wait ui=myphoto:ModeSelect timeout=60
+@f200 8 A
+wait ui=myphoto:Album timeout=60
+@f200 8 A
+wait ui=photo_detail:PhotoDetail timeout=60
+end 500

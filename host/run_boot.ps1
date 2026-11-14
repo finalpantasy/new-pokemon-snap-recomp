@@ -51,7 +51,7 @@ else {
 }
 $runId = "$sid-$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 Write-Host "run $runId on $slotName$(if ($excl) { ' (exclusive)' })"
-$p = $null; $cacheBefore = $null
+$p = $null; $cacheBefore = $null; $gameExit = 0
 $bootDir = Join-Path $root 'analysis\boot'; $shotBase = $null; $err = $null; $so = $null
 try {
     $runDir = Join-Path $root "build\runs\$slotName"; New-Item -ItemType Directory -Force $runDir | Out-Null
@@ -116,6 +116,7 @@ try {
     $exe = Join-Path $runDir 'snap_boot.exe'
     # the exe maps a fixed address (0x7300000000); on a busy PC that sometimes collides at start-up ('cannot map the thunk range'): retry, up to 3 starts
     $t0 = Get-Date
+    $gameExit = 0
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         if ($Visible) {
             $p = Start-Process -FilePath $exe -ArgumentList $argl -NoNewWindow -PassThru -RedirectStandardError $err -RedirectStandardOutput $so
@@ -130,13 +131,15 @@ try {
             $gargs = @('-I', $gl, $exe) + @($argl)
             $p = Start-Process -FilePath 'python' -ArgumentList $gargs -NoNewWindow -PassThru -RedirectStandardError $err -RedirectStandardOutput $so
         }
+        $null = $p.Handle   # caches the process handle: without it Windows PowerShell 5.1 reports a null ExitCode for a Start-Process -PassThru child (2026-11-14)
         try { $p.PriorityClass = 'BelowNormal' } catch {}
         $left = [int]($Timeout - ((Get-Date) - $t0).TotalSeconds)
-        if (-not $p.WaitForExit([math]::Max(1, $left) * 1000)) { taskkill /PID $p.Id /T /F | Out-Null; Write-Host "killed pid $($p.Id) after $Timeout s"; break }
+        if (-not $p.WaitForExit([math]::Max(1, $left) * 1000)) { taskkill /PID $p.Id /T /F | Out-Null; Write-Host "killed pid $($p.Id) after $Timeout s"; $gameExit = 124; break }
         if (((Get-Date) - $t0).TotalSeconds -lt 30 -and (Select-String -Path $err -Pattern 'cannot map the thunk range' -Quiet)) { Write-Host "start-up address clash, retrying ($attempt)"; Start-Sleep -Seconds 2; continue }
         break
     }
-    Write-Host "exit code $($p.ExitCode); run $runId; stderr in $err, trace in $Log"
+    if ($gameExit -ne 124) { $gameExit = if ($null -eq $p.ExitCode) { 0 } else { [int]$p.ExitCode } }   # 124 = this script killed the game on timeout
+    Write-Host "exit code $gameExit; run $runId; stderr in $err, trace in $Log"
     # keep the run's save before the slot is released (2026-11-12: the next run in this slot wiped it before a worker could copy it)
     if ((Test-Path $testSave) -and (Get-ChildItem $testSave -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
         $keep = Join-Path $root "build\runs\saves\$runId"; New-Item -ItemType Directory -Force $keep | Out-Null
@@ -195,3 +198,4 @@ if ($Bench) {
     }
     Write-Host ("checkpoints: " + (($shots | ForEach-Object Name) -join ' '))
 }
+if ($gameExit -ne 0) { exit $gameExit }   # 2026-11-14: the wrapper used to return 0 for a timed-out, crashed or killed game

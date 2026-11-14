@@ -62,4 +62,12 @@ try {
   Run-Stage 'A (change options, Apply and restart)' 'ui_options_script1.txt' $null (Join-Path $root 'analysis\ui\opt_dump_a')
   Run-Stage 'B (fresh start on the same profile)' 'ui_options_script2.txt' $null (Join-Path $root 'analysis\ui\opt_dump_b')
   Get-Content 'analysis\ui\options_test.log' | Where-Object { $_ -notmatch '^\[ *[0-9.]+\] \[hle\] ui-test' } | Select-Object -Last 90
+  # 2026-11-14: the test used to print the log tail and exit 0 whatever happened. Fail on any FAIL line, a nonzero "failed" count, or no SUMMARY line at all.
+  $ulines = @(Get-Content 'analysis\ui\options_test.log' | Where-Object { $_ -match '^ui-test:' })
+  $nfail = @($ulines | Where-Object { $_ -match ' FAIL\b' -or $_ -match 'SUMMARY \d+ checks, [1-9]\d* failed' }).Count
+  $nsum = @($ulines | Where-Object { $_ -match 'SUMMARY \d+ checks, 0 failed' }).Count
+  if ($nfail -gt 0) { Write-Host "OPTIONS TEST FAILED: $nfail failing ui-test line(s) (see analysis\ui\options_test.log)"; $script:testExit = 1 }
+  elseif ($nsum -eq 0) { Write-Host 'OPTIONS TEST FAILED: no ui-test SUMMARY line (the game did not finish the scripted checks)'; $script:testExit = 1 }
+  else { Write-Host "OPTIONS TEST PASSED ($nsum summary line(s), no failures)" }
 } finally { Remove-Item $lock -Force -ErrorAction SilentlyContinue }
+if ($script:testExit) { exit $script:testExit }

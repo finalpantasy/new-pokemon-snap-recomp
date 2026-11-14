@@ -1,0 +1,10 @@
+# fixture: post_tutorial
+# Translator A/B (SNAP_XLATE_AB=1, runtime/nvn XlateAbVariant): ride into the Florio course, pause the ride and hold the frozen scene so that
+# consecutive presents render the same frame with two translations. Dumps every second; compare frames of odd and even present.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride>=25 timeout=300
+@f10 8 Plus
+wait ui=pause_menu timeout=60
+end 3300

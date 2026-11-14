@@ -216,4 +216,8 @@ void register_fs(std::vector<Entry>& out) {
 
 // Window close (host/boot.cpp): let a save commit in progress finish before the process exits. The generation scheme survives a kill
 // at any point, but finishing keeps the newest photo / progress instead of falling back one generation.
-extern "C" void snap_fs_drain_for_exit(int ms) { hle::fs::instance().drain_for_exit(ms); }
+extern "C" void snap_screenshot_drain_for_exit(int ms);   // runtime/hle/services_sys.cpp
+extern "C" void snap_photoexport_drain_for_exit(int ms);   // host/mods/photoexport.cpp (no-op where that file is not linked)
+extern "C" void snap_photoexport_drain_none(int) {}
+#pragma comment(linker, "/alternatename:snap_photoexport_drain_for_exit=snap_photoexport_drain_none")
+extern "C" void snap_fs_drain_for_exit(int ms) { snap_screenshot_drain_for_exit(ms < 2000 ? ms : 2000); snap_photoexport_drain_for_exit(ms < 2000 ? ms : 2000); hle::fs::instance().drain_for_exit(ms); }

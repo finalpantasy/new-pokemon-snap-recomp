@@ -37,6 +37,8 @@ extern "C" void snap_pace_vsync_note_none() {}
 
 namespace hle {
 
+static std::atomic<int> g_shots_inflight{0};   // screenshot writer threads still running (waited for at exit)
+
 namespace {
 
 // ---- nn::settings::LanguageCode: 8 chars, returned by value in x0 (little endian)
@@ -154,6 +156,7 @@ struct Vsync {
   std::thread th;
   std::atomic<bool> run{false};
   void* event = nullptr;
+  ~Vsync() { run = false; if (th.joinable()) th.join(); }   // snap_pace_vsync_wait wakes within 100 ms, so the join is bounded
 };
 Vsync& vsync() { static Vsync v; return v; }
 int g_display_token, g_layer_token;
@@ -329,7 +332,8 @@ void account_is_nsa_available(Cpu* c) {
 }
 
 void account_async_has_done(Cpu* c) {
-  if (uint64_t p = arg(c, 0)) store<uint8_t>(ptr<void>(p), 1);
+  // Member function: x0 = this, x1 = bool* out.
+  if (uint64_t p = arg(c, 1)) store<uint8_t>(ptr<void>(p), 1);
   ret(c, 0);
 }
 
@@ -387,7 +391,6 @@ void diag_abort(Cpu* c) {
 }
 
 // ---- nn::album
-constexpr uint32_t kResultAlbumSaveFailed = result(3, 1);   // host-chosen: the screenshot file could not be created
 void album_save_screenshot(Cpu* c) {
   const uint8_t* data = ptr<const uint8_t>(arg(c, 0));
   size_t size = (size_t)arg(c, 1);
@@ -409,23 +412,33 @@ void album_save_screenshot(Cpu* c) {
   static std::atomic<int> counter{0};
   char name[64];
   std::snprintf(name, sizeof name, "/snap_%llu_%03d.png", (unsigned long long)now_unix_seconds(), counter++);
-  // Open the target now so a bad folder or full disk is reported to the game; encode and write on a worker thread (the PNG encode of a
-  // 1080p frame is slow enough to hitch the guest thread). The pixels are copied first: the guest reuses the buffer after the call.
-  auto file = std::make_shared<std::ofstream>(std::filesystem::u8path(dir + name), std::ios::binary | std::ios::trunc);
-  if (ec || !*file) {
-    log("album::SaveScreenshot: cannot create %s%s", dir.c_str(), name);
-    ret(c, kResultAlbumSaveFailed);
-    return;
-  }
+  // Encode and write on a worker thread (the PNG encode of a 1080p frame is slow enough to hitch the guest thread). The pixels are
+  // copied first: the guest reuses the buffer after the call. The PNG goes to "<name>.tmp" and is renamed on success, so a failed or
+  // cut-off write never leaves a broken .png. A failure is logged and the call still returns 0 (the game does not handle a host result).
+  if (ec) log("album::SaveScreenshot: cannot create folder %s: %s", dir.c_str(), ec.message().c_str());
   auto px = std::make_shared<std::vector<uint8_t>>(data, data + size);
   const std::string shown = dir + name;
-  std::thread([file, px, w, h, shown] {
-    std::string png = encode_png_rgba(px->data(), w, h);
-    file->write(png.data(), (std::streamsize)png.size());
-    file->close();
-    if (*file) log("album: saved %s (%ux%u)", shown.c_str(), w, h);
-    else log("album: write failed for %s", shown.c_str());
-  }).detach();
+  g_shots_inflight.fetch_add(1);
+  try {
+    std::thread([px, w, h, shown] {
+      // The Switch capture is opaque (JPEG); ignore whatever alpha the guest buffer holds.
+      for (size_t i = 3; i < px->size(); i += 4) (*px)[i] = 0xff;
+      std::string png = encode_png_rgba(px->data(), w, h);
+      const auto fin = std::filesystem::u8path(shown);
+      const auto tmp = std::filesystem::u8path(shown + ".tmp");
+      bool ok = false;
+      {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (f) { f.write(png.data(), (std::streamsize)png.size()); f.close(); ok = !!f; }
+      }
+      std::error_code e2;
+      if (ok) { std::filesystem::rename(tmp, fin, e2); ok = !e2; }
+      if (!ok) std::filesystem::remove(tmp, e2);
+      if (ok) log("album: saved %s (%ux%u)", shown.c_str(), w, h);
+      else log("album: write failed for %s", shown.c_str());
+      g_shots_inflight.fetch_sub(1);
+    }).detach();
+  } catch (...) { g_shots_inflight.fetch_sub(1); log("album::SaveScreenshot: cannot start the writer thread"); }
   ret(c, 0);
 }
 
@@ -533,3 +546,8 @@ void register_sys(std::vector<Entry>& out) {
 }
 
 }  // namespace hle
+
+// Window close (host/boot.cpp via snap_fs_drain_for_exit): wait, bounded, for screenshot writes in flight.
+extern "C" void snap_screenshot_drain_for_exit(int ms) {
+  for (int waited = 0; hle::g_shots_inflight.load() > 0 && waited < ms; waited += 10) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}

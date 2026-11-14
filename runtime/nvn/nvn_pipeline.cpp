@@ -183,12 +183,10 @@ void PatchTmplEft(Tmpl* t, const char* key12) {
     ci.codeSize = words.size() * 4; ci.pCode = words.data();
     VkShaderModule mod = VK_NULL_HANDLE;
     if (vkCreateShaderModule(S->h->device, &ci, nullptr, &mod) != VK_SUCCESS) return;
-    // Copy field by field (not "*np = *base": copying base->fragMods would race a worker inserting a variant). fragMods starts empty: the old
-    // variants were built from the module without early fragment tests. A field added to StageProg must be added here.
+    // Copy without fragMods (not "*np = *base": copying base->fragMods would race a worker inserting a variant). fragMods starts empty: the
+    // old variants were built from the module without early fragment tests.
     StageProg* np = new StageProg;
-    np->valid = base->valid; memcpy(np->key, base->key, sizeof np->key); memcpy(np->fkey, base->fkey, sizeof np->fkey); np->stage = base->stage;
-    np->cb = base->cb; np->sb = base->sb; np->tex = base->tex; np->img = base->img; np->fragOutputMap = base->fragOutputMap;
-    np->inputMask = base->inputMask; np->outLocs = base->outLocs; np->constBuf = base->constBuf; np->constMem = base->constMem; np->constSize = base->constSize;
+    CopyStageMeta(*np, *base);
     np->mod = mod;   // the old module is left alive on purpose: a worker may be compiling with it right now (one module per patched stage)
     np->spv = std::move(words);
     t->cur.store(np, std::memory_order_release);
@@ -255,7 +253,8 @@ ProgramImpl* GetLayoutFor(const PipeDesc& pd, StageProg* out[6]) {
   if (it != S->layouts.end()) return it->second;
   auto* p = new ProgramImpl;
   p->host = S->h; p->composite = true;
-  for (int s = 0; s < 5; s++) if (ts[s]) p->st[s] = *ts[s]->cur.load(std::memory_order_acquire);
+  // [audit F3] layout metadata only: the template's fragMods may be growing on another worker right now (CreateGraphicsPipelineImpl)
+  for (int s = 0; s < 5; s++) if (ts[s]) CopyStageMeta(p->st[s], *ts[s]->cur.load(std::memory_order_acquire));
   if (!ProgramBuildLayout(p)) { delete p; S->layouts[key] = nullptr; return nullptr; }
   S->layouts[key] = p;
   return p;
@@ -311,8 +310,13 @@ void LoadKeys() {
 void RecordKey(const PipeDesc& pd) {
   std::lock_guard<std::mutex> lk(S->km);
   if (!S->keysFile) return;
-  fwrite(&pd, sizeof pd, 1, S->keysFile);
-  fflush(S->keysFile);
+  // A short write (disk full) leaves a torn fixed-size record; appending after it would shift every later record. Stop recording for the
+  // session instead; LoadKeys cuts the torn tail on the next start.
+  if (fwrite(&pd, sizeof pd, 1, S->keysFile) != 1 || fflush(S->keysFile) != 0) {
+    Log("pipeline keys: write failed, recording stopped for this session");
+    fclose(S->keysFile);
+    S->keysFile = nullptr;
+  }
 }
 
 // ---- pipeline cache persistence ---------------------------------------------------------------------------------------------------

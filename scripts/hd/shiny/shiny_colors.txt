@@ -1,0 +1,238 @@
+# Shiny color table. One line per species: <game number> | <name> | <official shiny color, in words> | <rules>
+# Rules (OKLCh hue degrees; names: red=29 orange=55 yellow=100 lime=125 green=145 teal=180 cyan=205 azure=235 blue=262 violet=292 magenta=330 pink=355):
+#   src>dst[:width[:chroma_scale]]   texels within +-width (default 35) of hue src turn to hue dst (lightness and alpha kept)
+#   grey:Lmin-Lmax>hue:chroma        near-grey texels in that lightness range get a tint
+#   auto                             approximate: the texture's dominant hue turns +150 degrees (official shiny color not verified)
+#   skip                             not built (many forms or hand work needed)
+# Colors are written from public shiny references (Bulbapedia, Serebii) as words; entries marked "approx" are not verified.
+1|Pikachu|slightly deeper golden yellow|yellow>78
+2|Eevee|paler grey-brown|75>88:40:0.5
+3|Heracross|blue body turns red|255>25:40;245>25:40
+4|Pinsir|redder brown|45>30:40:1.1;55>35
+5|Torchic|approx|auto
+6|Pichu|golden yellow|105>80;95>80
+8|Caterpie|approx yellow-green|135>100:40
+9|Lapras|teal-blue|235>185:40;245>190:40
+10|Swanna|approx faint pink tint|grey:0.4-1.0>355:0.03
+11|Aipom|approx|auto
+12|Bounsweet|approx|auto
+13|Metapod|approx yellow-green|135>100:40
+14|Beautifly|approx|auto
+15|Magikarp|gold|35>95:40;45>95
+17|Ducklett|approx|auto
+18|Wooper|approx pink|225>355:40
+19|Emolga|approx|auto
+20|Noibat|approx|auto
+21|Tyrantrum|approx|auto
+22|Hippowdon|approx blue-grey|95>250:40:0.7
+23|Wingull|approx|auto
+24|Ninetales|cream-white|105>105:40:0.2;45>105:40:0.2
+25|Cubchoo|approx|auto
+26|Chandelure|approx|skip
+27|Skorupi|approx|auto
+28|Pikipek|approx|auto
+29|Beartic|approx|auto
+30|Toucannon|approx|auto
+31|Quagsire|approx pink|215>355:40
+34|Vivillon|many pattern forms|skip
+35|Aerodactyl|approx teal|315>175:40
+36|Flygon|approx|auto
+37|Wailord|approx purple|245>292:40
+38|Wailmer|approx pink|255>345:40
+39|Slugma|approx|auto
+40|Alomomola|approx|auto
+41|Mantine|approx|auto
+42|Mamoswine|approx|auto
+44|Sawsbuck|many season forms|skip
+45|Carbink|approx pink|245>355:40
+46|Sableye|approx|auto
+47|Luvdisc|approx|auto
+48|Pidgeot|approx|auto
+49|Onix|green|grey:0.2-0.95>145:0.07
+50|Exeggutor|approx|auto
+51|Feraligatr|approx|auto
+52|Bellossom|approx|auto
+53|Slaking|approx|auto
+54|Sharpedo|approx|auto
+55|Cacnea|approx|auto
+56|Finneon|approx|auto
+57|Yanmega|approx|auto
+58|Liepard|approx|auto
+59|Stunfisk|approx|auto
+60|Mandibuzz|approx|auto
+61|Florges|many flower forms|skip
+62|Primarina|approx|auto
+63|Crabrawler|approx|auto
+64|Lycanroc|approx|auto
+65|Comfey|approx|auto
+66|Pyukumuku|approx|auto
+67|Jolteon|approx|auto
+68|Blastoise|approx|auto
+69|Raichu|approx|auto
+70|Vaporeon|light teal-green|215>175:40;225>175:40;245>175:40
+71|Machamp|approx|auto
+72|Flareon|darker red|55>15:40:1.1
+73|Snorlax|teal|215>175:40;205>175:40
+74|Meganium|approx|auto
+75|Umbreon|rings and marks turn blue|95>235:40;25>235:40
+76|Hoothoot|approx|auto
+77|Espeon|lilac|345>300:40;335>300:40
+78|Murkrow|approx|auto
+79|Corsola|approx|auto
+80|Octillery|approx|auto
+81|Taillow|approx|auto
+82|Pelipper|approx|auto
+83|Zangoose|approx|auto
+84|Shroomish|approx|auto
+85|Seviper|approx|auto
+86|Combee|approx|auto
+87|Torterra|approx|auto
+88|Clamperl|approx|auto
+89|Vespiquen|approx|auto
+90|Glaceon|approx light purple-blue|235>285:40
+91|Tangrowth|approx|auto
+92|Leafeon|approx pink leaves|155>350:40;95>50:40
+93|Drifblim|approx|auto
+94|Manaphy|approx green-blue|225>175:40;235>175:40
+95|Shaymin|approx|auto
+96|Foongus|approx|auto
+97|Bouffalant|approx|auto
+98|Inkay|approx|auto
+99|Sylveon|blue|5>235:40;355>235:40;15>235:40
+100|Mareanie|approx|auto
+101|Sandygast|approx|auto
+102|Squirtle|approx|auto
+103|Morelull|approx|auto
+104|Charmander|approx deeper red|45>28:40:1.1
+105|Ariados|approx|auto
+106|Bulbasaur|approx bluer|185>210:40
+107|Steelix|approx|auto
+108|Milotic|approx|auto
+109|Volcarona|approx|auto
+110|Xerneas|approx|auto
+111|Wishiwashi|approx|auto
+112|Grookey|approx|auto
+113|Scorbunny|approx|auto
+114|Sobble|approx|auto
+115|Venusaur|approx|auto
+116|Arbok|approx|auto
+117|Sandshrew|approx|auto
+118|Diglett|approx|auto
+119|Psyduck|approx|auto
+120|Koffing|approx|auto
+121|Kangaskhan|approx|auto
+122|Gyarados|red|225>25:40;235>25:40
+123|Mew|pale blue-green|25>195:40;35>195:40
+124|Ledian|approx|auto
+125|Cleffa|approx|auto
+126|Ursaring|approx|auto
+127|Tyranitar|approx|auto
+128|Swalot|approx|auto
+129|Trapinch|approx|auto
+130|Tropius|approx|auto
+131|Swampert|approx|auto
+132|Shinx|approx|auto
+133|Gliscor|approx|auto
+134|Tepig|approx|auto
+135|Drilbur|approx|auto
+136|Scolipede|approx|auto
+137|Crustle|approx|auto
+138|Heliolisk|approx|auto
+139|Rockruff|approx|auto
+140|Salazzle|approx|auto
+141|Minior|many core colors|skip
+142|Zeraora|approx|auto
+143|Rattata|approx|auto
+144|Sandslash|approx|auto
+145|Vulpix|approx|auto
+146|Meowth|approx|auto
+147|Dewgong|approx|auto
+148|Jynx|approx|auto
+149|Furret|approx|auto
+150|Sudowoodo|approx|auto
+151|Swinub|approx|auto
+152|Delibird|approx|auto
+153|Skarmory|approx|auto
+154|Suicune|approx|auto
+155|Mightyena|approx|auto
+156|Snorunt|approx|auto
+157|Glalie|approx|auto
+158|Spheal|approx|auto
+159|Piplup|approx|auto
+160|Starly|approx|auto
+161|Abomasnow|approx|auto
+162|Weavile|approx|auto
+163|Froslass|approx|auto
+164|Stoutland|approx|auto
+165|Audino|approx|auto
+166|Trubbish|approx|auto
+167|Vanilluxe|approx|auto
+168|Braviary|approx|auto
+169|Bunnelby|approx|auto
+170|Aurorus|approx|auto
+171|Dedenne|approx|auto
+172|Avalugg|approx|auto
+173|Crabominable|approx|auto
+174|Cutiefly|approx|auto
+175|Charizard|black body|45>45:50:0.15:0.45;55>45:50:0.15:0.45;65>45:50:0.15:0.45
+176|Clefairy|approx|auto
+177|Tentacruel|approx|auto
+179|Geodude|approx|auto
+181|Graveler|approx|auto
+184|Gengar|approx|auto
+185|Starmie|approx|auto
+187|Typhlosion|approx|auto
+188|Crobat|approx|auto
+189|Lanturn|approx|auto
+191|Chinchou|approx|auto
+192|Natu|approx|auto
+193|Qwilfish|approx|auto
+194|Houndoom|approx|auto
+196|Lugia|approx|auto
+197|Lotad|approx|auto
+198|Ho-Oh|approx|auto
+199|Shiftry|approx|auto
+200|Celebi|blue|125>235:40;115>235:40;135>235:40
+202|Mawile|approx|auto
+203|Torkoal|approx|auto
+204|Gardevoir|approx|auto
+207|Altaria|approx|auto
+209|Cradily|approx|auto
+210|Kecleon|approx|auto
+216|Jirachi|approx|auto
+217|Monferno|approx|auto
+218|Luxray|approx|auto
+219|Rampardos|approx|auto
+220|Drifloon|approx|auto
+222|Croagunk|approx|auto
+223|Lumineon|approx|auto
+228|Serperior|approx|auto
+230|Unfezant|approx|auto
+231|Woobat|approx|auto
+234|Sigilyph|approx|auto
+235|Archeops|approx|auto
+238|Frillish|many forms|skip
+239|Joltik|approx|auto
+242|Beheeyem|approx|auto
+244|Hydreigon|approx|auto
+246|Pancham|approx|auto
+247|Talonflame|approx|auto
+249|Espurr|approx|auto
+251|Clawitzer|approx|auto
+252|Goodra|approx|auto
+253|Trevenant|approx|auto
+254|Diancie|approx|auto
+256|Salandit|approx|auto
+257|Bewear|approx|auto
+258|Golisopod|approx|auto
+260|Drampa|approx|auto
+262|Absol|approx|auto
+263|Deerling|many season forms|skip
+264|Golurk|approx|auto
+265|Noivern|approx|auto
+266|Eldegoss|approx|auto
+267|Applin|approx|auto
+268|Silicobra|approx|auto
+269|Snom|approx|auto
+270|Frosmoth|approx|auto
+271|Pumpkaboo|approx|auto

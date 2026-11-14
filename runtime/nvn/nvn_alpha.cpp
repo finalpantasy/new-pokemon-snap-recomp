@@ -294,11 +294,11 @@ bool PatchFragmentOutputs(const std::vector<uint32_t>& in, int nColor, bool dual
 // Each such output becomes a Private float variable (all writes go there) plus a new Output variable of the integer type at the
 // same Location; before every OpReturn of the entry function the Private value is loaded, OpBitcast to the integer type and stored.
 // The bits written are exactly what the float output carried before. Returns false when the module needs no change.
-bool PatchIntOutputs(const std::vector<uint32_t>& in, const int kinds[8], std::vector<uint32_t>& out) {
+bool PatchIntOutputs(const std::vector<uint32_t>& in, const int kinds[8], std::vector<uint32_t>& out, int* skipped) {
   constexpr uint32_t OpStoreC = 62, OpBitcastC = 124;
   if (in.size() < 6 || in[0] != 0x07230203) return false;
   const bool legacyIface = in[1] < 0x10400;
-  std::unordered_map<uint32_t, uint32_t> loc, varType, varSc, ptrTo, ptrSc;
+  std::unordered_map<uint32_t, uint32_t> loc, comp, varType, varSc, ptrTo, ptrSc;
   std::unordered_set<uint32_t> hasIndex, f32;
   std::map<std::pair<uint32_t, uint32_t>, uint32_t> intT;                 // (width, signed) -> id
   std::map<std::pair<uint32_t, uint32_t>, uint32_t> vecT;                 // (component type, count) -> id
@@ -313,6 +313,7 @@ bool PatchIntOutputs(const std::vector<uint32_t>& in, const int kinds[8], std::v
     const uint32_t* w = &in[i];
     if (op == OpDecorate && wc >= 4 && w[2] == kDecLocation) loc[w[1]] = w[3];
     if (op == OpDecorate && wc >= 4 && w[2] == kDecIndex) hasIndex.insert(w[1]);
+    if (op == OpDecorate && wc >= 4 && w[2] == kDecComponent) comp[w[1]] = w[3];
     if (op == OpEntryPoint && !entryFn) entryFn = w[2];
     if (op >= OpTypeVoid && op <= 39 && !firstTypeAt) firstTypeAt = i;
     if (op == OpTypeInt && wc >= 4) intT[{w[2], w[3]}] = w[1];
@@ -334,10 +335,10 @@ bool PatchIntOutputs(const std::vector<uint32_t>& in, const int kinds[8], std::v
   for (uint32_t v : outVars) {
     if (!loc.count(v) || hasIndex.count(v) || loc[v] >= 8 || kinds[loc[v]] == 0) continue;
     T t{}; t.var = v; t.kind = kinds[loc[v]]; t.ptrOld = varType[v]; t.pointee = ptrTo[t.ptrOld];
-    uint32_t comp = t.pointee, count = 1;
-    if (vecOf.count(t.pointee)) { comp = vecOf[t.pointee].first; count = vecOf[t.pointee].second; }
-    if (!f32.count(comp)) continue;   // only float32 outputs
-    t.comp = comp; t.count = count;
+    uint32_t ctype = t.pointee, count = 1;
+    if (vecOf.count(t.pointee)) { ctype = vecOf[t.pointee].first; count = vecOf[t.pointee].second; }
+    if (!f32.count(ctype)) { if (skipped) (*skipped)++; continue; }   // arrays and non-32-bit-float outputs are not patched (counted for the caller to log)
+    t.comp = ctype; t.count = count;
     const uint32_t sg = t.kind == 2 ? 1 : 0;
     if (!intT.count({32, sg})) { intT[{32, sg}] = next++; pushType(OpTypeInt, {intT[{32, sg}], 32, sg}); }
     t.ity = intT[{32, sg}];
@@ -368,7 +369,10 @@ bool PatchIntOutputs(const std::vector<uint32_t>& in, const int kinds[8], std::v
   for (size_t i = 5; i < in.size();) {
     const uint32_t wc = in[i] >> 16, op = in[i] & 0xFFFF;
     const uint32_t* w = &in[i];
-    if (i == firstTypeAt) for (auto& t : tg) { Emit(out, OpDecorate, {t.nv, kDecLocation, loc[t.var]}); }
+    if (i == firstTypeAt) for (auto& t : tg) {
+      Emit(out, OpDecorate, {t.nv, kDecLocation, loc[t.var]});
+      if (comp.count(t.var)) Emit(out, OpDecorate, {t.nv, kDecComponent, comp[t.var]});   // outputs split by Component at one Location stay split
+    }
     if (i == firstFuncAt) {
       out.insert(out.end(), newTypes.begin(), newTypes.end());
       for (auto& t : tg) Emit(out, OpVariable, {t.optr, t.nv, kScOutput});

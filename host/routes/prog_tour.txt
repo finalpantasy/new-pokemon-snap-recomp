@@ -1,0 +1,10 @@
+# fixture: prog_lvl2_b
+# Lab tour only (first visit, tour not done in this fixture): hub Down + A, slow A taps until the lab menu / Photodex shows, then end.
+# Used with SNAP_ROUTE_LOG=1 to see whether the tour flips the LenTalk flag (game flag +0x3e53 log line).
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=240
+@f200 8 Down
+@f400 8 A
+repeat @f800 @f30000 120 8 A
+wait ui=zukan_index:ModeSelect timeout=500
+end 400

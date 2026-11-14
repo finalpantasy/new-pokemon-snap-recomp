@@ -10,8 +10,11 @@
 //   SNAP_SSAO_HBAO=dirs,samples            HBAO directions and samples per direction, overrides the preset.
 //   SNAP_SSAO_RADIUS=f                     SimpleAO kernel radius (game default 0.2; world-space units of the AO hemisphere).
 //   SNAP_SSAO_STRENGTH=f                   SimpleAO strength (game default 1.0).
-//   SNAP_LIGHTING=high                     preset: SNAP_SSAO_QUALITY=high plus SNAP_SHADOW_RES=2048 (the latter read by runtime/nvn
-//                                          ApplyHostEnvPolicy); every explicit switch above still wins.
+//   SNAP_LIGHTING=high|ultra               preset (parsed once in runtime/hle/lighting_preset.h): high = SNAP_SSAO_QUALITY=high, 2048 shadow maps, 2x shadow
+//                                          distance; ultra = quality ultra, 4096 maps, 4x distance (maps and distance read by runtime/nvn);
+//                                          every explicit switch above still wins.
+//   SNAP_SSAO_FORCE=1                      switches the game's own SSAO passes (SSAOCreate/BlurX/BlurY/Composite) on where the game has them off (the
+//                                          course), for the frame's loop only and never while a photo/evaluation/capture pass is enabled. Off by default.
 //   SNAP_UI_FONT_SCALE=auto|1|2..4         UI glyphs are rasterized at k times the size into a k times larger atlas (#29, sharper fonts); the
 //                                          layout fields of every glyph entry keep the 1x values, so text size and position do not change.
 //                                          Unset or auto: k = 2 when the game window's client height is 1440 or more, else 1 (off). 1 = off.
@@ -31,12 +34,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #include "loader.h"
 #include "hle/visual_defaults.h"   // default font scale (SNAP_VISUALS)
+#include "hle/lighting_preset.h"   // SNAP_LIGHTING parser
 
 using namespace loader;
 
@@ -54,11 +59,14 @@ float g_ao_radius, g_ao_strength;  // 0 = leave the game's value
 std::vector<std::string> g_pass_off;
 int g_pass_ab;
 bool g_pass_force;
+bool g_ao_force;                // SNAP_SSAO_FORCE=1|2 (P4)
+int g_ao_force_level;           // 1 = strict gate (the Evaluation pass enabled also blocks), 2 = relaxed (only capture / photo / report / resize passes block)
 
 void init() {
     if (g_init_done) return;
     g_init_done = true;
     const char* q = getenv("SNAP_SSAO_QUALITY");
+    if (!q || !*q) q = snaplight::ssao_quality();   // SNAP_LIGHTING preset (hle/lighting_preset.h, shared with nvn_entry.cpp and nvn_draw.cpp)
     if (q) {
         if (!strcmp(q, "high")) { g_simple_n = 96; g_hbao_dirs = 12; g_hbao_samples = 48; }
         else if (!strcmp(q, "ultra")) { g_simple_n = 256; g_hbao_dirs = 16; g_hbao_samples = 64; }
@@ -74,6 +82,8 @@ void init() {
     g_pass_dump = getenv("SNAP_PASS_DUMP") && getenv("SNAP_PASS_DUMP")[0] != '0';
     g_pass_ab = getenv("SNAP_PASS_AB") ? atoi(getenv("SNAP_PASS_AB")) : 0;
     g_pass_force = getenv("SNAP_PASS_FORCE") && getenv("SNAP_PASS_FORCE")[0] == '1';
+    g_ao_force_level = getenv("SNAP_SSAO_FORCE") ? atoi(getenv("SNAP_SSAO_FORCE")) : 0;
+    g_ao_force = g_ao_force_level == 1 || g_ao_force_level == 2;
     if (const char* o = getenv("SNAP_PASS_OFF")) {
         std::string s = o, cur;
         for (char ch : s + ",") {
@@ -165,18 +175,84 @@ const char* pass_class_text(const std::string& name) {
     int c = pass_class(low);
     return c == 0 ? "protected" : c == 1 ? "toggle" : "unverified";
 }
+
+// ---- SNAP_SSAO_FORCE=1 (P4): switch the game's own SSAO passes ON in scenes where it has them off (the course). A separate allow-list from
+// SNAP_PASS_OFF (that path is unchanged). Gate: never while any photo / evaluation / capture pass of the frame's list is enabled. The byte is forced
+// only for the duration of the frame's loop: it is put back to the game's value at the LAST entry visit, so the game's own setters (and a later disable)
+// always act on their own value; a pass the game itself has on is never touched. Loop: x20 = entry, x19 = end of the list (stride 32).
+std::vector<uint8_t*> g_forced;   // passes whose byte WE set to 1 in this frame (the game had 0)
+bool g_gate_open;
+uint8_t* g_last_end;
+uint64_t g_last_ent;
+int g_force_frames, g_force_blocked_frames;
+
+std::string lower(const std::string& s) { std::string o; for (char ch : s) o.push_back((char)tolower((unsigned char)ch)); return o; }
+bool is_ao_pass(const std::string& low) { return low == "ssaocreate" || low == "ssaoblurx" || low == "ssaobluey" || low == "ssaocomposite"; }
+bool is_photo_pass(const std::string& low) {
+    static const char* k[] = {"eval", "photo", "capture", "thumb", "report", "resize"};
+    for (auto s : k) {
+        if (g_ao_force_level == 2 && !strcmp(s, "eval")) continue;   // relaxed: the Evaluation pass alone is not a reason (it writes only its own depth target)
+        if (low.find(s) != std::string::npos) return true;
+    }
+    return false;
+}
+
+void ao_force_visit(Cpu* c, uint8_t* ent, uint8_t* pass, const std::string& name) {
+    uint8_t* end = (uint8_t*)c->x[19];
+    // first entry of a frame: the entry address does not increase (or the list moved): decide the gate for the whole list
+    if (end != g_last_end || (uint64_t)ent <= g_last_ent) {
+        for (uint8_t* f : g_forced) if (readable(f, 0x100)) f[0xf0] = 0;   // leftover from a frame whose last entry was forced
+        g_forced.clear();
+        g_gate_open = true;
+        const bool abOn = snaplight::ab_on(snap_present_count());   // SNAP_LIGHT_AB: even blocks leave the game's own state
+        std::string why;
+        for (uint8_t* e = ent; e + 16 <= end && (size_t)(end - e) < 32 * 512; e += 32) {
+            if (!readable(e, 16)) { g_gate_open = false; why = "unreadable list"; break; }
+            uint8_t* p = *(uint8_t**)(e + 8);
+            if (!p || !readable(p, 0x100)) continue;
+            std::string nm = lower(pass_name(p));
+            if (!nm.empty() && is_photo_pass(nm) && p[0xf0]) { g_gate_open = false; why = nm; break; }
+        }
+        if (!abOn) g_gate_open = false;
+        if (g_gate_open) g_force_frames++; else if (abOn) g_force_blocked_frames++;
+        static std::string lastWhy = "?";
+        static int lastState = -1, changes;
+        const std::string state = g_gate_open ? std::string("open") : why;
+        if (g_trace && abOn && ((int)g_gate_open != lastState || state != lastWhy)) {
+            if (changes++ < 60) trace("gamemods: SSAO force gate %s (present %llu; %d open, %d blocked frames so far)", g_gate_open ? "open" : ("closed by \"" + why + "\"").c_str(),
+                                      (unsigned long long)snap_present_count(), g_force_frames, g_force_blocked_frames);
+            lastState = g_gate_open; lastWhy = state;
+        }
+        g_last_end = end;
+    }
+    g_last_ent = (uint64_t)ent;
+    const std::string low = lower(name);
+    if (g_gate_open && is_ao_pass(low) && !pass[0xf0]) {
+        if (g_forced.size() < 16) g_forced.push_back(pass);
+        pass[0xf0] = 1;
+        static int n;
+        if (g_trace && n++ < 8) trace("gamemods: SSAO force: pass \"%s\" %p switched on for this frame", name.c_str(), (void*)pass);
+    }
+    if (ent + 32 >= end && !g_forced.empty()) {   // last entry: give every forced byte back to the game (its value was 0)
+        for (uint8_t* f : g_forced) if (f != pass && readable(f, 0x100)) f[0xf0] = 0;
+        if (std::find(g_forced.begin(), g_forced.end(), pass) == g_forced.end()) g_forced.clear();
+        else { g_forced.assign(1, pass); }   // the last entry itself is forced: restored at the next frame's first visit
+    }
+}
+
 }  // namespace
 
 // Pass loop (main+0x988fe0, entries of 32 bytes at [ctx+0x1b8, ctx+0x1c0)): at main+0x989048 x20 = the entry, [x20+8] = the pass object, whose
 // byte at +0xf0 is the enable flag the loop copies to +0xf1 and tests. Names: pass_name (libc++ string at +0x40).
 extern "C" void rt_gm_pass(Cpu* c) {
     init();
-    if (!g_pass_dump && g_pass_off.empty()) return;
+    if (!g_pass_dump && g_pass_off.empty() && !g_ao_force) return;
     uint8_t* ent = (uint8_t*)c->x[20];
     if (!ent || !readable(ent, 16)) return;
     uint8_t* pass = *(uint8_t**)(ent + 8);
     if (!pass || !readable(pass, 0x100)) return;
     std::string name = pass_name(pass);
+    if (g_ao_force) ao_force_visit(c, ent, pass, name);
     if (g_pass_dump) {
         static std::vector<uint8_t*> seen;
         bool known = false;

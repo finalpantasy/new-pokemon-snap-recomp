@@ -1,9 +1,12 @@
 # fixture: post_tutorial
 # Native PC tabs walk (host/mods/nativeopt.cpp, scripts/ui/make_native_options.py): opens Settings from the lab hub (Up + A
 # cycle until the screen's first state raises the input-script event "options"), then: A closes the one-time info popup,
-# R x4 to "Other", R to the first PC tab (Quality). Down + A opens the Render scale pulldown, Down + A picks item 1
-# (a popup's cursor starts on its header). Down x2 to Sharpening, A, Down x2, A picks Low (Audio: Master volume 20%). Then R through every PC tab (Textures ... Photos) with one change
-# per tab (Textures goes to its second row, a pulldown, and opens and closes the popup with B first; see the comments in make_native_options.py TABS for what each row is), Minus (Restore Default Settings) on Photos, B (leaves the Reset button), B closes.
+# R x4 to "Other", R to the first PC tab (Quality). A popup opens with its cursor on the current value. Down + A opens the
+# Render scale pulldown, Down + A picks 1.25x (one below 1x). Down x2 to Sharpening, A, Down x2, A picks 0.2. Then R through every
+# PC tab (Textures ... Photos) with one change per tab (Textures goes to its second row, a pulldown, and opens and closes the popup
+# with B first; Output: HDR Off -> HDR10, Down x5 to Vsync, On -> Adaptive (live); Audio: Up x2 from 100% = 80%; see make_native_options.py TABS for the rows), Minus (Restore
+# Default Settings) on Photos, B (leaves the Reset button), R to the third tab set (Shadows & AO): A, Down, A picks 1.5x; R wraps to
+# Game, L comes back to Shadows & AO (the L/R chain of the last set), B closes.
 # Run with SNAP_MODS_DIR=<mods root holding native-options>, SNAP_NATIVE_OPT_SETTINGS=<settings.cfg>, SNAP_NATIVE_OPT_TRACE=1.
 repeat @f200 @f1400 100 8 ZL
 repeat @f1500 @f30000 240 8 Up
@@ -36,39 +39,54 @@ anchor options
 @f2400 8 Right
 @f2460 8 A
 @f2610 8 R
-@f2760 8 Left
-@f2820 8 A
-@f2970 8 R
-@f3120 8 A
-@f3210 8 Down
-@f3270 8 A
-@f3420 8 R
-@f3570 8 Down
-@f3630 8 Down
+@f2760 8 A
+@f2820 8 Down
+@f2880 8 A
+@f2940 8 Down
+@f3000 8 Down
+@f3060 8 Down
+@f3120 8 Down
+@f3180 8 Down
+@f3240 8 A
+@f3300 8 Down
+@f3360 8 A
+@f3450 8 R
+@f3600 8 A
 @f3690 8 Down
-@f3750 8 Down
-@f3810 8 Right
-@f3870 8 A
-@f4020 8 R
+@f3750 8 A
+@f3900 8 R
+@f4050 8 Down
+@f4110 8 Down
 @f4170 8 Down
-@f4230 8 Left
-@f4290 8 A
-@f4440 8 R
-@f4590 8 Down
+@f4230 8 Down
+@f4290 8 Right
+@f4350 8 A
+@f4500 8 R
 @f4650 8 Down
 @f4710 8 Left
 @f4770 8 A
 @f4920 8 R
-@f5040 8 A
-@f5100 8 Down
-@f5150 8 Down
-@f5200 8 A
-@f5250 8 R
-@f5400 8 Down
-@f5460 8 Down
-@f5520 8 Down
-@f5580 8 Left
-@f5640 8 A
-@f5790 8 Minus
-@f5990 8 B
-@f6150 8 B
+@f5070 8 Down
+@f5130 8 Down
+@f5190 8 Left
+@f5250 8 A
+@f5400 8 R
+@f5520 8 A
+@f5580 8 Up
+@f5630 8 Up
+@f5680 8 A
+@f5730 8 R
+@f5880 8 Down
+@f5940 8 Down
+@f6000 8 Down
+@f6060 8 Left
+@f6120 8 A
+@f6270 8 Minus
+@f6470 8 B
+@f6630 8 R
+@f6780 8 A
+@f6840 8 Down
+@f6900 8 A
+@f7050 8 R
+@f7200 8 L
+@f7350 8 B

@@ -16,6 +16,7 @@
 #include "nvn_aa.h"
 #include "nvn_internal.h"
 #include "hle/visual_defaults.h"   // default anisotropy comes from the shared table
+#include "hle/lighting_preset.h"   // SNAP_LIGHTING parser shared with host/mods/gamemods.cpp
 #include "upscale/upscale_nvn.h"   // [upscale]
 
 namespace nvn {
@@ -188,7 +189,7 @@ void* MemoryPoolMap(const void* pool) {  // CPU address of the pool = the guest 
 void MemoryPoolFlushMappedRange(const void* pool, ptrdiff_t off, size_t size) {
   auto* p = Impl<PoolImpl>(pool, MAGIC_POOL);
   if (!p || !p->Cpu() || !p->storage || (uint64_t)off + size > p->size) return;
-  if (!p->buffer) {
+  if (!PoolBuffer(p)) {   // [audit F6] acquire: p->mapped below is visible once the buffer is
     if (p->size > (256ull << 20) || !EnsureBacking(p)) return;  // EnsureBacking copies the whole pool once
   }
   if (!p->mapped) return;
@@ -433,7 +434,10 @@ Boolean CommandBufferInitialize(void* cb, void* dev) {
   return 1;
 }
 void CommandBufferFinalize(void* cb) {
-  if (auto* c = Impl<CommandBufferImpl>(cb, MAGIC_CB)) { CmdVecGive(c->cmds); delete c; }   // [cpuprof] hand the vector back to the recycle pool
+  if (auto* c = Impl<CommandBufferImpl>(cb, MAGIC_CB)) {
+    ListRecorderGone(c, c->ctlBase, c->ctlBase + c->ctlSize);   // [audit F5] recordings made without control memory end, and (2026-11-14) so do this buffer's in its control range
+    CmdVecGive(c->cmds); delete c;   // [cpuprof] hand the vector back to the recycle pool
+  }
   Unbind(cb);
 }
 void CommandBufferSetDebugLabel(void*, const char*) {}
@@ -441,7 +445,16 @@ void CommandBufferSetMemoryCallback(void* cb, CommandBufferMemoryCallback fn) { 
 void CommandBufferSetMemoryCallbackData(void* cb, void* d) { if (auto* c = CBI(cb)) c->cbData = d; }
 // Guest command/control memory is accepted and counted but never written: recording is host-side only.
 void CommandBufferAddCommandMemory(void* cb, const void*, ptrdiff_t, size_t size) { if (auto* c = CBI(cb)) c->commandBytes += size; }
-void CommandBufferAddControlMemory(void* cb, void*, size_t size) { if (auto* c = CBI(cb)) c->controlBytes += size; }
+void CommandBufferAddControlMemory(void* cb, void* mem, size_t size) {
+  auto* c = CBI(cb);
+  if (!c) return;
+  c->controlBytes += size;
+  // [audit F5] NVN keeps a recorded handle valid (submittable again) until the control memory it was recorded in is reused: adding
+  // that memory again is the reuse, so the recordings made in it end here (a submission still in flight keeps its own reference).
+  const uintptr_t lo = reinterpret_cast<uintptr_t>(mem);
+  ListRetireCtl(c, lo, lo + size);
+  c->ctlBase = lo; c->ctlSize = size; c->ctlUsed = 0;
+}
 void CommandBufferBeginRecording(void* cb) {
   auto* c = CBI(cb);
   if (!c) return;
@@ -461,9 +474,12 @@ CommandHandle CommandBufferEndRecording(void* cb) {
   const size_t n = c->cmds.size();
   l->cmds = std::move(c->cmds);
   c->cmds.clear();
-  c->cmdsHigh = std::max(c->cmdsHigh, n);
+  c->cmdsHigh = std::max(c->cmdsHigh, std::min<size_t>(n, 4096));   // [cpuprof] same cap as the hint: one huge recording must not make every later reserve huge
   if (n > g_cmdHint.load(std::memory_order_relaxed)) g_cmdHint.store(std::min<size_t>(n, 4096), std::memory_order_relaxed);
-  return ListRegister(l);   // [nvnfix] an id into the list table (nvn_life.cpp), not the pointer
+  // [audit F5] where NVN would keep this handle: the next 64 bytes of the control memory (the start again once it is used up, as TotK)
+  uintptr_t ctl = 0;
+  if (c->ctlBase && c->ctlSize) { ctl = c->ctlBase + (c->ctlUsed < c->ctlSize ? c->ctlUsed : 0); c->ctlUsed += 64; }
+  return ListRegister(l, c, ctl);   // [nvnfix] an id into the list table (nvn_life.cpp), not the pointer
 }
 Boolean CommandBufferIsRecording(const void* cb) {
   auto* c = Impl<CommandBufferImpl>(cb, MAGIC_CB);
@@ -641,7 +657,7 @@ void ApplyHostEnvPolicy() {
   { float sc = 0, oc = 0; if (UpscaleApplyPolicy(&sc, &oc)) {   // [upscale] SNAP_UPSCALER: scene at sc, window textures at oc; game FXAA off unless SNAP_AA set
       g_scale.scale = sc; g_scale.displayScale = oc; if (!getenv("SNAP_AA")) g_aaMode = AA_OFF;
       if (!getenv("SNAP_SHARPEN")) g_aaSharpen = 0.0f; } }   // CAS sharpening (profile default) stays off with an upscaler unless SNAP_SHARPEN is set
-  if (const char* l = getenv("SNAP_LIGHTING")) { if (!strcmp(l, "high")) g_scale.shadowRes = 2048; }   // lighting preset (host/mods/gamemods.cpp); SNAP_SHADOW_RES below wins
+  if (snaplight::shadow_res()) g_scale.shadowRes = snaplight::shadow_res();   // lighting preset (hle/lighting_preset.h, one parser for high and ultra) (host/mods/gamemods.cpp); SNAP_SHADOW_RES below wins
   if (const char* e = getenv("SNAP_SHADOW_RES")) { int v = atoi(e); g_scale.shadowRes = ((v > 1024 && v <= 8192) || v == 512) ? v : 0; }
   if (const char* e = snapdef::get("SNAP_ANISO")) { float v = (float)atof(e); g_anisoOverride = v > 1.f ? std::min(v, 16.f) : 0.f; }
   if (const char* e = getenv("SNAP_LOD_BIAS")) {

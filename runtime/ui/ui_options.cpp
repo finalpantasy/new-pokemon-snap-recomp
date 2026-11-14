@@ -33,6 +33,9 @@
 #include "window_opts.h"
 #include "ui_internal.h"
 
+extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [vsync]: live, the next present rebuilds the swapchain
+extern "C" const char* snap_vsync_get();
+
 namespace snap::ui {
 
 namespace {
@@ -79,6 +82,13 @@ std::string get_mute() { return snap_window_get_mute_in_background() ? "1" : "0"
 void set_mute(const std::string& v) { snap_window_set_mute_in_background(v != "0"); }
 std::string get_cap() { return std::to_string(snap_window_frame_cap()); }
 void set_cap(const std::string& v) { snap_window_set_frame_cap(std::atoi(v.c_str())); }
+// Vsync: live through the renderer, remembered as settings key "vsync" (exported as SNAP_VSYNC at the next start; "on" = erased)
+std::string get_vsync() { return snap_vsync_get(); }
+void set_vsync(const std::string& v) {
+  if (v == "on") st::erase("vsync");
+  else st::set("vsync", v);
+  snap_vsync_set(v.c_str());
+}
 // ---- quality presets. The preset is not stored: it is worked out from the eleven rows below, so changing any row by hand shows "Custom" and
 // setting the rows to a preset's values shows that preset. "" in the table = the row's default (the key is erased, the game's own behavior).
 // Normal is all defaults. Left out on purpose: draw distance and full-rate animation (photo scores unverified), the lighting preset and
@@ -95,8 +105,9 @@ const PresetDef kPresets[] = {
     // Very Low draws at 0.5 (960 x 540). Sub-native scale used to lose the GPU device after the photo score screen: the album thumbnail
     // readback copied a 240x200 guest region out of a 120x100 scaled image; transfers are render-scale aware since 2026-11-12 (nvn_xfer.cpp).
     // The upscaler rows stay out of the presets (they need a backend DLL and pick their own scene scale).
-    {"verylow", "Very Low", {"0.50", "none", "", "0", "1", "512", "", "4", "", "off", "off"}},
-    {"low", "Low", {"", "off", "", "4", "", "", "", "8", "", "", ""}},
+    // sharpening "0.00", not "": "" is the visual_defaults.h default, which is 0.30 under SNAP_VISUALS=enhanced
+    {"verylow", "Very Low", {"0.50", "none", "0.00", "0", "1", "512", "", "4", "", "off", "off"}},
+    {"low", "Low", {"", "off", "0.00", "4", "", "", "", "8", "", "", ""}},
     {"normal", "Normal", {"", "", "", "", "", "", "", "", "", "", ""}},
     {"high", "High", {"", "ssaa2,smaa", "0.30", "16", "", "2048", "high", "", "", "", ""}},
     {"ultra", "Ultra", {"2.00", "smaa", "0.30", "16", "", "4096", "ultra", "", "", "", ""}},
@@ -199,10 +210,15 @@ std::vector<Opt>& graphics_opts() {
        snapdef::def("SNAP_ANISO"), {{"0", "Off (1x)"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}, 0, 0, "", "SNAP_ANISO"},
       {"gfx_lod_bias", "Texture sharpness", kChoice, kRestart,
        "Picks which texture detail level is used. Automatic sharpens textures when the render scale is above 1 and leaves the game alone at 1. Sharper values can shimmer.",
-       "auto", {{"auto", "Automatic"}, {"-1", "Sharper (-1.0)"}, {"-0.5", "A little sharper (-0.5)"}, {"0", "As the game ships (0)"}, {"0.5", "Softer (+0.5)"}, {"1", "Much softer (+1.0)"}}, 0, 0, "", "SNAP_LOD_BIAS"},
+       "auto", {{"auto", "Automatic"}, {"-2", "Sharpest (-2.0)"}, {"-1.5", "-1.5"}, {"-1", "Sharper (-1.0)"}, {"-0.5", "A little sharper (-0.5)"}, {"0", "As the game ships (0)"},
+                {"0.25", "+0.25"}, {"0.5", "Softer (+0.5)"}, {"1", "Much softer (+1.0)"}, {"2", "Softest (+2.0)"}}, 0, 0, "", "SNAP_LOD_BIAS"},
       {"gfx_shadow_res", "Shadow resolution", kChoice, kRestart,
        "Size of the moving shadow map. The game uses 1024. Higher gives crisper shadow edges and uses more video memory.", "default",
        {{"512", "512 (fast, blocky shadows)"}, {"default", "1024 (the game's own)"}, {"2048", "2048"}, {"4096", "4096"}, {"8192", "8192 (very heavy)"}}, 0, 0, "", "SNAP_SHADOW_RES"},
+      // not in kPresetKeys: whether High/Ultra should set it is an open question (docs/advanced-graphics-options.md section 10)
+      {"gfx_shadow_dist", "Shadow distance", kChoice, kRestart,
+       "How far the moving shadows reach (runtime/nvn/nvn_draw.cpp ShadowDistanceOnBind). The same shadow map covers more ground, so shadows get softer; pair it with a higher shadow resolution. Costs no GPU time.", "default",
+       {{"default", "1x (the game's own)"}, {"1.5", "1.5x"}, {"2", "2x"}, {"3", "3x"}, {"4", "4x"}, {"6", "6x"}, {"8", "8x"}, {"12", "12x"}, {"16", "16x"}}, 0, 0, "", "SNAP_SHADOW_DISTANCE"},
       {"ssao_quality", "Ambient occlusion", kChoice, kRestart,
        "Soft contact shadows in corners and under objects. High and Ultra take more samples. The courses draw no ambient occlusion while you play (their contact shadows are baked in); the effect shows only on the photo-select screen, so this does not change the course view or its frame rate.", "default",
        {{"default", "Default"}, {"high", "High (96 samples)"}, {"ultra", "Ultra (256 samples)"}}, 0, 0, "", "SNAP_SSAO_QUALITY"},
@@ -232,12 +248,21 @@ std::vector<Opt>& graphics_opts() {
        "A color grade on the finished picture. Neutral leaves the game as shipped.", "neutral",
        {{"neutral", "Neutral (as shipped)"}, {"vivid", "Vivid"}, {"warm", "Warm"}, {"cool", "Cool"}}, 0, 0, "", "SNAP_LOOK"},
       {"look_intensity", "Look strength", kSlider, kRestart, "How strongly the color look is applied. Has no effect while the look is Neutral.", "1.00", {}, 0.0f, 1.5f, "%.2f", "SNAP_LOOK"},
-      {"gfx_hdr", "HDR output", kToggle, kRestart,
-       "Sends a high-dynamic-range picture to an HDR monitor. Turn Windows HDR on first. On a normal monitor leave this off.", "0", {}, 0, 0, "", "SNAP_HDR"},
-      {"gfx_hdr_peak", "HDR peak brightness", kSlider, kRestart,
-       "The brightest highlight to send, in nits. Use your monitor's rated peak (400 to 1000 is typical).", "1000", {}, 400.0f, 4000.0f, "%.0f nits", "SNAP_HDR_PEAK"},
+      // HDR mode (2026-11-14): was an on/off toggle that stored 1, which nvn_hdr.cpp reads as hdr10, so old saves keep working
+      {"gfx_hdr", "HDR output", kChoice, kRestart,
+       "Sends a high-dynamic-range picture to an HDR monitor. Turn Windows HDR on first. On a normal monitor leave this off. scRGB (16-bit float) has far less banding than HDR10; if the display refuses it the game falls back to HDR10, then to SDR.", "0",
+       {{"0", "Off"}, {"1", "HDR10"}, {"scrgb", "scRGB"}}, 0, 0, "", "SNAP_HDR"},
+      // Auto = the key erased: the monitor's reported peak, else 1000 (nvn_hdr.cpp). The old slider stored a value on every save.
+      {"gfx_hdr_peak", "HDR peak brightness", kChoice, kRestart,
+       "The brightest highlight to send, in nits. Auto uses the peak the monitor reports (1000 if it reports none); otherwise use your monitor's rated peak.", "default",
+       {{"default", "Auto (the monitor's)"}, {"400", "400 nits"}, {"600", "600 nits"}, {"800", "800 nits"}, {"1000", "1000 nits"}, {"1500", "1500 nits"}, {"2000", "2000 nits"},
+        {"3000", "3000 nits"}, {"4000", "4000 nits"}}, 0, 0, "", "SNAP_HDR_PEAK"},
       {"gfx_hdr_paper", "HDR paper white", kSlider, kRestart,
        "How bright ordinary white (menus, snow) is, in nits. Lower it if the picture feels too bright in a dark room.", "200", {}, 80.0f, 400.0f, "%.0f nits", "SNAP_HDR_PAPER"},
+      {"gfx_hdr_expand", "HDR highlights", kChoice, kRestart,
+       "How far near-white scene pixels are lifted above paper white into HDR highlights (0 = none, 1 = up to the peak). Needs HDR on.", "0.30",
+       {{"0.00", "0"}, {"0.10", "0.1"}, {"0.20", "0.2"}, {"0.30", "0.3 (default)"}, {"0.40", "0.4"}, {"0.50", "0.5"}, {"0.60", "0.6"}, {"0.80", "0.8"}, {"1.00", "1"}}, 0, 0, "",
+       "SNAP_HDR_EXPAND"},
       {"", "View", kSection, kLive, "", ""},
       // Field of view row removed (owner 2026-11-12: "turn off fov, hide the option, stop working on it for now"; it changes photo
       // scores). SNAP_FOV still works as a developer env switch, off by default.
@@ -254,7 +279,12 @@ std::vector<Opt>& graphics_opts() {
       {"", "Frame rate", kSection, kLive, "", ""},
       {"frame_cap", "Frame rate limit", kChoice, kLive,
        "Stops the game from drawing faster than this. Off keeps the game's own 60 FPS pacing. Remembered in window.json.", "0",
-       {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"90", "90"}, {"120", "120"}, {"144", "144"}}, 0, 0, "", "SNAP_WINDOW_FRAME_CAP", get_cap, set_cap},
+       {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}}, 0, 0, "",
+       "SNAP_WINDOW_FRAME_CAP", get_cap, set_cap},
+      {"vsync", "Vsync", kChoice, kLive,
+       "On: no tearing (the default). Adaptive: tears only while below the refresh rate. Fast: no tearing and lower latency, renders extra frames. "
+       "Off: lowest latency, may tear. The game's own frame pacing is unchanged.", "on",
+       {{"on", "On"}, {"adaptive", "Adaptive"}, {"fast", "Fast"}, {"off", "Off"}}, 0, 0, "", "SNAP_VSYNC", get_vsync, set_vsync},
   };
   return v;
 }
@@ -302,6 +332,11 @@ std::vector<Opt>& photo_opts() {
       {"", "Skips", kSection, kLive, "", ""},
       {"skip_cutscenes", "Skip dialogue", kToggle, kRestart,
        "Presses A for you whenever a cutscene or professor dialogue box is waiting, so the lines go by without button presses. Choices are not answered for you. Story progress is not changed.", "0", {}, 0, 0, "", "SNAP_SKIP_CUTSCENES"},
+      // opt-in, off by default (runtime/nvn/nvn_shiny.cpp reads the switches once at start); settings.cpp turns the key into
+      // SNAP_SHINY=1 + SNAP_SHINY_ODDS=<n>. Needs the shiny pack (scripts/hd/make_shiny_pack.py). No forced/test choice here.
+      {"shiny", "Shiny Pokemon", kChoice, kRestart,
+       "Very rarely, a Pokemon appears in its shiny colors. Cosmetic only; photo scores are unchanged. Needs the shiny texture pack.", "default",
+       {{"default", "Off"}, {"4096", "Rare (1 in 4096)"}, {"512", "Common (1 in 512)"}}, 0, 0, "", "SNAP_SHINY"},
   };
   return v;
 }

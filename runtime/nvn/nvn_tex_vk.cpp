@@ -151,11 +151,49 @@ struct Prep {
   uint64_t seq = 0;
   Host* host = nullptr; uint32_t hw = 0, hh = 0;   // host image size at TexPrefetch
   TexImage img;                       // created by the worker (SNAP_UPLOAD_PREFETCH_IMAGE); handed to the texture or destroyed here
+  PoolImpl* back = nullptr;           // [perf pass 7] not a texture: create this pool's Vulkan mirror ahead (PoolBackAhead)
+  ScratchBuf st; uint64_t stBytes = 0;   // [perf pass 8] deswizzled straight into mapped staging (instead of `data`); never GPU-used here
+  void FreeStaging() {
+    if (!st.buf || !host) return;
+    const bool sub = SubMemFree(host, SUBMEM_SCRATCH, (uint64_t)st.buf);
+    vkDestroyBuffer(host->device, st.buf, nullptr);
+    if (st.mem && !sub) vkFreeMemory(host->device, st.mem, nullptr);
+    st = ScratchBuf{}; stBytes = 0;
+  }
+  uint64_t Bytes() const { return data.size() + stBytes; }   // staged bytes (budget)
   ~Prep() {
+    FreeStaging();
+    const bool sub = img.image && host && SubMemFree(host, SUBMEM_IMAGE, (uint64_t)img.image);   // [perf pass 7] shared block
     if (img.image && host) vkDestroyImage(host->device, img.image, nullptr);
-    if (img.memory && host) vkFreeMemory(host->device, img.memory, nullptr);
+    if (img.memory && host && !sub) vkFreeMemory(host->device, img.memory, nullptr);
   }
 };
+// [perf pass 8] SNAP_UPLOAD_PREFETCH_STAGING=0: workers deswizzle into a heap vector and the replay thread copies it into a fresh
+// staging buffer (21-35 ms per hub entry). Default: the worker writes into its own mapped staging buffer (shared scratch blocks,
+// nvn_submem.cpp) and the upload records the copy from it directly. Over 16 MB, or when no block is available: the vector path.
+bool PrepStagingOn() {
+  static const bool on = [] { const char* e = getenv("SNAP_UPLOAD_PREFETCH_STAGING"); return !(e && *e == '0'); }();
+  return on;
+}
+bool PrepAllocStaging(Prep& pr, uint64_t total) {
+  Host* h = pr.host;
+  if (!h || !h->device || !SubMemBlockBytes(SUBMEM_SCRATCH)) return false;
+  VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bi.size = std::max<uint64_t>(total, 16); bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  VkBuffer buf = VK_NULL_HANDLE;
+  if (vkCreateBuffer(h->device, &bi, nullptr, &buf) != VK_SUCCESS) return false;
+  VkMemoryRequirements mr; vkGetBufferMemoryRequirements(h->device, buf, &mr);
+  const uint32_t type = h->FindMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  VkDeviceMemory mem = VK_NULL_HANDLE; uint64_t off = 0; uint8_t* map = nullptr;
+  if (!SubMemAlloc(h, SUBMEM_SCRATCH, (uint64_t)buf, mr, type, &mem, &off, &map) || !map) {
+    if (mem) SubMemFree(h, SUBMEM_SCRATCH, (uint64_t)buf);
+    vkDestroyBuffer(h->device, buf, nullptr);
+    return false;
+  }
+  vkBindBufferMemory(h->device, buf, mem, off);
+  pr.st.buf = buf; pr.st.mem = mem; pr.st.map = map; pr.st.cap = 0; pr.stBytes = total;
+  return true;
+}
 bool PrepHelpOn() {   // [perf] pass 5, opt-in SNAP_UPLOAD_PREFETCH_HELP=1 (no measured gain: bursts' misses are rarely "not started")
   static const bool on = [] { const char* e = getenv("SNAP_UPLOAD_PREFETCH_HELP"); return e && *e == '1'; }();
   return on;
@@ -192,6 +230,7 @@ uint64_t PlanOffsets(const TextureBuilder& b, const FormatInfo* fi, const Surfac
   return total;
 }
 bool PrepRun(Prep& pr) {   // state stays 1 (running); the worker publishes the result under g_prepMu
+  if (pr.back) { if (!pr.cancel.load()) EnsureBacking(pr.back); return false; }   // [perf pass 7] backing job: no texture data
   const TextureBuilder& b = pr.b;
   const FormatInfo* fi = pr.fi;
   const uint32_t depth = b.target == TT_3D ? (uint32_t)std::max(b.depth, 1) : 1, layers = TextureLayerCount(b), levels = Levels(b);
@@ -200,7 +239,9 @@ bool PrepRun(Prep& pr) {   // state stays 1 (running); the worker publishes the 
   const uint64_t total = PlanOffsets(b, fi, lay, layers, levels, offs);
   pr.srcBytes = lay.total;
   const uint64_t h1 = FastHash(pr.src, pr.srcBytes);
-  pr.data.resize((size_t)total);
+  uint8_t* out = nullptr;
+  if (PrepStagingOn() && PrepAllocStaging(pr, total)) out = pr.st.map;   // [perf pass 8]
+  else { pr.data.resize((size_t)total); out = pr.data.data(); }
   std::vector<uint8_t> lin;
   for (uint32_t ly = 0; ly < layers; ly++)
     for (uint32_t m = 0; m < levels; m++) {
@@ -208,7 +249,7 @@ bool PrepRun(Prep& pr) {   // state stays 1 (running); the worker publishes the 
       const LevelLayout& l = lay.levels[m];
       lin.resize((size_t)l.wb * l.hb * l.d * fi->bytes);
       DeswizzleLevel(pr.src + ly * lay.layerSize + l.offset, lin.data(), l, fi->bytes);
-      memcpy(pr.data.data() + offs[ly * levels + m], lin.data(), lin.size());
+      memcpy(out + offs[ly * levels + m], lin.data(), lin.size());
     }
   if (FastHash(pr.src, pr.srcBytes) != h1) return false;   // written meanwhile
   pr.hash = h1;
@@ -231,8 +272,8 @@ void PrepWorker() {
     {
       std::lock_guard<std::mutex> lk(g_prepMu);
       g_prepRunning.erase(std::find(g_prepRunning.begin(), g_prepRunning.end(), pr.get()));
-      if (ok && !pr->cancel.load()) { g_prepBytes += pr->data.size(); pr->state = 2; }
-      else { pr->data.clear(); pr->data.shrink_to_fit(); pr->state = 3; }   // failed, or forgotten / evicted while running
+      if (ok && !pr->cancel.load()) { g_prepBytes += pr->Bytes(); pr->state = 2; }
+      else { pr->data.clear(); pr->data.shrink_to_fit(); pr->FreeStaging(); pr->state = 3; }   // failed, or forgotten / evicted while running
     }
     g_prepDoneCv.notify_all();
   }
@@ -244,7 +285,7 @@ void PrepEvictLocked() {
     auto it = g_prepOf.find(t);
     if (it == g_prepOf.end() || it->second->seq != seq) continue;
     if (it->second->state.load() == 1) { g_prepOrder.push_back({t, seq}); break; }   // running: keep, try later
-    if (it->second->state.load() == 2) g_prepBytes -= std::min<uint64_t>(g_prepBytes, it->second->data.size());
+    if (it->second->state.load() == 2) g_prepBytes -= std::min<uint64_t>(g_prepBytes, it->second->Bytes());
     it->second->cancel = true;
     g_prepOf.erase(it);
     if (g_prepDropped.size() > 65536) g_prepDropped.clear();   // diagnostics only: keep it bounded
@@ -274,17 +315,43 @@ std::shared_ptr<Prep> PrepTake(const TextureImpl* t, int* why) {   // why: 1 non
     if (ok && j != pr && PrepImageOn() && j->host && !j->cancel.load() && !CreateTexImage(j->host, j->b, j->fi, j->hw, j->hh, j->img)) j->img = TexImage{};
     lk.lock();
     g_prepRunning.erase(std::find(g_prepRunning.begin(), g_prepRunning.end(), j.get()));
-    if (ok && (j == pr || !j->cancel.load())) { g_prepBytes += j->data.size(); j->state = 2; }
-    else { j->data.clear(); j->data.shrink_to_fit(); j->state = 3; }
+    if (ok && (j == pr || !j->cancel.load())) { g_prepBytes += j->Bytes(); j->state = 2; }
+    else { j->data.clear(); j->data.shrink_to_fit(); j->FreeStaging(); j->state = 3; }
     g_prepDoneCv.notify_all();
     if (j != pr) helped++;
   }
   g_prepDoneCv.wait(lk, [&] { return pr->state.load() != 1; });
   if (pr->state.load() != 2) { *why = 2; return nullptr; }
-  g_prepBytes -= std::min<uint64_t>(g_prepBytes, pr->data.size());
+  g_prepBytes -= std::min<uint64_t>(g_prepBytes, pr->Bytes());
   return pr;
 }
+void StartPrepWorkers() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    const unsigned n = std::max(1u, std::min(4u, std::thread::hardware_concurrency() / 8));
+    for (unsigned i = 0; i < n; i++) std::thread(PrepWorker).detach();
+  });
+}
+std::unordered_set<const PoolImpl*> g_backQueued;   // [perf pass 7] pools with a backing job queued or done (under g_prepMu)
 }  // namespace
+
+// [perf pass 7] BufferInitialize: the pool will be bound as a buffer, so create its Vulkan mirror (vkAllocateMemory + whole-pool
+// copy) on a prefetch worker now instead of on the replay thread at the first draw that binds it (the hub-entry frame did this
+// for a whole level's pools: ~45-60 ms not covered by any other counter). Same cap as MemoryPoolFlushMappedRange (256 MB).
+// Needs the prefetch on (SNAP_UPLOAD_PREFETCH_MB > 0) for PoolGone; SNAP_POOL_BACK_AHEAD=0 = first bind as before.
+void PoolBackAhead(PoolImpl* p) {
+  static const bool on = [] { const char* e = getenv("SNAP_POOL_BACK_AHEAD"); return !(e && *e == '0'); }();
+  if (!on || !PrepBudget() || !p || !p->host || PoolBuffer(p) || p->size > (256ull << 20)) return;
+  StartPrepWorkers();
+  {
+    std::lock_guard<std::mutex> lk(g_prepMu);
+    if (!g_backQueued.insert(p).second) return;
+    auto pr = std::make_shared<Prep>();
+    pr->back = p; pr->pool = p;
+    g_prepQ.push_back(pr);
+  }
+  g_prepCv.notify_one();
+}
 
 void TexPrefetch(TextureImpl* t) {
   if (!PrepBudget() || !t || !t->fi) return;
@@ -302,11 +369,7 @@ void TexPrefetch(TextureImpl* t) {
     }
   }
   if (!src) { snap_perf::count(snap_perf::V_PREF_SKIP_NOSRC); return; }
-  static std::once_flag once;
-  std::call_once(once, [] {
-    const unsigned n = std::max(1u, std::min(4u, std::thread::hardware_concurrency() / 8));
-    for (unsigned i = 0; i < n; i++) std::thread(PrepWorker).detach();
-  });
+  StartPrepWorkers();
   auto pr = std::make_shared<Prep>();
   pr->b = b; pr->fi = fi; pr->src = src; pr->pool = poolKey;
   pr->host = t->host; pr->hw = t->HW(); pr->hh = t->HH();
@@ -319,7 +382,7 @@ void TexPrefetch(TextureImpl* t) {
     auto old = g_prepOf.find(t);
     if (old != g_prepOf.end()) {
       old->second->cancel = true;
-      if (old->second->state.load() == 2) g_prepBytes -= std::min<uint64_t>(g_prepBytes, old->second->data.size());
+      if (old->second->state.load() == 2) g_prepBytes -= std::min<uint64_t>(g_prepBytes, old->second->Bytes());
     }
     if (g_prepOrder.size() > 2 * g_prepOf.size() + 4096) {   // drop records of entries already taken or forgotten
       std::deque<std::pair<const TextureImpl*, uint64_t>> keep;
@@ -366,13 +429,14 @@ void TexPrefetchForget(const TextureImpl* t) {
   g_prepOf.erase(it);
   pr->cancel = true;
   g_prepDoneCv.wait(lk, [&] { return pr->state.load() != 1; });
-  if (pr->state.load() == 2) g_prepBytes -= std::min<uint64_t>(g_prepBytes, pr->data.size());
+  if (pr->state.load() == 2) g_prepBytes -= std::min<uint64_t>(g_prepBytes, pr->Bytes());
 }
 // DestroyPool: cancel queued jobs that read this pool and wait for running ones.
 void TexPrefetchPoolGone(const void* pool) {
   if (!PrepBudget() || !pool) return;
   std::unique_lock<std::mutex> lk(g_prepMu);
   for (auto& pr : g_prepQ) if (pr->pool == pool) pr->cancel = true;
+  g_backQueued.erase(static_cast<const PoolImpl*>(pool));   // [perf pass 7] the address may be reused by a new pool
   g_prepDoneCv.wait(lk, [&] {
     for (const Prep* pr : g_prepRunning) if (pr->pool == pool) return false;
     return true;
@@ -436,12 +500,23 @@ void UploadStaticTexture(ReplayCtx& cx, TextureImpl* t) {
   for (uint32_t ly = 0; ly < layers; ly++) for (uint32_t m = 0; m < levels; m++) { offs.push_back(total); total += (vkSize(lay.levels[m]) + 15) & ~15ull; }
 
   VkBuffer buf = VK_NULL_HANDLE;
-  uint8_t* map = NewScratch(cx, total, &buf);
+  uint8_t* map = nullptr;
+  bool preStaged = false;   // [perf pass 8] the worker's own staging buffer is used as is (no NewScratch, no copy)
+  if (!astc && pre && pre->st.buf && pre->src == src && pre->stBytes == total && pre->srcBytes == lay.total &&
+      FastHash(src, lay.total) == pre->hash) {
+    buf = pre->st.buf; map = pre->st.map;
+    cx.scratch->push_back(pre->st);   // retired with the frame's scratch (ReleaseScratch: cap 0 = destroyed, block range freed)
+    pre->st = ScratchBuf{}; pre->stBytes = 0;
+    preStaged = true;
+  } else {
+    map = NewScratch(cx, total, &buf);
+  }
   if (!map) { LogError("texture upload: staging allocation failed (%llu bytes)", (unsigned long long)total); return; }
   snap_perf::count(snap_perf::V_UPLOAD_BYTES, total);   // [perf] was never wired
 
   // Disk cache for the (expensive) ASTC transcode: keyed by a 128-bit hash of the guest data plus format/size.
   std::string cachePath;
+  if (preStaged) { snap_perf::count(snap_perf::V_UPLOAD_PREF); goto cached; }
   if (!astc && pre) {   // [perf] deswizzled ahead of time by TexPrefetch, valid while the guest bytes are unchanged
     if (auto& pr = pre) {
       if (pr->src == src && pr->data.size() == total && pr->srcBytes == lay.total && FastHash(src, lay.total) == pr->hash) {

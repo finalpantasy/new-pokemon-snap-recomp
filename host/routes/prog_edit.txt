@@ -1,13 +1,13 @@
 # fixture: prog_lvl2_b
 # Photo Editing with waits (2026-11-13): hub Down = Lab (two Downs = Settings), slow A taps through the lab tour (dialogue-driven, ~7000 presents),
 # Photodex -> first Pokemon -> photo -> Photo Editing -> Filters (cursor on No Filter; B&W is the top-right tile).
-# Run: SNAP_ROUTE_LOG=1 powershell -File host\run_boot.ps1 -BuildDir build\w\prog -Route prog_edit -Timeout 560 -ShotAt 100 -ShotEvery 4 -ShotMax 120
+# Run: SNAP_ROUTE_LOG=1 powershell -File host\run_boot.ps1 -BuildDir build\w\prog -Route prog_edit -Timeout 595 -ShotAt 100 -ShotEvery 4 -ShotMax 120
 repeat @f300 @f30000 120 8 A
 wait ui=main_menu:MainMenu timeout=240
 @f200 8 Down
 @f400 8 A
-repeat @f800 @f30000 200 8 A
-wait ui=photo_edit:EffectList timeout=300
+repeat @f800 @f30000 120 8 A
+wait ui=photo_edit:EffectList timeout=500
 @f120 8 Right
 @f300 8 A
 @f600 8 B

@@ -39,7 +39,7 @@ static FILE* g_waits;
 
 static const char* kCtrName[C_COUNT] = {"replay", "qsubmit", "pace", "acquire", "acqsem", "present", "waitsync", "finish", "pipe",
                                         "shader", "poolsync", "upload", "hash", "desc", "getpipe", "readback", "scratch", "reap",
-                                        "ensureimg", "view", "rendbegin"};
+                                        "ensureimg", "view", "rendbegin", "backing"};
 static const char* kValName[V_COUNT] = {"draws", "submits", "cmds", "poolsync_bytes", "poolsync_calls", "uploads", "upload_bytes",
                                         "hash_bytes", "hash_calls", "pipes_created", "scratch_allocs", "desc_sets", "barriers", "shaders",
                                         "pipes_skipped", "upload_pref", "upload_pref_img",

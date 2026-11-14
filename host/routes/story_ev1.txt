@@ -1,0 +1,7 @@
+# fixture: post_tutorial
+# One story event (fixture from analysis\core\story_fix.py), game-state waits: dialogs with A until the lab hub menu, then a pause for the autosave.
+repeat @f300 @f30000 120 8 A
+wait dialog timeout=250
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu timeout=400
+end @f200

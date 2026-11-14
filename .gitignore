@@ -1,7 +1,10 @@
 work/
 extracted/
 analysis/
-tools/
+tools/*
+!tools/level-editor/
+tools/level-editor/target/
+tools/level-editor/shots/
 *.nsp
 *.xci
 *.nsz

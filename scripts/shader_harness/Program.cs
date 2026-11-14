@@ -167,7 +167,7 @@ namespace ShaderHarness
             if (stage == 5) flags |= TranslationFlags.Compute;
             var ctx = Translator.CreateContext(0, new NvnAccessor(data, stage, constOff, codeOff), new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
             ShaderProgram p = ctx.Translate();
-            File.WriteAllBytes(outSpv, FixClipCull(p.BinaryCode, (int)p.Info.ClipDistancesWritten));
+            AtomicWrite(outSpv, FixClipCull(p.BinaryCode, (int)p.Info.ClipDistancesWritten));   // .tmp then rename; the json goes last (a kill mid-write must not leave a half entry)
             var sb = new System.Text.StringBuilder();
             sb.Append("{\"stage\":" + stage + ",\"usesInstanceId\":" + (p.Info.UsesInstanceId ? 1 : 0) + ",\"usesFragCoord\":" + (p.Info.UsesFragCoord ? 1 : 0)
                 + ",\"clipDistances\":" + p.Info.ClipDistancesWritten + ",\"fragmentOutputMap\":" + p.Info.FragmentOutputMap);
@@ -184,8 +184,15 @@ namespace ShaderHarness
             first = true;
             foreach (var t in p.Info.Images) { sb.Append((first ? "" : ",") + "{\"set\":" + t.Set + ",\"binding\":" + t.Binding + ",\"handleIndex\":" + t.HandleIndex + ",\"cbufSlot\":" + t.CbufSlot + ",\"type\":" + (int)t.Type + ",\"array\":" + t.ArrayLength + ",\"flags\":" + (int)t.Flags + "}"); first = false; }
             sb.Append("]}");
-            File.WriteAllText(outJson, sb.ToString());
+            AtomicWrite(outJson, System.Text.Encoding.UTF8.GetBytes(sb.ToString()));
             return 0;
+        }
+
+        static void AtomicWrite(string path, byte[] bytes)
+        {
+            string tmp = path + "." + Environment.ProcessId + ".wtmp";
+            File.WriteAllBytes(tmp, bytes);
+            File.Move(tmp, path, true);
         }
 
         static int Batch(string list, string outDir)

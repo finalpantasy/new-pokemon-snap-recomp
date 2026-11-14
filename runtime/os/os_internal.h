@@ -117,6 +117,8 @@ enum : uint32_t {
     LG_DEADLINE = 8,     // "deadline": the overflow deadline is armed once per core wait (finding 10)
     LG_HOST_BLOCK = 16,  // "hostblock": VAMM retry sleeps and file reads keep the virtual core (finding 9)
     LG_EVENTS = 32,      // "events": manual-clear TimerEvent/LightEvent waiters re-check only the flag (finding 11)
+    LG_EV_SPIN = 64,     // "evspin": Event/SystemEvent Wait/TryWait that return at once are not check-ins (LoadResource
+                         // spin); default: a check-in, and a spin pass when manual-clear signalled or a failed TryWait
 };
 static inline bool legacy(uint32_t bit) { return (g_cfg.legacy & bit) != 0; }
 struct Stats {

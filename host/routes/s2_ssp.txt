@@ -16,8 +16,7 @@ wait ride>=84 timeout=300
 repeat @f10 @f160 14 4 A
 repeat @f220 @f60000 90 8 A
 wait ui=photo_submit:FolderSelect timeout=500
-@f150 8 Right
-@f230 8 A
+@f150 8 A
 wait ui=photo_submit:PhotoSubmit timeout=30
 # A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
 # open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders

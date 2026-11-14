@@ -78,6 +78,13 @@ extern "C" void rt_gm_route_ui_event(Cpu* c) {
     char nm[40];
     player_name(player, nm, sizeof nm);
     hle::input::route_ui(player, nm, st, ev, el, c->x[30]);
+    // prog debug (LenTalk / requests): main game object (GOT main+0xcfab68) flag +0x3e53 gates the mission list (main+0x501a80)
+    {
+        static int last = -2;
+        uint64_t got = *(const uint64_t*)(kMainBase + 0xcfab68);
+        int v = (got && !IsBadReadPtr((void*)(got + 0x3e53), 1)) ? *(const uint8_t*)(got + 0x3e53) : -1;
+        if (v != last) { last = v; fprintf(stderr, "[hle] route: game flag +0x3e53 = %d (event %d scene %s)\n", v, ev, nm); }
+    }
 }
 
 extern "C" void rt_gm_route_ui_setstate(Cpu* c) {

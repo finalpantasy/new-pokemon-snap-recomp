@@ -1,0 +1,52 @@
+# fixture: unlock_all
+# soak hub loop: Florio Day, film out, skip evaluation, album save (10 A presses), Return to Camp, x3
+wait ui=title timeout=150
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=250
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=30
+@f180 6 A
+wait ride timeout=300
+repeat @f0 @f60000 36 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit:FolderSelect timeout=400
+@f150 8 Plus
+@f230 8 Up
+@f310 8 A
+repeat @f700 @f60000 60 4 A
+wait ui=album_save:PhotoSelect timeout=240
+repeat @f240 @f60000 150 8 A
+wait ui=album_save:PhotoDetail timeout=60
+repeat @f150 @f1500 120 8 A
+@f1700 6 B
+wait ui=album_save:PhotoSelect timeout=60
+@f200 6 B
+@f500 6 Down
+@f700 6 A
+repeat @f1000 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=250
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=30
+@f180 6 A
+wait ride timeout=300
+repeat @f0 @f60000 36 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit:FolderSelect timeout=400
+@f150 8 Plus
+@f230 8 Up
+@f310 8 A
+repeat @f700 @f60000 60 4 A
+wait ui=album_save:PhotoSelect timeout=240
+repeat @f240 @f60000 150 8 A
+wait ui=album_save:PhotoDetail timeout=60
+repeat @f150 @f1500 120 8 A
+@f1700 6 B
+wait ui=album_save:PhotoSelect timeout=60
+@f200 6 B
+@f500 6 Down
+@f700 6 A
+repeat @f1000 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=250
+end @f60

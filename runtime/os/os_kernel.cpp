@@ -1133,7 +1133,8 @@ extern "C" void os_init(const OsConfig *in) {
     if (c.num_cores == 0) c.num_cores = -1;   // 0 would leave g_cores empty and index it (finding 14): treat as unlimited
     if (const char *e = getenv("SNAP_SCHED_LEGACY")) {   // old scheduler paths, see LG_* in os_internal.h
         static const struct { const char *n; uint32_t b; } names[] = {{"migrate", LG_MIGRATE}, {"yield", LG_YIELD_ANY},
-            {"unboost", LG_UNBOOST}, {"deadline", LG_DEADLINE}, {"hostblock", LG_HOST_BLOCK}, {"events", LG_EVENTS}};
+            {"unboost", LG_UNBOOST}, {"deadline", LG_DEADLINE}, {"hostblock", LG_HOST_BLOCK}, {"events", LG_EVENTS},
+            {"evspin", LG_EV_SPIN}};
         std::string s(e);
         if (s == "1" || s == "all") c.legacy = ~0u;
         else
@@ -1152,7 +1153,7 @@ extern "C" void os_init(const OsConfig *in) {
     if (const char *e = getenv("SNAP_OS_SPARE_CORES"))
         if (c.num_cores > 0) c.num_cores = std::min(c.num_cores + std::max(atoi(e), 0), 62);
     g_cfg = c;
-    if (c.legacy) log("SNAP_SCHED_LEGACY: old scheduler paths %#x (1 migrate, 2 yield, 4 unboost, 8 deadline, 16 hostblock, 32 events)", c.legacy);
+    if (c.legacy) log("SNAP_SCHED_LEGACY: old scheduler paths %#x (1 migrate, 2 yield, 4 unboost, 8 deadline, 16 hostblock, 32 events, 64 evspin)", c.legacy);
     std::lock_guard<std::mutex> lk(G);
     g_cores.assign(c.num_cores > 0 ? (size_t)c.num_cores : 0, nullptr);
     (void)qpc_freq();
@@ -1223,21 +1224,28 @@ extern "C" void os_io_end(void) { if (!legacy(LG_HOST_BLOCK)) os_host_block_end(
 extern "C" uint64_t os_current_thread_type(void) { return t_self ? t_self->tt : 0; }
 // Diagnostics (host watchdog): visit every live guest thread with its wait state and the Cpu whose x30/sp the caller can symbolize.
 extern "C" void os_dump_threads(void (*emit)(void *ud, uint64_t tt, uint64_t id, int wkind, uint64_t wkey, uint64_t waddr, int core, int prio, Cpu *cpu), void *ud) {
-    // G is normally held only briefly: retry for up to 500 ms, so the walk below does not race a map rehash (finding 12).
-    // Only a thread stuck while holding G makes it go on unlocked, and then nothing else can change the maps.
+    // G is normally held only briefly: retry for up to 500 ms. If it is still held, never walk the live maps and thread
+    // objects (finding 12: a rehash or a DestroyThread can free them under the walk); print only the atomic counters.
     bool locked = G.try_lock();
     for (int i = 0; !locked && i < 500; i++) {
         Sleep(1);
         locked = G.try_lock();
     }
+    if (!locked) {
+        log("dump: G BUSY for 500 ms: thread walk skipped (rescues %llu, starved %llu, migrations %llu/%llu, yield_any %llu, overflow grants %llu)",
+            (unsigned long long)g_stats.core_wake_rescues.load(), (unsigned long long)g_stats.core_starved.load(),
+            (unsigned long long)g_stats.migrations.load(), (unsigned long long)g_stats.migrate_requests.load(),
+            (unsigned long long)g_stats.yield_any.load(), (unsigned long long)g_stats.overflow_grants.load());
+        return;
+    }
     // The core handoff state first (who waits for a core, and which waiter each free core is reserved for): the walk below
     // symbolizes guest stacks under G and takes long enough to distort the wait times.
     char buf[768];
-    if (locked) g_dumps++;
+    g_dumps++;
     {
         const uint64_t now = now_us();
         int n = snprintf(buf, sizeof buf, "dump: G %s, overflow %d, rescues %llu, starved %llu, migrations %llu/%llu, yield_any %llu, core waiters:",
-                         locked ? "locked" : "BUSY (unlocked read)", g_overflow, (unsigned long long)g_stats.core_wake_rescues.load(),
+                         "locked", g_overflow, (unsigned long long)g_stats.core_wake_rescues.load(),
                          (unsigned long long)g_stats.core_starved.load(), (unsigned long long)g_stats.migrations.load(),
                          (unsigned long long)g_stats.migrate_requests.load(), (unsigned long long)g_stats.yield_any.load());
         for (Thread *w : g_core_wait)
@@ -1253,7 +1261,7 @@ extern "C" void os_dump_threads(void (*emit)(void *ud, uint64_t tt, uint64_t id,
         emit(ud, t->tt, t->id | ((uint64_t)(t->waiting_core ? 1 : 0) << 62) | ((t->mask & 0xff) << 48) | ((uint64_t)((t->ideal + 4) & 0xf) << 56), t->wkind, t->wkey, t->waddr, t->core, t->eff_prio, t->cur ? t->cur : t->cpu);
     }
     for (int c = 0; c < g_cfg.num_cores; c++) emit(ud, 0xC0DE, (uint64_t)c, 99, 0, 0, c, g_cores[c] ? g_cores[c]->eff_prio : -1, nullptr);   // core occupancy: id = core, prio = holder prio
-    if (locked) G.unlock();
+    G.unlock();
     log("%s", buf);   // after G is released (finding 12)
 }
 

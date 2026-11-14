@@ -85,6 +85,9 @@ SNAP_AUDIO_API void snap_audio_configure(const SnapAudioConfig* cfg);  // before
 SNAP_AUDIO_API void snap_audio_shutdown(void);
 SNAP_AUDIO_API void snap_audio_set_volume(int category, float v);
 SNAP_AUDIO_API float snap_audio_get_volume(int category);
+// Session-only mute (window focus loss): silences the final mix without touching the master volume or audio.json.
+SNAP_AUDIO_API void snap_audio_set_muted(int muted);
+SNAP_AUDIO_API int snap_audio_get_muted(void);
 // Output mode API for the UI (docs/audio.md, "Surround and spatial output"). Persists to audio.json
 // ("output": "stereo"|"speakers"|"spatial", "channels": 0|2|6, "speakers": 0|6|8). Takes effect on the next start
 // (the game opens its sink once). Pass -1 to leave a field unchanged.
@@ -98,6 +101,7 @@ SNAP_AUDIO_API int snap_audio_volume_touched(int category);  // bridge use
 // Hook run on the device thread when the default device changes: lets runtime\os signal the SystemEvent.
 typedef void (*SnapAudioSignalEventFn)(void* systemEvent);
 SNAP_AUDIO_API void snap_audio_set_os_hooks(SnapAudioSignalEventFn signal);
+SNAP_AUDIO_API void snap_audio_set_event_init_hook(SnapAudioSignalEventFn init);  // create a guest SystemEvent (autoclear)
 
 struct SnapAudioStats {
   uint64_t framesMixed;        // frames the device pulled

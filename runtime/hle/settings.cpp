@@ -72,10 +72,25 @@ void write_file() {
     std::ofstream f(P(tmp), std::ios::trunc);
     f << "# per-profile settings (edited by the F1 menu)\n";
     for (auto& [k, v] : g_kv) f << k << "=" << v << "\n";
-    if (!f.good()) return;
+    f.flush();
+    if (!f.good()) { f.close(); fs::remove(P(tmp), ec); return; }   // a short write must not replace the good file
   }
-  fs::rename(P(tmp), P(g_path), ec);
-  if (ec) { fs::remove(P(g_path), ec); fs::rename(P(tmp), P(g_path), ec); }
+  // Replace in one step and never delete the target first: a failed replace (antivirus or an indexer holding the .tmp) keeps the
+  // old file. A few short retries, then give up, log, and drop the .tmp.
+  bool ok = false;
+  for (int i = 0; i < 5 && !ok; i++) {
+#ifdef _WIN32
+    ok = MoveFileExW(P(tmp).wstring().c_str(), P(g_path).wstring().c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    if (!ok) Sleep(20);
+#else
+    fs::rename(P(tmp), P(g_path), ec);
+    ok = !ec;
+#endif
+  }
+  if (!ok) {
+    std::fprintf(stderr, "settings: could not replace %s (kept the previous file)\n", g_path.c_str());
+    fs::remove(P(tmp), ec);
+  }
 }
 
 // Settings that reach the game through an env var read at start (the F1 menu's "restart needed" options). The key is stored only when the user chose
@@ -88,6 +103,8 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_hdr_paper", "SNAP_HDR_PAPER"},       {"gfx_draw_dist", "SNAP_DRAW_DIST"}, {"gfx_lod_dist", "SNAP_LOD_DIST"}, {"gfx_lod_force0", "SNAP_LOD_FORCE0"},   // gfx_fov removed (owner 2026-11-12): a saved value is ignored
     {"gfx_full_rate_anim", "SNAP_FULL_RATE_ANIM"}, {"gfx_ui_font", "SNAP_UI_FONT_SCALE"}, {"fast_boot", "SNAP_FAST_BOOT"},
     {"gfx_ssao_samples", "SNAP_SSAO_SAMPLES"}, {"gfx_ssao_hbao", "SNAP_SSAO_HBAO"},
+    {"gfx_shadow_dist", "SNAP_SHADOW_DISTANCE"}, {"gfx_hdr_expand", "SNAP_HDR_EXPAND"},   // 2026-11-14, docs/advanced-graphics-options.md
+    {"vsync", "SNAP_VSYNC"},   // the F1 / native Vsync row (live through snap_vsync_set; this carries it to the next start)
     {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"},    {"neo_speed", "SNAP_NEO_SPEED"}, {"film", "SNAP_FILM"},
     {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
 };
@@ -191,6 +208,13 @@ void apply(bool env) {
     for (auto& m : kPassKeys) if (get(m.key, "") == "off") off += (off.empty() ? "" : ",") + std::string(m.passes);
     set_env_if_unset("SNAP_PASS_OFF", off);
   }
+  {   // Shiny Pokemon row (runtime/nvn/nvn_shiny.cpp): key "shiny" = the odds (4096 or 512) -> SNAP_SHINY=1 + SNAP_SHINY_ODDS; unset = off
+    std::string odds = get("shiny", "");
+    if (!odds.empty() && odds != "default" && odds != "0" && !std::getenv("SNAP_SHINY")) {
+      set_env_if_unset("SNAP_SHINY", "1");
+      set_env_if_unset("SNAP_SHINY_ODDS", odds);
+    }
+  }
   std::string ws = get("win_size", "");   // "WxH": windowed client size (the remembered window.json size otherwise)
   int w = 0, h = 0;
   if (std::sscanf(ws.c_str(), "%dx%d", &w, &h) == 2 && w >= 320 && h >= 180) {
@@ -202,6 +226,7 @@ void apply(bool env) {
 const char* env_name(const std::string& key) {
   if (key == "look" || key == "look_intensity") return "SNAP_LOOK";
   if (key == "win_size") return "SNAP_WINDOW_W";
+  if (key == "shiny") return "SNAP_SHINY";
   for (auto& m : kPassKeys) if (key == m.key) return "SNAP_PASS_OFF";
   for (auto& m : kEnvKeys) if (key == m.key) return m.env;
   return nullptr;

@@ -1,0 +1,48 @@
+# fixture: post_tutorial
+# Chain of story events in one run. The picker only runs when the lab hub starts, so after each event the route opens the course map (A) and leaves it (B), then waits for the next event's dialog.
+# A TIMEOUT on 'dialog' at the end means no further event was pending (exit code 3 then).
+repeat @f300 @f30000 120 8 A
+wait dialog timeout=250
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu timeout=300
+@f120 8 A
+wait ui=map_select:StageSelect timeout=90
+@f60 8 B
+@f200 8 B
+wait ui=main_menu timeout=60
+wait dialog timeout=200
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu timeout=300
+@f120 8 A
+wait ui=map_select:StageSelect timeout=90
+@f60 8 B
+@f200 8 B
+wait ui=main_menu timeout=60
+wait dialog timeout=200
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu timeout=300
+@f120 8 A
+wait ui=map_select:StageSelect timeout=90
+@f60 8 B
+@f200 8 B
+wait ui=main_menu timeout=60
+wait dialog timeout=200
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu timeout=300
+@f120 8 A
+wait ui=map_select:StageSelect timeout=90
+@f60 8 B
+@f200 8 B
+wait ui=main_menu timeout=60
+wait dialog timeout=200
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu timeout=300
+@f120 8 A
+wait ui=map_select:StageSelect timeout=90
+@f60 8 B
+@f200 8 B
+wait ui=main_menu timeout=60
+wait dialog timeout=200
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu timeout=300
+end @f60

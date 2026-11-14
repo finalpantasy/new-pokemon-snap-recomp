@@ -42,11 +42,29 @@ def row(label, widget, store, key, default, choices, help):
     assert widget != 'c' or len(choices) == 2, label
     assert widget != 'p' or 2 <= len(choices) <= 10, label
     assert len(help) <= 112, (label, len(help))
+    assert len(label) <= 24, label
     return dict(label=label, widget=widget, store=store, key=key, default=default, choices=choices, help=help)
 
 
 def nums(*vals, fmt='{}', suffix=''):
     return tuple((v, fmt.format(v) + suffix) for v in vals)
+
+
+def visual_defaults():
+    """The visual-extras defaults from runtime/hle/visual_defaults.h (the runtime's one table), so the menu's defaults
+    (and Restore Default Settings) cannot disagree with the runtime: {env name: default value}."""
+    src = open(os.path.join(ROOT, 'runtime', 'hle', 'visual_defaults.h'), encoding='utf-8').read()
+    enhanced = re.search(r'kDefaultEnhanced\s*=\s*(true|false)', src).group(1) == 'true'
+    rows = re.findall(r'\{"(SNAP_\w+)",\s*"([^"]*)",\s*"([^"]*)"', src)
+    assert rows, 'visual_defaults.h: no rows'
+    return {k: (e if enhanced else o) for k, o, e in rows}
+
+
+# Anti-aliasing row choices in the F1 table's values, so a hand pick of the default look stores "default" (the key erased) and the
+# quality preset keeps its name (kPresets compare these strings). Original look: default = the game's FXAA; enhanced: default = ssaa2+smaa.
+AA_CHOICES = ((('default', 'Original'), ('smaa', 'SMAA'), ('ssaa2,smaa', 'SMAA + supersampling'))
+              if visual_defaults()['SNAP_AA'] in ('original', 'off', 'fxaa') else
+              (('off', 'Original'), ('smaa', 'SMAA'), ('default', 'SMAA + supersampling')))
 
 
 TABS = [
@@ -56,18 +74,17 @@ TABS = [
              ('maximum', 'Maximum'), ('custom', 'Custom')),
             'Sets this tab and the next together. Very Low suits weak PCs, Maximum a very fast GPU.' + R),
         row('Render scale', 'p', 'opt', 'gfx_render_scale', '1.00',
-            (('0.50', '0.5x'), ('0.75', '0.75x'), ('1.00', '1x (1080p)'), ('1.25', '1.25x'), ('1.50', '1.5x'),
+            (('0.50', '0.5x'), ('0.75', '0.75x'), ('1.00', '1x (1080p)'), ('1.25', '1.25x'), ('1.50', '1.5x'), ('1.75', '1.75x'),
              ('2.00', '2x (4K)'), ('2.50', '2.5x'), ('3.00', '3x'), ('4.00', '4x (8K)')),
-            'How sharp the 3D picture is drawn. Higher is crisper and slower.' + R),
-        # Visual extras (owner 2026-11-13): original look by default, every extra off; explicit values, so a change of the
-        # runtime's own defaults cannot move them. (SNAP_AA: original = the game's FXAA.)
-        row('Anti-aliasing', 'p', 'opt', 'gfx_aa', 'original',
-            (('original', 'Original'), ('smaa', 'SMAA'), ('ssaa2+smaa', 'SMAA + supersampling')),
+            'Scene size as a multiple of 1080p. 4x needs a lot of video memory.' + R),
+        # Visual extras (owner 2026-11-13): original look by default, every extra off. The AA values are the F1 table's
+        # (ui_options.cpp gfx_aa, kPresets): "default" = the visual_defaults.h AA, "off" = the game's FXAA; choices set below.
+        row('Anti-aliasing', 'p', 'opt', 'gfx_aa', 'default', AA_CHOICES,
             'Smooths jagged edges. Supersampling draws at 2x size (1.5x at 4K) and costs the most.' + R),
         # (a pulldown, not the game's 0..10 slider: its knob is moved by the game's handler, which a PC page bypasses)
         row('Sharpening', 'p', 'opt', 'gfx_sharpen', '0.00',
-            (('0.00', 'Off'), ('0.30', 'Low'), ('0.50', 'Medium')),
-            'A gentle sharpening pass after anti-aliasing.' + R),
+            (('0.00', 'Off'),) + nums('0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.85', '1.00'),
+            'Contrast-adaptive sharpening after anti-aliasing. An upscaler turns it off unless set.' + R),
         row('Upscaler', 'p', 'opt', 'gfx_upscaler', 'off',
             (('off', 'Off'), ('dlaa', 'DLAA'), ('dlss', 'DLSS'), ('fsr', 'FSR'), ('xess', 'XeSS')),
             'Rebuilds a sharp picture from fewer pixels. DLSS and DLAA need an NVIDIA RTX card.' + R),
@@ -76,12 +93,13 @@ TABS = [
             'How many pixels are drawn before the upscaler enlarges them. Lower modes run faster.' + R),
     ]),
     ('Textures', 'Texture, shadow and shading detail.', [
-        row('Texture filtering', 'c', 'opt', 'gfx_aniso', '0', (('0', 'Original'), ('16', '16x anisotropic')),
+        row('Texture filtering', 'p', 'opt', 'gfx_aniso', '0',
+            (('0', 'Original'), ('2', '2x anisotropic'), ('4', '4x anisotropic'), ('8', '8x anisotropic'), ('16', '16x anisotropic')),
             'Keeps ground and walls sharp at shallow angles. 16x costs almost nothing on a PC.' + R),
         row('Texture sharpness', 'p', 'opt', 'gfx_lod_bias', 'auto',
-            (('auto', 'Automatic'), ('-1', 'Sharper'), ('-0.5', 'A little sharper'), ('0', 'Original'), ('0.5', 'Softer'),
-             ('1', 'Much softer')),
-            'Which texture detail level is used. Sharper settings can shimmer.' + R),
+            (('auto', 'Automatic'), ('-2', '-2 (sharpest)'), ('-1.5', '-1.5'), ('-1', '-1 (sharper)'), ('-0.5', '-0.5'),
+             ('0', '0 (original)'), ('0.25', '+0.25'), ('0.5', '+0.5'), ('1', '+1 (softer)'), ('2', '+2 (softest)')),
+            'Sharper (negative) or softer (positive) texture detail. Sharper settings can shimmer.' + R),
         row('Shadow resolution', 'p', 'opt', 'gfx_shadow_res', 'default',
             (('512', '512'), ('default', '1024 (original)'), ('2048', '2048'), ('4096', '4096'), ('8192', '8192')),
             'Size of the shadow map. Higher gives crisper shadow edges and uses more video memory.' + R),
@@ -113,17 +131,25 @@ TABS = [
             'How strongly the color look is applied. No effect while the look is Neutral.' + R),
     ]),
     ('Output', 'HDR output and frame rate.', [
-        row('HDR output', 'c', 'opt', 'gfx_hdr', '0', TOGGLE,
-            'Sends an HDR picture to an HDR monitor. Turn on HDR in Windows first.' + R),
-        row('HDR peak brightness', 'p', 'opt', 'gfx_hdr_peak', '1000',
-            nums('400', '600', '800', '1000', '1500', '2000', '3000', '4000', suffix=' nits'),
-            'The brightest highlight to send. Use your monitor\'s rated peak.' + R),
+        # HDR mode: a saved "1" (the old on/off row) is HDR10; nvn_hdr.cpp reads 0/off, 1/hdr10, scrgb
+        row('HDR output', 'p', 'opt', 'gfx_hdr', '0', (('0', 'Off'), ('1', 'HDR10'), ('scrgb', 'scRGB')),
+            'For an HDR monitor with Windows HDR on. scRGB has far less banding.' + R),
+        # Auto = no key: the monitor's reported peak, else 1000
+        row('HDR peak brightness', 'p', 'opt', 'gfx_hdr_peak', 'default',
+            (('default', 'Auto'),) + nums('400', '600', '800', '1000', '1500', '2000', '3000', '4000', suffix=' nits'),
+            'The brightest highlight to send. Auto reads the monitor.' + R),
         row('HDR paper white', 'p', 'opt', 'gfx_hdr_paper', '200',
             nums('80', '100', '150', '200', '250', '300', '400', suffix=' nits'),
             'How bright ordinary white is. Lower it if the picture feels too bright in a dark room.' + R),
+        row('HDR highlights', 'p', 'opt', 'gfx_hdr_expand', '0.30',
+            nums('0.00', '0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.80', '1.00'),
+            'How far near-white scene pixels lift into HDR. Needs HDR on.' + R),
         row('Frame rate limit', 'p', 'opt', 'frame_cap', '0',
-            (('0', 'Off'),) + nums('30', '45', '60', '90', '120', '144', suffix=' FPS'),
+            (('0', 'Off'),) + nums('30', '45', '60', '75', '90', '120', '144', '165', '240', suffix=' FPS'),
             'Stops the game from drawing faster than this. Off keeps the original 60 FPS pacing.'),
+        # live (runtime/nvn/nvn_vk.cpp snap_vsync_set: the next present rebuilds the swapchain); settings key vsync -> SNAP_VSYNC
+        row('Vsync', 'p', 'opt', 'vsync', 'on', (('on', 'On'), ('adaptive', 'Adaptive'), ('fast', 'Fast'), ('off', 'Off')),
+            'On: no tearing. Adaptive: tears only below the refresh rate. Fast: lower latency. Off: lowest, may tear.'),
     ]),
     ('View', 'How far detail reaches. These rows may change photo scores.', [
         row('Detail distance', 'p', 'opt', 'gfx_lod_dist', '1',
@@ -205,22 +231,26 @@ TABS = [
             'How many photos you can take before an expedition ends.' + R),
         row('Skip dialogue', 'c', 'opt', 'skip_cutscenes', '0', TOGGLE,
             'Presses A for you when a dialogue box is waiting. Choices are not answered for you.' + R),
+        # opt-in mod row (runtime/nvn/nvn_shiny.cpp, needs the shiny pack): key shiny -> SNAP_SHINY=1 + SNAP_SHINY_ODDS (settings.cpp)
+        row('Shiny Pokémon', 'p', 'opt', 'shiny', 'default',
+            (('default', 'Off'), ('4096', 'Rare (1/4096)'), ('512', 'Common (1/512)')),
+            'Very rarely, a Pokémon appears in its shiny colors. Cosmetic only; photo scores are unchanged.'
+            ' Needs a restart.'),   # (the usual ' Applies after restart.' passes the 112-character limit)
+    ]),
+    # Tab 11, the first of a third tab set (docs/advanced-graphics-options.md). Reserved slots, in order: AO radius and AO strength
+    # (SNAP_SSAO_RADIUS / SNAP_SSAO_STRENGTH are parsed in host/mods/gamemods.cpp but not applied yet), then the lighting stream's
+    # Lighting preset, shadow softness and ray-traced effects. Not in the quality presets (open question for the owner).
+    ('Shadows & AO', 'Shadow and ambient occlusion detail.', [
+        row('Shadow distance', 'p', 'opt', 'gfx_shadow_dist', 'default',
+            (('default', '1x (original)'),) + nums('1.5', '2', '3', '4', '6', '8', '12', '16', suffix='x'),
+            'How far moving shadows reach. Pair with shadow resolution: farther is blurrier.' + R),
     ]),
 ]
-def visual_defaults():
-    """The visual-extras defaults from runtime/hle/visual_defaults.h (the runtime's one table), so the menu's defaults
-    (and Restore Default Settings) cannot disagree with the runtime: {env name: default value}."""
-    src = open(os.path.join(ROOT, 'runtime', 'hle', 'visual_defaults.h'), encoding='utf-8').read()
-    enhanced = re.search(r'kDefaultEnhanced\s*=\s*(true|false)', src).group(1) == 'true'
-    rows = re.findall(r'\{"(SNAP_\w+)",\s*"([^"]*)",\s*"([^"]*)"', src)
-    assert rows, 'visual_defaults.h: no rows'
-    return {k: (e if enhanced else o) for k, o, e in rows}
-
-
-VISUAL_KEYS = {'gfx_aa': 'SNAP_AA', 'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',
+VISUAL_KEYS = {'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',
                'photo_export': 'SNAP_PHOTO_EXPORT'}
 _VD = visual_defaults()
 for _t in TABS:
+    assert len(_t[2]) <= 6, (_t[0], 'a PC page has 6 row slots and no scrolling')
     for _r in _t[2]:
         if _r['key'] in VISUAL_KEYS:
             _r['default'] = _VD[VISUAL_KEYS[_r['key']]]
@@ -231,6 +261,28 @@ GAME_TABS = ('Game', 'Camera', 'Button', 'Sound', 'Others')    # state = tab ele
 # message ids of the game's tab names (Init sets them once through {Tab1Text}..; only Init has those variables)
 GAME_TAB_TEXT = ('Option_TabGame_Tx', 'Option_TabCamera_Tx', 'Option_TabButton_Tx', 'Option_TabSound_Tx', 'Option_Extra_Tx')
 SEL = 'selector_parent_mc/selector_{s:02d}_mc'
+# The tab bar layout for TabNum tabs (lb_tab_02..05). The game plays it only in Init; every game and PC tab replays it, so a short
+# last PC set (TabNum 2..4, nativeopt.cpp) and the 5-tab sets around it each show their own bar.
+TAB_BAR = (10, 1, 'window_mc', 'lb_tab_0{TabNum}')
+
+
+def pull_slot(s, n):
+    """Row slot whose popup (pulldown_NN_mc) a pulldown on slot s with n items uses. A popup opens downward from its row
+    (rows 60 px apart, items 37 px, at 960 x 540), so a long list on a low row would run off the screen: it opens from a
+    higher row instead (row 1 holds 10 items). host/mods/nativeopt.cpp reads it from rows.txt (prepare_pull)."""
+    p = s
+    while p > 1 and 60 * (p - 1) + 37 * (n - 1) > 339:
+        p -= 1
+    return p
+
+
+def pull_texts(s, r):
+    """Enter actions writing a pulldown's popup texts (row label, item labels) into its popup slot."""
+    pd = 'pulldown_%02d_mc' % pull_slot(s, len(r['choices']))
+    out = [(10, 7, pd + '/dt_selector_mc/dt_selector', r['label'])]
+    for k, (_, lab) in enumerate(r['choices'], 1):
+        out.append((10, 7, pd + '/selector_item_%02d_mc/dt_select_pulldown_mc/dt_select_pulldown' % k, lab))
+    return out
 
 
 def state_name(t):
@@ -324,13 +376,15 @@ class Gen:
         name, desc, rows = TABS[t]
         base = (t // 5) * 5
         tab_help = desc + RESET_NOTE
-        enter = []
+        enter = [TAB_BAR]
         oacts = [self.l.action(a) for a in self.l.get(self.others, 1, L.STATE[1])]
         for trig, op, path, arg, _ in oacts:          # the tab bar part of the game's enter actions (wait, tab highlights)
             if trig == 10 and (path == '_root' or path.startswith('window_mc/')):
                 enter.append((trig, op, path, arg))
-        for i in range(5):
-            enter.append((10, 7, 'window_mc/window_tab{TabNum}_%02d_mc/dt_tab_mc/dt_tab' % (i + 1), TABS[base + i][0]))
+        # a short last set: nativeopt.cpp sets TabNum to max(2, its tab count) (the screen has 2- to 5-tab bars); a spare slot is blank
+        for i in range(max(2, min(5, len(TABS) - base))):
+            enter.append((10, 7, 'window_mc/window_tab{TabNum}_%02d_mc/dt_tab_mc/dt_tab' % (i + 1),
+                          TABS[base + i][0] if base + i < len(TABS) else ''))
         enter.append((10, 1, 'selector_parent_mc', 'lb_list'))
         for s in range(1, 7):
             sel = SEL.format(s=s)
@@ -349,10 +403,7 @@ class Gen:
                     enter.append((10, 1, c, var(t, s, 'C%d' % k)))
             elif w == 'p':
                 enter.append((10, 7, sel + '/selector_pulldown_mc/dt_select_pulldown_mc/dt_select_pulldown', var(t, s, 'V')))
-                pd = 'pulldown_%02d_mc' % s
-                enter.append((10, 7, pd + '/dt_selector_mc/dt_selector', r['label']))
-                for k, (_, lab) in enumerate(r['choices'], 1):
-                    enter.append((10, 7, pd + '/selector_item_%02d_mc/dt_select_pulldown_mc/dt_select_pulldown' % k, lab))
+                enter += pull_texts(s, r)   # (the popup state writes them again: two rows can share a popup slot)
             else:
                 num = sel + '/selector_number_mc'
                 enter.append((10, 1, num, 'lb_sound' if r['store'] == 'vol' else 'lb_game'))
@@ -413,14 +464,15 @@ class Gen:
     def pull_state(self, t, s):
         r = TABS[t][2][s - 1]
         n = len(r['choices'])
-        pd = 'pulldown_%02d_mc' % s
-        rep = {'{LineNaviFrequency}': '%02d' % s}
+        pd = 'pulldown_%02d_mc' % pull_slot(s, n)
+        rep = {'pulldown_{LineNaviFrequency}': pd[:-3], '{LineNaviFrequency}': '%02d' % s}   # popup slot, then the row's own
         enter = []
         for trig, op, path, arg, _ in (self.l.action(a) for a in self.l.get(self.navi, 1, L.STATE[1])):
             for k, v in rep.items():
                 path = path.replace(k, v)
             enter.append((trig, op, path, arg))
-        enter.insert(1, (10, 1, pd, 'lb_start_list%02d' % (n + 1)))
+        enter += pull_texts(s, r)
+        # (no lb_start_list enter action, as in the game's popups: the host starts the list on decide, see prepare_pull)
         enter.append((10, 7, pd + '/selector_main_mc/dt_select_pulldown_mc/dt_select_pulldown', var(t, s, 'V')))
         for k in range(1, n + 1):
             enter.append((10, 1, pd + '/selector_item_%02d_mc' % k, var(t, s, 'I%d' % k)))
@@ -434,7 +486,12 @@ class Gen:
         e = self.element(self.nel['PulldownMenu'], 'PulldownMenu', pd + '/selector_main_mc', acts, None)
         e.fields[4], e.types[4] = pd + '/selector_item_%02d_mc' % n, 'off'
         elements = [e]
-        for nm in ('CancelArea',):   # (the game's MenuArea belongs to its list widget and takes the cursor from our items)
+        # The game's MenuArea (type 2 on the whole list, as in its NaviFrequency popup): part of the list widget; the game's
+        # popup descriptor lists it next to PulldownMenu.
+        ma = self.l.to_table(self.nel['MenuArea'], L.ELEMENT)
+        ma.fields[3], ma.types[3] = pd, 'off'
+        elements.append(ma)
+        for nm in ('CancelArea',):
             tm = self.nel[nm]
             e = self.l.to_table(tm, L.ELEMENT)
             # B and a click outside close the popup through this element (f6 = 4); on the full-screen dimmer it took the
@@ -455,7 +512,7 @@ class Gen:
         add = [act(10, 7, 'window_mc/window_tab{TabNum}_%02d_mc/dt_tab_mc/dt_tab' % i, '{Option_UI.%s}' % m)
                for i, m in enumerate(GAME_TAB_TEXT, 1)]
         st = self.l.to_table(s, L.STATE)
-        st.fields[1], st.types[1] = enter[:at] + add + enter[at:], 'off'
+        st.fields[1], st.types[1] = [act(*TAB_BAR)] + enter[:at] + add + enter[at:], 'off'
         return st
 
     def build(self):
@@ -474,12 +531,13 @@ class Gen:
 def rows_txt():
     """The row table for host/mods/nativeopt.cpp: tab lines, then one line per row (tab-separated)."""
     out = ['# native-options rows (scripts/ui/make_native_options.py %s): T <tab> <state> <name>' % VERSION,
-           '# R <tab> <slot> <widget c|p|n> <store opt|map|vol> <key> <default> <value=label|value=label...>']
+           '# R <tab> <slot> <widget c|p|n> <store opt|map|vol> <key> <default> <value=label|value=label...> <popup slot> <label>']
     for t, (name, _, rows) in enumerate(TABS):
         out.append('T\t%d\t%s\t%s' % (t, state_name(t), name))
         for s, r in enumerate(rows, 1):
             ch = '|'.join('%s=%s' % (v, lab) for v, lab in r['choices'])
-            out.append('R\t%d\t%d\t%s\t%s\t%s\t%s\t%s' % (t, s, r['widget'], r['store'], r['key'], r['default'], ch))
+            out.append('R\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%d\t%s' % (t, s, r['widget'], r['store'], r['key'], r['default'], ch,
+                                                               pull_slot(s, len(r['choices'])), r['label']))
     return '\n'.join(out) + '\n'
 
 

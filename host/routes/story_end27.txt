@@ -1,0 +1,15 @@
+# fixture: post_tutorial
+# Story event 27 (final) with fixture from analysis\core\story_fix.py (bits 0-26 + flag 3e2d). Waits on game state.
+# Event cutscene and dialogs (A every 40 presents; a press during typing only completes the line)
+repeat @f300 @f30000 120 8 A
+wait dialog timeout=200
+repeat @f0 @f30000 120 8 A
+wait !dialog for=500 timeout=300
+# credits are rolling: skip with Plus (held), A confirms
+repeat @f0 @f8000 400 250 Plus
+repeat @f0 @f30000 90 8 A
+wait dialog timeout=550
+# post-credits talk, "You got a sticker!" (Illumina Orb Gold), back at the lab hub
+repeat @f0 @f30000 90 8 A
+wait ui=main_menu timeout=300
+end @f600

@@ -28,6 +28,7 @@
 #include "../../runtime/hle/hle_config.h"
 #include "../../runtime/hle/input_core.h"
 #include "../../runtime/hle/profiles.h"
+#include "../../runtime/hle/save_gen.h"
 #include "../../runtime/hle/settings.h"
 
 namespace stdfs = std::filesystem;
@@ -495,6 +496,280 @@ static void test_nonascii_appdata() {
 #endif
 }
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+// P1-b: a guard file that cannot be opened or locked refuses the mount (never mounts without the single-instance guard)
+static void test_save_lock_unavailable() {
+  g_test = "save.lock_unavailable";
+  std::error_code ec;
+  {   // access denied: read-only .snap.lock
+    stdfs::path root = g_tmp / "save_lock_ro";
+    stdfs::create_directories(root, ec);
+    { std::ofstream(root / ".snap.lock") << "x"; }
+    SetFileAttributesW((root / ".snap.lock").c_str(), FILE_ATTRIBUTE_READONLY);
+    fs::Fs f; f.set_save_root(root.string());
+    CHECK_EQ(f.mount_save("savedata", kUid), fs::kResultTargetLocked);
+    CHECK(!f.is_mounted("savedata"));
+    CHECK(!stdfs::exists(root / "gens", ec));   // Save::open never ran
+    SetFileAttributesW((root / ".snap.lock").c_str(), FILE_ATTRIBUTE_NORMAL);
+  }
+  {   // sharing violation: another handle holds the file with no sharing
+    stdfs::path root = g_tmp / "save_lock_share";
+    stdfs::create_directories(root, ec);
+    HANDLE h = CreateFileW((root / ".snap.lock").c_str(), GENERIC_READ, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    fs::Fs f; f.set_save_root(root.string());
+    CHECK_EQ(f.mount_save("savedata", kUid), fs::kResultTargetLocked);
+    CHECK(!f.is_mounted("savedata"));
+    CloseHandle(h);
+    CHECK_EQ(f.mount_save("savedata", kUid), 0u);   // once the holder is gone the same Fs can mount
+  }
+}
+// P1-a: a carry-forward that cannot link or copy fails the commit, keeps the old generation and leaves the file readable
+static void test_save_carry_failure() {
+  g_test = "save.carry_failure";
+  stdfs::path root = g_tmp / "save_carry_fail";
+  std::error_code ec;
+  const std::string a = "savedata:/0000000100000002", b = "savedata:/0000000100000003";
+  fs::Fs f; f.set_save_root(root.string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  put(f, a, "unchanged file");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  stdfs::path committed;
+  for (auto& e : stdfs::recursive_directory_iterator(root, ec)) if (e.path().filename() == "0000000100000002" && e.path().parent_path().filename() == "1") committed = e.path();
+  CHECK(!committed.empty());
+  const stdfs::path links = root / "link-limit";
+  stdfs::create_directories(links, ec);
+  std::error_code lec;
+  for (int i = 0; i < 1200 && !lec; ++i) stdfs::create_hard_link(committed, links / std::to_string(i), lec);   // NTFS link limit (1023)
+  HANDLE held = CreateFileW(committed.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  put(f, b, "new file");
+  const uint32_t rc = f.commit("savedata");
+  if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
+  CHECK(lec && held != INVALID_HANDLE_VALUE);   // the fault was really injected
+  CHECK(rc != 0u);
+  CHECK(!stdfs::exists(root / "gens" / "2", ec));
+  CHECK_EQ(f.unmount("savedata"), 0u);
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  std::string body;
+  CHECK(get(f, a, &body));
+  CHECK(body == "unchanged file");
+  CHECK(!get(f, b, &body));   // the failed commit never published
+}
+
+// savefix3 helpers: the generation CURRENT points at, and the file names in a generation directory
+static uint64_t current_gen(const stdfs::path& uid_dir) {
+  std::ifstream f(uid_dir / "CURRENT", std::ios::binary);
+  std::string magic; unsigned long long g = ~0ull, chk = 0;
+  f >> magic >> g >> chk;
+  return g;
+}
+static std::set<std::string> gen_files(const stdfs::path& dir) {
+  std::set<std::string> v;
+  std::error_code ec;
+  for (auto& e : stdfs::recursive_directory_iterator(dir, ec)) v.insert(rel_slash(stdfs::relative(e.path(), dir, ec).string()));
+  return v;
+}
+static HANDLE hold_no_delete(const stdfs::path& p) {   // like an antivirus or indexer: open, sharing read/write but not delete
+  return CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+// savefix3 #1a: a failed commit whose cleanup cannot remove gens/<n> (a carried hard link held open) must not be built on by the
+// retry: the retry never writes through the stale link into the committed generation, and publishes exactly the working set.
+static void test_save_stale_leftover_retry() {
+  g_test = "save.stale_leftover_retry";
+  stdfs::path root = g_tmp / "save_stale_retry", ud = root / hle::uid_dir_name(kUid);
+  const std::string a = "savedata:/A", b = "savedata:/B";
+  fs::Fs f; f.set_save_root(root.string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  put(f, a, "AAAA");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  CHECK_EQ(current_gen(ud), 1ull);
+  put(f, b, "BBBB");
+  HANDLE H = INVALID_HANDLE_VALUE, T = INVALID_HANDLE_VALUE;
+  auto block_pointer = [&](const char* s) {
+    if (!strcmp(s, "commit:marker") && T == INVALID_HANDLE_VALUE)
+      T = CreateFileW((ud / "CURRENT.tmp").c_str(), GENERIC_READ, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  };
+  f.set_fault_hook([&](const char* s) {
+    if (!strcmp(s, "commit:carried") && H == INVALID_HANDLE_VALUE) H = hold_no_delete(ud / "gens" / "2" / "A");
+    block_pointer(s);
+  });
+  CHECK(f.commit("savedata") != 0u);                     // CURRENT.tmp cannot be written
+  CloseHandle(T); T = INVALID_HANDLE_VALUE;
+  CHECK(H != INVALID_HANDLE_VALUE);                      // the fault was really injected ...
+  CHECK(stdfs::exists(ud / "gens" / "2" / "A"));         // ... and the cleanup could not remove the stale link
+  CHECK(!stdfs::exists(ud / "gens" / "2.ok"));
+  CHECK_EQ(current_gen(ud), 1ull);
+  put(f, a, "XXXX");                                     // the game rewrites A (uncommitted)
+  f.set_fault_hook(block_pointer);                       // the retry fails too
+  CHECK(f.commit("savedata") != 0u);
+  CloseHandle(T); T = INVALID_HANDLE_VALUE;
+  CHECK(slurp(ud / "gens" / "1" / "A") == "AAAA");       // committed generation untouched (old code wrote XXXX through the link)
+  CHECK_EQ(current_gen(ud), 1ull);
+  f.set_fault_hook(nullptr);
+  CHECK_EQ(f.commit("savedata"), 0u);                    // now it works, on a fresh generation number
+  const uint64_t g = current_gen(ud);
+  CHECK(g != 2ull && g > 1ull);
+  CHECK(slurp(ud / "gens" / "1" / "A") == "AAAA");
+  CHECK(slurp(ud / "gens" / std::to_string(g) / "A") == "XXXX");
+  CHECK(slurp(ud / "gens" / std::to_string(g) / "B") == "BBBB");
+  CHECK((gen_files(ud / "gens" / std::to_string(g)) == std::set<std::string>{"A", "B"}));
+  CloseHandle(H);
+  CHECK_EQ(f.unmount("savedata"), 0u);
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  std::string body;
+  CHECK(get(f, a, &body) && body == "XXXX");
+  CHECK(get(f, b, &body) && body == "BBBB");
+  CHECK_EQ(f.unmount("savedata"), 0u);
+}
+
+// savefix3 #1b: a file deleted this session is not resurrected through a stale half-generation that still holds it
+static void test_save_deleted_not_resurrected() {
+  g_test = "save.deleted_not_resurrected";
+  stdfs::path root = g_tmp / "save_stale_del", ud = root / hle::uid_dir_name(kUid);
+  const std::string a = "savedata:/A", b = "savedata:/B", d = "savedata:/D";
+  fs::Fs f; f.set_save_root(root.string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  put(f, a, "AAAA");
+  put(f, d, "DDDD");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  put(f, b, "BBBB");
+  HANDLE H = INVALID_HANDLE_VALUE, T = INVALID_HANDLE_VALUE;
+  f.set_fault_hook([&](const char* s) {
+    if (!strcmp(s, "commit:carried") && H == INVALID_HANDLE_VALUE) H = hold_no_delete(ud / "gens" / "2" / "D");
+    if (!strcmp(s, "commit:marker") && T == INVALID_HANDLE_VALUE)
+      T = CreateFileW((ud / "CURRENT.tmp").c_str(), GENERIC_READ, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  });
+  CHECK(f.commit("savedata") != 0u);
+  CloseHandle(T);
+  f.set_fault_hook(nullptr);
+  CHECK(H != INVALID_HANDLE_VALUE && stdfs::exists(ud / "gens" / "2" / "D"));   // fault injected: stale gens/2 survives
+  CHECK_EQ(f.delete_file(d), 0u);
+  CHECK_EQ(f.commit("savedata"), 0u);                    // H still held
+  const uint64_t g = current_gen(ud);
+  CHECK((gen_files(ud / "gens" / std::to_string(g)) == std::set<std::string>{"A", "B"}));   // exactly the working set
+  CHECK(slurp(ud / "gens" / "1" / "D") == "DDDD");       // the backup keeps it
+  CloseHandle(H);
+  CHECK_EQ(f.unmount("savedata"), 0u);
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  int type = -1;
+  CHECK(f.get_entry_type(&type, d) != 0u);               // still deleted after a remount
+  std::string body;
+  CHECK(get(f, b, &body) && body == "BBBB");
+  // and the stale leftover is gone once nothing holds it (next commits prune it below the current generation)
+  put(f, a, "A2A2");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  CHECK(!stdfs::exists(ud / "gens" / "2"));
+  CHECK_EQ(f.unmount("savedata"), 0u);
+}
+
+// savefix3 #2: the lock file cannot be deleted or renamed while held, and profile Clear/Delete (also queued ones applied at
+// startup) refuse a profile whose save another running copy holds
+static void test_save_lock_not_deletable() {
+  g_test = "save.lock_not_deletable";
+  namespace pr = hle::profiles;
+  std::error_code ec;
+  stdfs::path root = g_tmp / "save_lock_del";
+  {
+    fs::Fs f; f.set_save_root(root.string());
+    CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+    stdfs::remove(root / ".snap.lock", ec);
+    CHECK(ec);
+    CHECK(stdfs::exists(root / ".snap.lock"));
+    CHECK(!MoveFileExW((root / ".snap.lock").c_str(), (root / "moved.lock").c_str(), 0));
+    fs::Fs g; g.set_save_root(root.string());
+    CHECK_EQ(g.mount_save("savedata", kUid), fs::kResultTargetLocked);
+    CHECK_EQ(f.unmount("savedata"), 0u);
+  }
+  stdfs::path proot = g_tmp / "prof_lock";
+  pr::Store s(proot.string());
+  CHECK(s.load());
+  std::string err;
+  const std::string id = s.create("Busy", &err), id2 = s.create("Free", &err);
+  CHECK(!id.empty() && !id2.empty());
+  {
+    fs::Fs live; live.set_save_root(s.save_dir(id));
+    CHECK_EQ(live.mount_save("savedata", kUid), 0u);
+    put(live, "savedata:/A", "live");
+    CHECK_EQ(live.commit("savedata"), 0u);
+    CHECK(s.in_use(id));
+    CHECK(!s.in_use(id2));
+    CHECK(!s.remove(id, &err));
+    CHECK(!s.clear(id, &err));
+    CHECK(s.find(id) != nullptr);
+    CHECK(stdfs::exists(stdfs::u8path(s.save_dir(id)) / ".snap.lock"));
+    CHECK(s.trash_list().empty());
+    s.queue("delete", id);
+    s.apply_pending();                                   // startup of a second copy: the delete waits
+    CHECK(s.is_pending(id, "delete"));
+    CHECK(s.find(id) != nullptr);
+    std::string body;
+    CHECK(get(live, "savedata:/A", &body) && body == "live");
+    fs::Fs second; second.set_save_root(s.save_dir(id));
+    CHECK_EQ(second.mount_save("savedata", kUid), fs::kResultTargetLocked);
+    CHECK(s.clear(id2, &err));                           // an unlocked profile still clears
+    CHECK_EQ(live.unmount("savedata"), 0u);
+  }
+  CHECK(!s.in_use(id));                                  // released (a crashed owner releases it the same way)
+  s.apply_pending();
+  CHECK(s.find(id) == nullptr);
+  CHECK(!s.is_pending(id));
+}
+#endif
+
+// savefix3 #3: %APPDATA% whose ANSI bytes are not valid UTF-8 (e-acute in a single-byte code page) must not abort boot
+static void test_nonutf8_appdata_migration() {
+  g_test = "paths.nonutf8_appdata_migration";
+  std::error_code ec;
+  // direct: a legacy spelling that is not UTF-8 is skipped, never thrown
+  bool threw = false, r = true;
+  try { r = hle::migrate_legacy_data_root((g_tmp / "mig_bad").string() + "\\Jos\xE9", (g_tmp / "mig_bad_new").string()); } catch (...) { threw = true; }
+  CHECK(!threw);
+  CHECK(!r);
+#ifdef _WIN32
+  stdfs::path ap = g_tmp / L"Jos\u00e9" / "AppData" / "Roaming";
+  stdfs::create_directories(ap / "SnapRecomp" / "save", ec);
+  const wchar_t* old = _wgetenv(L"APPDATA");
+  std::wstring saved = old ? old : L"";
+  _wputenv((L"APPDATA=" + ap.wstring()).c_str());
+  if (GetACP() != CP_UTF8) {   // the fault is real: the old code's u8path(getenv("APPDATA")) throws on these bytes
+    bool old_threw = false;
+    try { (void)stdfs::u8path(std::string(std::getenv("APPDATA")) + "\\SnapRecomp"); } catch (...) { old_threw = true; }
+    CHECK(old_threw);
+  }
+  hle::Config saved_cfg = config();
+  config().data_root.clear();
+  threw = false;
+  try { hle::apply_defaults(); } catch (...) { threw = true; }
+  CHECK(!threw);
+  { auto u = (ap / "SnapRecomp").u8string(); CHECK(config().data_root == std::string(u.begin(), u.end())); }
+  config() = saved_cfg;
+  _wputenv((L"APPDATA=" + saved).c_str());
+#endif
+}
+
+// old ANSI-decoded data folder with a save and none in the new one: copied once, old left in place
+static void test_legacy_root_migration() {
+  g_test = "paths.legacy_root_migration";
+  stdfs::path o = g_tmp / "mig_old", n = g_tmp / "mig_new";
+  std::error_code ec;
+  const stdfs::path og = o / "save" / "u1" / "gens";   // a real save layout: <uid>/CURRENT, gens/<n>/ and gens/<n>.ok
+  stdfs::create_directories(og / "1", ec);
+  { std::ofstream(o / "save" / "u1" / "CURRENT", std::ios::binary) << "SNAPSAVE1\n1\n0\n"; }
+  { std::ofstream(og / "1.ok", std::ios::binary) << "ok\n"; }
+  { std::ofstream(og / "1" / "a.bin", std::ios::binary) << "x"; }
+  CHECK(hle::migrate_legacy_data_root(o.string(), n.string()));
+  CHECK(stdfs::exists(n / "save" / "u1" / "gens" / "1" / "a.bin", ec));
+  CHECK(stdfs::exists(og / "1" / "a.bin", ec));
+  CHECK(!stdfs::exists(n / "save.migrating", ec));
+  { std::ofstream(og / "1" / "b.bin", std::ios::binary) << "y"; }
+  CHECK(!hle::migrate_legacy_data_root(o.string(), n.string()));   // the new folder has a save now: no second copy
+  CHECK(!stdfs::exists(n / "save" / "u1" / "gens" / "1" / "b.bin", ec));
+}
+
 // window close: drain_for_exit waits for a commit in progress
 static void test_save_drain_for_exit() {
   g_test = "save.drain_for_exit";
@@ -776,10 +1051,15 @@ static void test_hid() {
   CHECK_EQ(load<int32_t>(ts + 8), 1);
   CHECK_EQ(load<int32_t>(ts + 16 + 16), 640);
   CHECK_EQ(load<int32_t>(ts + 16 + 20), 180);
+  CHECK_EQ(load<uint32_t>(ts + 16 + 8), 1u);   // Start (1) on the first sample of a touch
   raw.mouse_buttons = 0;
   std::this_thread::sleep_for(std::chrono::milliseconds(3));
   call(kTouch, {P(ts)});
-  CHECK_EQ(load<int32_t>(ts + 8), 0);
+  CHECK_EQ(load<int32_t>(ts + 8), 1);          // hardware semantics: the release is one End sample (last point) ...
+  CHECK_EQ(load<uint32_t>(ts + 16 + 8), 2u);   // ... attribute End (2)
+  std::this_thread::sleep_for(std::chrono::milliseconds(3));
+  call(kTouch, {P(ts)});
+  CHECK_EQ(load<int32_t>(ts + 8), 0);          // ... then the count goes to 0
 
   // handheld style: id 0x20, attributes mark all handheld features
   config().controller_style = 1;
@@ -1332,10 +1612,13 @@ static void test_services() {
   config().screenshot_dir = (g_tmp / "shots").string();
   std::vector<uint8_t> px(1280 * 720 * 4, 0x80);
   call("_ZN2nn5album14SaveScreenshotEPKvmNS0_9ImageSizeENS0_16ImageOrientationENS0_17AlbumReportOptionE", {P(px.data()), px.size(), 0, 0, 0});
-  for (int i = 0; i < 500; ++i) {   // the PNG is encoded and written on a worker thread
-    bool done = false;
-    for (auto& e : stdfs::directory_iterator(config().screenshot_dir)) done = stdfs::file_size(e.path()) > 8;
-    if (done) break;
+  for (int i = 0; i < 500; ++i) {   // the PNG is encoded on a worker thread into "<name>.tmp", then renamed
+    bool done = false, pending = false;
+    for (auto& e : stdfs::directory_iterator(config().screenshot_dir)) {
+      if (e.path().extension() == ".tmp") pending = true;
+      else if (stdfs::file_size(e.path()) > 8) done = true;
+    }
+    if (done && !pending) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   int pngs = 0;
@@ -1646,6 +1929,361 @@ static void test_padfx() {
   stdfs::remove(f);
 }
 
+#ifdef _WIN32
+// savefix3 round 2 #1: a path that changes type (file <-> directory, also nested) commits, and keeps committing; restore across
+// a type change works; a commit that fails for a cause other than a full disk is not reported as disk full
+static void test_save_type_change() {
+  g_test = "save.type_change";
+  stdfs::path root = g_tmp / "save_type", ud = root / hle::uid_dir_name(kUid);
+  fs::Fs f; f.set_save_root(root.string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  auto now = [&]() { return gen_files(ud / "gens" / std::to_string(current_gen(ud))); };
+  put(f, "savedata:/a", "FILE");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  const uint64_t g_file = current_gen(ud);
+  // file -> directory with a child
+  CHECK_EQ(f.delete_file("savedata:/a"), 0u);
+  CHECK_EQ(f.create_directory("savedata:/a"), 0u);
+  put(f, "savedata:/a/x", "XXXX");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  CHECK_EQ(f.commit("savedata"), 0u);                    // and the next one (was 0x3e02 forever)
+  CHECK((now() == std::set<std::string>{"a", "a/x"}));
+  CHECK(stdfs::is_directory(ud / "gens" / std::to_string(current_gen(ud)) / "a"));
+  const uint64_t g_dir = current_gen(ud);
+  // directory -> file
+  CHECK_EQ(f.delete_directory("savedata:/a", true), 0u);
+  put(f, "savedata:/a", "FIL2");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  CHECK((now() == std::set<std::string>{"a"}));
+  CHECK(slurp(ud / "gens" / std::to_string(current_gen(ud)) / "a") == "FIL2");
+  // nested: file -> dir (uncommitted) -> deleted -> file again -> dir with another child, one commit
+  CHECK_EQ(f.delete_file("savedata:/a"), 0u);
+  CHECK_EQ(f.create_directory("savedata:/a"), 0u);
+  put(f, "savedata:/a/y", "YYYY");
+  CHECK_EQ(f.delete_directory("savedata:/a", true), 0u);
+  put(f, "savedata:/a", "FIL3");
+  CHECK_EQ(f.delete_file("savedata:/a"), 0u);
+  CHECK_EQ(f.create_directory("savedata:/a"), 0u);
+  CHECK_EQ(f.create_directory("savedata:/a/d"), 0u);
+  put(f, "savedata:/a/d/z", "ZZZZ");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  CHECK((now() == std::set<std::string>{"a", "a/d", "a/d/z"}));
+  // restore across type changes, both ways
+  CHECK_EQ(f.restore_generation("savedata", g_file), 0u);
+  CHECK((now() == std::set<std::string>{"a"}));
+  CHECK(slurp(ud / "gens" / std::to_string(current_gen(ud)) / "a") == "FILE");
+  CHECK_EQ(f.restore_generation("savedata", g_dir), 0u);
+  CHECK((now() == std::set<std::string>{"a", "a/x"}));
+  CHECK_EQ(f.commit("savedata"), 0u);
+  // the session view matches after a remount
+  CHECK_EQ(f.unmount("savedata"), 0u);
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  int type = -1;
+  CHECK(f.get_entry_type(&type, "savedata:/a") == 0u && type == fs::kDirectory);
+  std::string body;
+  CHECK(get(f, "savedata:/a/x", &body) && body == "XXXX");
+  // a held CURRENT.tmp is not "disk full"
+  put(f, "savedata:/b", "BBBB");
+  HANDLE T = INVALID_HANDLE_VALUE;
+  f.set_fault_hook([&](const char* s) { if (!strcmp(s, "commit:marker") && T == INVALID_HANDLE_VALUE) T = CreateFileW((ud / "CURRENT.tmp").c_str(), GENERIC_READ, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr); });
+  CHECK_EQ(f.commit("savedata"), fs::kResultTargetLocked);
+  CloseHandle(T);
+  f.set_fault_hook(nullptr);
+  CHECK_EQ(f.commit("savedata"), 0u);
+  CHECK_EQ(f.unmount("savedata"), 0u);
+}
+
+// savefix3 round 2 #1 (soft): a failed commit whose .ok marker cannot be removed leaves an orphaned generation that is never
+// listed, restorable or counted as a backup
+static void test_save_orphan_generation() {
+  g_test = "save.orphan_generation";
+  stdfs::path root = g_tmp / "save_orphan", ud = root / hle::uid_dir_name(kUid);
+  fs::Fs f; f.set_save_root(root.string());
+  f.set_save_backups(1);
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  put(f, "savedata:/a", "AAAA");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  put(f, "savedata:/a", "BBBB");
+  HANDLE K = INVALID_HANDLE_VALUE, T = INVALID_HANDLE_VALUE;
+  f.set_fault_hook([&](const char* s) {
+    if (!strcmp(s, "commit:marker") && K == INVALID_HANDLE_VALUE) {
+      K = hold_no_delete(ud / "gens" / "2.ok");
+      T = CreateFileW((ud / "CURRENT.tmp").c_str(), GENERIC_READ, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+  });
+  CHECK(f.commit("savedata") != 0u);
+  CloseHandle(T);
+  f.set_fault_hook(nullptr);
+  CHECK(K != INVALID_HANDLE_VALUE && stdfs::exists(ud / "gens" / "2.ok"));   // fault injected: the marker stayed
+  auto listed = [&](uint64_t g) { for (auto& x : f.list_generations("savedata")) if (x.gen == g) return true; return false; };
+  CHECK(!listed(2));
+  CHECK(f.restore_generation("savedata", 2) != 0u);
+  CHECK_EQ(f.commit("savedata"), 0u);                    // skips 2
+  const uint64_t g = current_gen(ud);
+  CHECK(g > 2);
+  CHECK(!listed(2));                                     // below CURRENT now, still not a backup
+  CHECK(listed(1));                                      // the one real backup is kept (keep = 1)
+  CHECK_EQ(f.unmount("savedata"), 0u);
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);          // another session: the on-disk orphan mark still applies
+  CHECK(!listed(2));
+  CloseHandle(K);
+  put(f, "savedata:/a", "CCCC");
+  CHECK_EQ(f.commit("savedata"), 0u);                    // the orphan goes with the next prune
+  CHECK(!stdfs::exists(ud / "gens" / "2.ok") && !stdfs::exists(ud / "gens" / "2") && !stdfs::exists(ud / "gens" / "2.orphan"));
+  CHECK_EQ(f.unmount("savedata"), 0u);
+}
+
+// savefix3 round 2 #2: the legacy migration copies into a staging folder and moves it into place only when complete; a failed
+// copy leaves nothing and is retried; an empty or marker-less target does not block it; a real save in the target is never touched
+static void test_migration_staged() {
+  g_test = "paths.migration_staged";
+  std::error_code ec;
+  stdfs::path o = g_tmp / "mig2_old", n = g_tmp / "mig2_new";
+  const stdfs::path og = o / "save" / "u1" / "gens";
+  stdfs::create_directories(og / "3", ec);
+  { std::ofstream(o / "save" / "u1" / "CURRENT", std::ios::binary) << "SNAPSAVE1\n3\n0\n"; }
+  { std::ofstream(og / "3.ok", std::ios::binary) << "ok\n"; }
+  { std::ofstream(og / "3" / "big.bin", std::ios::binary) << std::string(4096, 'z'); }
+  { std::ofstream(og / "3" / "small.bin", std::ios::binary) << "s"; }
+  stdfs::create_directories(n / "save", ec);             // empty target made by an earlier start
+  HANDLE H = CreateFileW((og / "3" / "small.bin").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  CHECK(H != INVALID_HANDLE_VALUE);
+  CHECK(!hle::migrate_legacy_data_root(o.string(), n.string()));   // copy fails midway
+  CHECK(!stdfs::exists(n / "save.migrating", ec));       // no partial stage left
+  CHECK(stdfs::is_empty(n / "save", ec));                // target untouched
+  CloseHandle(H);
+  CHECK(hle::migrate_legacy_data_root(o.string(), n.string()));    // retried at the next start
+  CHECK(slurp(n / "save" / "u1" / "gens" / "3" / "big.bin").size() == 4096);
+  CHECK(slurp(n / "save" / "u1" / "gens" / "3" / "small.bin") == "s");
+  CHECK(!stdfs::exists(n / "save.migrating", ec));
+  // a marker-less partial target from an older build: moved aside (kept), then migrated
+  stdfs::path n2 = g_tmp / "mig2_new2";
+  stdfs::create_directories(n2 / "save" / "u1" / "gens" / "3", ec);
+  { std::ofstream(n2 / "save" / "u1" / "gens" / "3" / "big.bin", std::ios::binary) << "partial"; }
+  CHECK(hle::migrate_legacy_data_root(o.string(), n2.string()));
+  CHECK(slurp(n2 / "save" / "u1" / "gens" / "3" / "big.bin").size() == 4096);
+  CHECK(slurp(n2 / "save.premigrate-1" / "u1" / "gens" / "3" / "big.bin") == "partial");
+  // a target with a real save is never overwritten
+  stdfs::path n3 = g_tmp / "mig2_new3";
+  stdfs::create_directories(n3 / "save" / "u9" / "gens" / "1", ec);
+  { std::ofstream(n3 / "save" / "u9" / "CURRENT", std::ios::binary) << "SNAPSAVE1\n1\n0\n"; }
+  { std::ofstream(n3 / "save" / "u9" / "gens" / "1.ok", std::ios::binary) << "ok\n"; }
+  CHECK(!hle::migrate_legacy_data_root(o.string(), n3.string()));
+  CHECK(!stdfs::exists(n3 / "save" / "u1", ec));
+}
+
+// savefix3 round 2 #3: the trash copy fallback (a scanner keeps a file open, so the folder rename fails) holds the save lock for
+// the whole copy-and-remove, reports failure when the source cannot be fully removed, and a game holding the lock blocks both
+// the rename and the fallback
+static void test_profiles_trash_fallback() {
+  g_test = "profiles.trash_fallback";
+  namespace pr = hle::profiles;
+  std::error_code ec;
+  pr::Store s((g_tmp / "prof_fallback").string());
+  CHECK(s.load());
+  std::string err;
+  const std::string a = s.create("A", &err), b = s.create("B", &err), c = s.create("C", &err);
+  for (auto& id : {a, b, c}) write_via_fs(s.save_dir(id), "0000000100000002", "progress " + id, true);
+  // A: a scanner with FILE_SHARE_DELETE: rename fails, fallback copies and removes everything -> success
+  stdfs::path fa;
+  for (auto& e : stdfs::recursive_directory_iterator(stdfs::u8path(s.save_dir(a)))) if (e.path().filename() == "0000000100000002") fa = e.path();
+  HANDLE ha = CreateFileW(fa.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  CHECK(ha != INVALID_HANDLE_VALUE);
+  CHECK(s.clear(a, &err));
+  CloseHandle(ha);
+  CHECK(!s.has_data(a));
+  bool in_trash = false;
+  for (auto& t : s.trash_list()) for (auto& e : stdfs::recursive_directory_iterator(g_tmp / "prof_fallback" / "_trash" / stdfs::u8path(t.folder)))
+    if (e.path().filename() == "0000000100000002" && slurp(e.path()) == "progress " + a) in_trash = true;
+  CHECK(in_trash);
+  // B: a scanner without FILE_SHARE_DELETE: the source cannot be fully removed -> failure, and the profile is put back as it was
+  const size_t trash_before = s.trash_list().size();
+  stdfs::path fb;
+  for (auto& e : stdfs::recursive_directory_iterator(stdfs::u8path(s.save_dir(b)))) if (e.path().filename() == "0000000100000002") fb = e.path();
+  HANDLE hb = hold_no_delete(fb);
+  CHECK(hb != INVALID_HANDLE_VALUE);
+  CHECK(!s.remove(b, &err));
+  CHECK(s.find(b) != nullptr);                           // the profile stays
+  CHECK(slurp(fb) == "progress " + b);
+  CloseHandle(hb);
+  CHECK(read_via_fs(s.save_dir(b), "0000000100000002") == "progress " + b);   // still loads: nothing was lost
+  CHECK_EQ(s.trash_list().size(), trash_before);         // no half entry in the trash
+  // C: a running game holds the lock: the rename fails (open child) and the fallback cannot take the lock -> refused, untouched
+  {
+    fs::Fs live; live.set_save_root(s.save_dir(c));
+    CHECK_EQ(live.mount_save("savedata", kUid), 0u);
+    std::error_code rec;
+    stdfs::rename(stdfs::u8path(s.save_dir(c)), g_tmp / "prof_fallback" / "renamed", rec);
+    CHECK(rec);                                          // the OS rule the plain rename relies on
+    CHECK(!s.clear(c, &err));
+    CHECK(read_via_fs(s.save_dir(c), "0000000100000002") == "<mount failed>");   // locked: a second mount is refused
+    std::string body;
+    CHECK(get(live, "savedata:/0000000100000002", &body) && body == "progress " + c);
+    CHECK_EQ(live.unmount("savedata"), 0u);
+  }
+  CHECK(read_via_fs(s.save_dir(c), "0000000100000002") == "progress " + c);
+}
+
+// savefix3 round 3 #1: an orphaned generation is never what a mount, a profile copy or the migration check picks
+static void test_orphan_shared_rule() {
+  g_test = "save.orphan_shared_rule";
+  namespace pr = hle::profiles;
+  std::error_code ec;
+  const stdfs::path b = g_tmp / "orphan_rule", u = b / "src" / "0000";
+  stdfs::create_directories(u / "gens" / "0", ec);
+  stdfs::create_directories(u / "gens" / "1", ec);
+  { std::ofstream(u / "gens" / "0" / "f.bin", std::ios::binary) << "published"; }
+  { std::ofstream(u / "gens" / "1" / "f.bin", std::ios::binary) << "ORPHAN"; }
+  { std::ofstream(u / "gens" / "0.ok") << "ok\n"; }
+  { std::ofstream(u / "gens" / "1.ok") << "ok\n"; }
+  { std::ofstream(u / "gens" / "1.orphan") << "orphan\n"; }
+  // CURRENT lost: the copy takes generation 0, writes CURRENT for it and never resurrects 1
+  std::string err;
+  CHECK(pr::copy_consistent((b / "src").string(), (b / "dst").string(), &err));
+  CHECK(slurp(b / "dst" / "0000" / "gens" / "0" / "f.bin") == "published");
+  CHECK(!stdfs::exists(b / "dst" / "0000" / "gens" / "1"));
+  CHECK(stdfs::exists(b / "dst" / "0000" / "CURRENT"));
+  // CURRENT naming the orphan is not trusted either
+  { std::ofstream(u / "CURRENT", std::ios::binary) << hle::savegen::pointer_text(1); }
+  CHECK(pr::copy_consistent((b / "src").string(), (b / "dst2").string(), &err));
+  CHECK(!stdfs::exists(b / "dst2" / "0000" / "gens" / "1"));
+  CHECK(slurp(b / "dst2" / "0000" / "gens" / "0" / "f.bin") == "published");
+  // the mount agrees
+  {
+    fs::Fs f; f.set_save_root((b / "src").string());
+    const uint64_t uid0[2] = {0, 0};
+    stdfs::rename(u, b / "src" / hle::uid_dir_name(uid0), ec);
+    CHECK_EQ(f.mount_save("savedata", uid0), 0u);
+    std::string body;
+    CHECK(get(f, "savedata:/f.bin", &body) && body == "published");
+    CHECK_EQ(f.unmount("savedata"), 0u);
+  }
+  // a root whose only complete generation is an orphan holds no save (migration check)
+  const stdfs::path r2 = b / "r2_old" / "save" / "u" / "gens";
+  stdfs::create_directories(r2 / "4", ec);
+  { std::ofstream(r2 / "4.ok") << "ok\n"; }
+  { std::ofstream(r2 / "4.orphan") << "orphan\n"; }
+  CHECK(!hle::savegen::has_save(b / "r2_old" / "save"));
+  CHECK(!hle::migrate_legacy_data_root((b / "r2_old").string(), (b / "r2_new").string()));
+  CHECK(!stdfs::exists(b / "r2_new" / "save"));
+}
+
+// savefix3 round 3 #2: copies starting at the same moment migrate once, completely, and a settled migration never repeats
+static void test_migration_concurrent() {
+  g_test = "paths.migration_concurrent";
+  std::error_code ec;
+  const stdfs::path base = g_tmp / "mig3", o = base / "old", nr = base / "new", u = o / "save" / "00000000000000010000000000000002";
+  for (int i = 0; i < 200; ++i) { stdfs::create_directories(u / "gens" / "3", ec); std::ofstream(u / "gens" / "3" / ("f" + std::to_string(i) + ".bin"), std::ios::binary) << std::string(5000, (char)('a' + i % 20)); }
+  { std::ofstream(u / "gens" / "3.ok") << "ok\n"; }
+  { std::ofstream(u / "CURRENT", std::ios::binary) << hle::savegen::pointer_text(3); }
+  stdfs::create_directories(nr / "save.migrating-99999" / "junk", ec);   // a crashed earlier attempt's stage
+  std::atomic<int> wins{0};
+  std::vector<std::thread> ts;
+  for (int k = 0; k < 3; ++k) ts.emplace_back([&] { if (hle::migrate_legacy_data_root(o.string(), nr.string())) ++wins; });
+  for (auto& t : ts) t.join();
+  CHECK_EQ(wins.load(), 1);
+  size_t files = 0;
+  for (auto& e : stdfs::recursive_directory_iterator(nr / "save", ec)) if (e.is_regular_file()) ++files;
+  CHECK_EQ(files, (size_t)202);                          // 200 data files + 3.ok + CURRENT
+  CHECK(stdfs::exists(nr / "save" / "00000000000000010000000000000002" / "CURRENT"));
+  bool stage_left = false;
+  for (auto& e : stdfs::directory_iterator(nr, ec)) if (e.path().filename().string().rfind("save.migrating", 0) == 0) stage_left = true;
+  CHECK(!stage_left);
+  CHECK(stdfs::exists(nr / ".legacy-migrated"));
+  // profiles moves the new save away: the legacy one is not copied in again
+  stdfs::rename(nr / "save", nr / "save.migrated-x", ec);
+  CHECK(!hle::migrate_legacy_data_root(o.string(), nr.string()));
+  CHECK(!stdfs::exists(nr / "save"));
+}
+
+// savefix3 round 3 #3: trash entries being built are invisible to the list and to pruning; a dead builder's entry is recovered;
+// entries without metadata are never pruned
+static void test_trash_pending() {
+  g_test = "profiles.trash_pending";
+  namespace pr = hle::profiles;
+  std::error_code ec;
+  const stdfs::path root = g_tmp / "prof_pending", trash = root / "_trash";
+  pr::Store s(root.string());
+  CHECK(s.load());
+  std::string err;
+  // a live builder: its lock is held
+  stdfs::create_directories(trash / ".pending-Live-1" / "save" / "u", ec);
+  { std::ofstream(trash / ".pending-Live-1" / "save" / "u" / "CURRENT") << "x"; }
+  HANDLE live = CreateFileW((trash / ".pending-Live-1.lock").c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  OVERLAPPED ov{};
+  CHECK(live != INVALID_HANDLE_VALUE && LockFileEx(live, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov));
+  // a dead builder that had already moved a save in
+  stdfs::create_directories(trash / ".pending-Dead-2" / "save" / "u", ec);
+  { std::ofstream(trash / ".pending-Dead-2" / "save" / "u" / "CURRENT") << "dead"; }
+  // an old entry without meta.json (unknown age)
+  stdfs::create_directories(trash / "nometa" / "save", ec);
+  // 12 cleared profiles: more than keep=10
+  for (int i = 0; i < 12; ++i) {
+    const std::string id = s.create("P" + std::to_string(i), &err);
+    write_via_fs(s.save_dir(id), "0000000100000002", "p" + std::to_string(i), true);
+    CHECK(s.clear(id, &err));
+  }
+  s.prune_trash();
+  for (auto& t : s.trash_list()) CHECK(t.folder.rfind(".pending-", 0) != 0);
+  CHECK(stdfs::exists(trash / ".pending-Live-1" / "save" / "u" / "CURRENT"));   // never touched while its builder lives
+  CHECK(stdfs::exists(trash / "nometa"));
+  CHECK(slurp(trash / "Dead-2-recovered" / "save" / "u" / "CURRENT") == "dead");
+  UnlockFileEx(live, 0, 1, 0, &ov);
+  CloseHandle(live);
+  // round 4: a stray lock with no folder is dropped once free; a builder killed mid-copy leaves a fragment that is dropped,
+  // not recovered (its source is intact), so it never takes a keep slot
+  { std::ofstream(trash / ".pending-Gone-3.lock") << ""; }
+  stdfs::create_directories(trash / ".pending-Copy-4" / "save" / "u", ec);
+  { std::ofstream(trash / ".pending-Copy-4" / ".copying") << "copy in progress\n"; }
+  { std::ofstream(trash / ".pending-Copy-4" / "save" / "u" / "half") << "h"; }
+  s.prune_trash();
+  CHECK(!stdfs::exists(trash / ".pending-Gone-3.lock"));
+  CHECK(!stdfs::exists(trash / ".pending-Copy-4"));
+  CHECK(!stdfs::exists(trash / "Copy-4-recovered"));
+  CHECK(slurp(trash / "Live-1-recovered" / "save" / "u" / "CURRENT") == "x");   // its builder is gone now: recovered
+  bool stray = false;
+  for (auto& e : stdfs::directory_iterator(trash, ec)) if (e.path().extension() == ".lock") stray = true;
+  CHECK(!stray);                                         // no lock files pile up
+}
+
+// round 4: a stray file in gens/ never lists a generation twice
+static void test_save_list_digits() {
+  g_test = "save.list_digits";
+  stdfs::path root = g_tmp / "save_list_digits", ud = root / hle::uid_dir_name(kUid);
+  fs::Fs f; f.set_save_root(root.string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  put(f, "savedata:/a", "AAAA");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  { std::ofstream(ud / "gens" / "1a.ok") << "ok\n"; }
+  std::map<uint64_t, int> seen;
+  for (auto& g : f.list_generations("savedata")) ++seen[g.gen];
+  bool dup = false;
+  for (auto& kv : seen) if (kv.second != 1) dup = true;
+  CHECK(!dup);
+  CHECK_EQ(seen.count(1), (size_t)1);
+  CHECK_EQ(f.unmount("savedata"), 0u);
+}
+
+// side item: rename_file needs an existing destination folder, as on hardware
+static void test_save_rename_parent() {
+  g_test = "save.rename_parent";
+  fs::Fs f; f.set_save_root((g_tmp / "save_rename_parent").string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  put(f, "savedata:/a", "AAAA");
+  put(f, "savedata:/file", "FFFF");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  CHECK_EQ(f.rename_file("savedata:/a", "savedata:/nodir/a"), fs::kResultPathNotFound);
+  CHECK_EQ(f.rename_file("savedata:/a", "savedata:/file/a"), fs::kResultPathNotFound);
+  CHECK_EQ(f.create_directory("savedata:/d"), 0u);
+  CHECK_EQ(f.rename_file("savedata:/a", "savedata:/d/a"), 0u);
+  CHECK_EQ(f.commit("savedata"), 0u);
+  std::string body;
+  CHECK(get(f, "savedata:/d/a", &body) && body == "AAAA");
+  CHECK(get(f, "savedata:/file", &body) && body == "FFFF");
+  CHECK_EQ(f.unmount("savedata"), 0u);
+}
+#endif
+
 int main(int argc, char** argv) {
   if (argc > 1) g_root = argv[1];
   else g_root = stdfs::path(__FILE__).parent_path().parent_path().parent_path();
@@ -1664,6 +2302,15 @@ int main(int argc, char** argv) {
       {"save.single_instance", test_save_single_instance},
       {"save.single_instance_released", test_save_single_instance_released},
       {"paths.nonascii_appdata", test_nonascii_appdata},
+      {"paths.legacy_root_migration", test_legacy_root_migration},
+#ifdef _WIN32
+      {"save.lock_unavailable", test_save_lock_unavailable},
+      {"save.carry_failure", test_save_carry_failure},
+      {"save.stale_leftover_retry", test_save_stale_leftover_retry},
+      {"save.deleted_not_resurrected", test_save_deleted_not_resurrected},
+      {"save.lock_not_deletable", test_save_lock_not_deletable},
+#endif
+      {"paths.nonutf8_appdata_migration", test_nonutf8_appdata_migration},
       {"save.drain_for_exit", test_save_drain_for_exit},
       {"save.crash_midwrite", test_save_crash_midwrite},
       {"save.crash_commit", test_save_crash_commit_stages},
@@ -1673,6 +2320,17 @@ int main(int argc, char** argv) {
       {"input.config", test_input_config},
       {"input.hub", test_input_hub},
       {"profiles", test_profiles},
+#ifdef _WIN32
+      {"save.type_change", test_save_type_change},
+      {"save.orphan_generation", test_save_orphan_generation},
+      {"paths.migration_staged", test_migration_staged},
+      {"profiles.trash_fallback", test_profiles_trash_fallback},
+      {"save.orphan_shared_rule", test_orphan_shared_rule},
+      {"paths.migration_concurrent", test_migration_concurrent},
+      {"profiles.trash_pending", test_trash_pending},
+      {"save.rename_parent", test_save_rename_parent},
+      {"save.list_digits", test_save_list_digits},
+#endif
       {"padfx", test_padfx},
       {"services", test_services},
   };

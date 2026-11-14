@@ -1,0 +1,16 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+// Clip-space positions captured by transform feedback -> world space, in place (vec4, w = 1). Non-finite results become NaN (an inactive triangle).
+layout(local_size_x = 64) in;
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer Verts { vec4 v[]; };
+layout(push_constant) uniform PC { mat4 m; Verts verts; uint count; uint pad; } pc;
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= pc.count) return;
+  vec4 c = pc.verts.v[i];
+  vec4 w = pc.m * c;
+  vec3 p = w.xyz / w.w;
+  bool bad = !(abs(w.w) > 1e-20) || any(isinf(p)) || any(isnan(p));
+  pc.verts.v[i] = bad ? vec4(uintBitsToFloat(0x7fc00000u)) : vec4(p, 1.0);
+}

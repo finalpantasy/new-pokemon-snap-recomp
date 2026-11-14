@@ -101,7 +101,7 @@ void load_settings() {
     g_cap = g_s.frame_cap;
     // test runs (a save dir override) must not rewrite the owner's remembered placement unless asked
     const char* sd = std::getenv("SNAP_SAVE_DIR");
-    g_save_enabled = !(sd && *sd) || std::getenv("SNAP_WINDOW_SAVE");
+    g_save_enabled = !(sd && *sd) || [] { const char* ws = std::getenv("SNAP_WINDOW_SAVE"); return ws && *ws && *ws != '0'; }();
 }
 
 void save_settings() {
@@ -159,16 +159,12 @@ RECT centered(const RECT& wr, int w, int h) {
 // ---- audio mute (master volume; a marker file restores it after a crash while muted)
 void mute_on() {
     if (g_muted) return;
-    g_saved_master = snap_audio_get_volume(SNAP_VOL_MASTER);
-    CreateDirectoryA(cfg_dir().c_str(), nullptr);
-    if (FILE* f = std::fopen(muted_marker().c_str(), "wb")) { std::fprintf(f, "%.4f\n", g_saved_master); std::fclose(f); }
-    snap_audio_set_volume(SNAP_VOL_MASTER, 0.0f);
+    snap_audio_set_muted(1);   // 2026-11-14: non-persisting mute (it used to write master=0 to audio.json, so a crash left the game silent)
     g_muted = true;
 }
 void mute_off() {
     if (!g_muted) return;
-    snap_audio_set_volume(SNAP_VOL_MASTER, g_saved_master);
-    DeleteFileA(muted_marker().c_str());
+    snap_audio_set_muted(0);
     g_muted = false;
 }
 void restore_after_crash() {
@@ -352,7 +348,7 @@ static void fast_boot_step(uint64_t n) {
     }();
     if (!frames) return;
     if (n == 1) { nvnHostSetFramePacing(0); std::fprintf(stderr, "[window] fast boot: frame limiter off for %d presents\n", frames); }
-    else if (n == (uint64_t)frames) { nvnHostSetFramePacing(60); std::fprintf(stderr, "[window] fast boot: frame limiter back to 60 Hz at present %llu\n", (unsigned long long)n); }
+    if (n == (uint64_t)frames) { nvnHostSetFramePacing(60); std::fprintf(stderr, "[window] fast boot: frame limiter back to 60 Hz at present %llu\n", (unsigned long long)n); }
 }
 
 void snap_window_on_present() {

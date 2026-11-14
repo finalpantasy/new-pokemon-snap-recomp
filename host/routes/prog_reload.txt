@@ -1,0 +1,15 @@
+# fixture: prog_edited
+# Reload check (prog worker 2026-11-13): prog_edited = the save left by prog_edit (B&W "Monochrome" copy saved as a new photo).
+# The lab tour is skipped on a second visit. At the Photodex mode select: Right, A to find the album of saved photos.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=240
+@f200 8 Down
+@f400 8 A
+repeat @f800 @f30000 120 8 A
+wait ui=zukan_index:ModeSelect timeout=500
+@f300 8 Right
+@f600 8 A
+@f1200 8 Right
+@f1500 8 A
+@f2400 8 A
+end 3200

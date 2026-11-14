@@ -33,15 +33,26 @@ float g_aaSharpen = 0.0f;
 // Shared with the upscaler (upscale.cpp used its own copy that fell back to 1080).
 int HostWindowHeight() {
   if (const char* e = getenv("SNAP_WINDOW_H")) if (atoi(e) > 0) return atoi(e);
+  // Borderless or maximized: the swapchain is monitor-sized, not the saved windowed height (window_opts.cpp does not save `height` while borderless).
+  bool big = false;
+  if (const char* m = getenv("SNAP_WINDOW_MODE")) big = !strcmp(m, "borderless") || !strcmp(m, "1");
   std::string dir;
   if (const char* c = getenv("SNAP_CONFIG_DIR")) dir = c; else if (const char* a = getenv("APPDATA")) dir = std::string(a) + "\\SnapRecomp";
+  int saved = 0;
   if (!dir.empty()) {
     if (FILE* f = fopen((dir + "\\window.json").c_str(), "rb")) {
       char buf[4096]; size_t n = fread(buf, 1, sizeof buf - 1, f); fclose(f); buf[n] = 0;
-      if (const char* p = strstr(buf, "\"height\"")) { p = strchr(p, ':'); if (p && atoi(p + 1) > 0) return atoi(p + 1); }
+      if (const char* p = strstr(buf, "\"height\"")) { p = strchr(p, ':'); if (p && atoi(p + 1) > 0) saved = atoi(p + 1); }
+      if (!getenv("SNAP_WINDOW_MODE")) {
+        if (const char* p = strstr(buf, "\"mode\"")) { p = strchr(p, ':'); if (p) { while (*++p == ' ') {} big = !strncmp(p, "\"borderless\"", 12); } }
+        if (const char* p = strstr(buf, "\"maximized\"")) { p = strchr(p, ':'); if (p) { while (*++p == ' ') {} big = big || !strncmp(p, "true", 4); } }
+      }
     }
   }
-  return 720;
+#ifdef _WIN32
+  if (big) { int mh = GetSystemMetrics(SM_CYSCREEN); if (mh > 0) return mh; }   // primary monitor; the window may sit on another one
+#endif
+  return saved > 0 ? saved : 720;
 }
 namespace {
 bool g_parsed;
@@ -349,6 +360,8 @@ void AaForgetTexture(const TextureImpl* t) {
     it = g.unormViews.erase(it);
   }
 }
+
+bool AaIsTonemapKey(const char* key) { return IsTonemap(key); }   // [fx]
 
 void AaAfterDraw(ReplayCtx& cx, const char* key) {
   if (g_aaMode != AA_SMAA && g_aaSharpen <= 0.0f) return;

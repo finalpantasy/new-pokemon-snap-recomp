@@ -19,14 +19,18 @@
 #include <algorithm>
 #include <cstring>
 #include <chrono>
+#include "nvn_shiny.h"   // shiny mod
 #include <deque>
 #include <set>
 #include <string>
 #include <fstream>
 
 #include "nvn_aa.h"
+#include "nvn_fx.h"   // [fx]
+#include "hle/lighting_preset.h"   // SNAP_LIGHTING parser (shared with host/mods/gamemods.cpp, nvn_entry.cpp)
 #include "nvn_internal.h"
 #include "nvn_pipeline.h"
+#include "nvn_rt.h"   // [rt] SNAP_RT=1 ray tracing track
 #include "os/perf.h"   // SNAP_PERF instrumentation
 #include "nvn_clear_spv.h"
 #include "nvn_state.h"
@@ -261,6 +265,8 @@ struct RtInfo { VkFormat color[8]; int nColor; VkFormat depth; VkFormat stencil;
 static void MakePipeDesc(PipeDesc& pd, DrawState& d, VkPrimitiveTopology topo, const RtInfo& rt) {
   ProgramImpl* p = d.prog;
   memset(&pd, 0, sizeof pd);
+  pd.pad0 = (uint32_t)XlateAbVariant();   // SNAP_XLATE_AB: separate pipelines for the alternate translation (0 when unset)
+  pd.pad1 = (p->st[1].valid && ShadowFilterTaps() && ShadowFilterApplies(p->st[1])) ? (uint32_t)ShadowFilterTaps() : 0u;   // SNAP_SHADOW_FILTER (P5): own pipeline keys for the patched fragment modules (0 when off: the original keys)
   for (int s = 0; s < 5; s++) if (p->st[s].valid) snprintf(pd.stage[s], sizeof pd.stage[s], "%s", p->st[s].key);
   pd.topo = (int)topo;
   pd.nattr = std::clamp(d.nattr, 0, 16);
@@ -331,24 +337,33 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
       StageProg& fp = *st[1];
       uint32_t intKindBits = 0; int intKinds[8] = {};   // [vkval] attachments with an integer format: 1 uint, 2 sint (2 bits each from bit 16)
       for (int i = 0; i < pd.nColor && i < 8; i++) { const int k = IntColorKind((VkFormat)pd.colorFmt[i]); intKinds[i] = k; intKindBits |= (uint32_t)k << (16 + 2 * i); }
-      const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u) | intKindBits;
+      const bool useAlt = pd.pad0 != 0 && fp.modAlt != VK_NULL_HANDLE && !fp.spvAlt.empty();   // SNAP_XLATE_AB alternate translation
+      const int pcfTaps = (intKindBits == 0 && !useAlt) ? (int)pd.pad1 : 0;   // (pad1 = taps; the variant key below only needs "on")   // P5: soft shadow taps (nvn_shadowpcf.cpp), fragment color outputs only
+      const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u) | intKindBits | (useAlt ? 0x80000000u : 0u) | ((uint32_t)pcfTaps << 16);
       std::lock_guard<std::mutex> fl(fragMu);
       auto it = fp.fragMods.find(vkey);
       if (it == fp.fragMods.end()) {
-        std::vector<uint32_t> cur = fp.spv, tmp;
+        std::vector<uint32_t> cur = useAlt ? fp.spvAlt : fp.spv, tmp;
         bool alphaOk = false;
         if (alpha) {
           if (PatchAlphaTest(cur, af, tmp)) { cur = tmp; alphaOk = true; }
           else LogError("alpha test (func %d): fragment shader has no float vec4 output at location 0, test ignored", af);
         }
-        VkShaderModule m = fp.mod;
+        const VkShaderModule baseMod = useAlt ? fp.modAlt : fp.mod;
+        VkShaderModule m = baseMod;
+        if (pcfTaps && PatchShadowPcf(cur, pcfTaps, ShadowFilterRadius(), ShadowFilterBias(), tmp)) { cur = tmp; m = VK_NULL_HANDLE; }
         if (PatchFragmentOutputs(cur, pd.nColor, dual, tmp)) cur = tmp, m = VK_NULL_HANDLE;
-        if (intKindBits && PatchIntOutputs(cur, intKinds, tmp)) cur = tmp, m = VK_NULL_HANDLE;
+        if (intKindBits) {
+          int skippedInt = 0;
+          if (PatchIntOutputs(cur, intKinds, tmp, &skippedInt)) cur = tmp, m = VK_NULL_HANDLE;
+          static bool loggedSkip = false;
+          if (skippedInt && !loggedSkip) { loggedSkip = true; Log("fragment output(s) into an integer attachment are arrays or not 32-bit float: left as float (not bitcast)"); }
+        }
         else if (alphaOk) m = VK_NULL_HANDLE;
         if (!m) {
           VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
           mi.codeSize = cur.size() * 4; mi.pCode = cur.data();
-          if (vkCreateShaderModule(h->device, &mi, nullptr, &m) != VK_SUCCESS) { m = fp.mod; alphaOk = false; LogError("fragment variant: vkCreateShaderModule failed"); }
+          if (vkCreateShaderModule(h->device, &mi, nullptr, &m) != VK_SUCCESS) { m = baseMod; alphaOk = false; LogError("fragment variant: vkCreateShaderModule failed"); }
           else { std::lock_guard<std::mutex> lk(h->pipeMutex); h->variantMods.push_back(m); }
         }
         it = fp.fragMods.emplace(vkey, std::make_pair(m, alphaOk)).first;
@@ -562,6 +577,12 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
   TextureImpl* const up = image ? nullptr : UpscaleSubstitute(cx, r.t);   // [upscale] the final pass reads the upscaled scene
   if (up) r.t = up;
   if (!image && !up) r.t = AbSubstitute(cx, r.t);   // SNAP_MODS_AB test aid
+  if (!image && !up && ShinyActive()) {   // shiny mod (nvn_shiny.cpp)
+    ShinyDraw sd; sd.vb0 = d.vbAddr[0]; sd.vb1 = d.vbAddr[1];
+    for (int i = 0; i < 8; i++) { sd.uboPool[i] = d.ubo[0][i].pool; sd.uboOff[i] = d.ubo[0][i].off; sd.uboRange[i] = d.ubo[0][i].range; }
+    sd.rtW = cx.rt[0] ? cx.rt[0]->b.width : 0; sd.rtH = cx.rt[0] ? cx.rt[0]->b.height : 0; sd.prog = d.prog ? (int)d.prog->id : -1;
+    r.t = ShinySubstitute(r.t, sd);
+  }
   if (!r.t->EnsureImage()) return r;
   const TexView* tv = (slot.hasView && !up) ? &slot.view : nullptr;
   r.range = r.t->RangeOf(tv);
@@ -645,7 +666,7 @@ BufBind ResolveBuf(Host* h, uint64_t addr, uint64_t size, uint64_t cap) {
   PoolImpl* pool = nullptr; uint64_t off = 0;
   if (!addr) return b;   // address 0 = nothing bound (the game binds it for unused slots); the dummy descriptors cover it
   if (!h->ResolveAddress(addr, &pool, &off)) { LogError("buffer address 0x%llx is not in any memory pool", (unsigned long long)addr); return b; }
-  if (!pool->buffer && !EnsureBacking(pool)) return b;
+  if (!PoolBacked(pool)) return b;   // [audit F6] acquire: buffer, memory and mapped are visible together
   uint64_t n = std::min<uint64_t>(size ? size : pool->size - off, pool->size - off);
   // A fragment-shader write-back into this pool is still in flight (photo evaluation counts): land it in guest memory first, or the
   // sync below would copy the stale guest bytes over the GPU's result before the game has read it.
@@ -915,6 +936,20 @@ bool WriteDescriptors(ReplayCtx& cx, DrawState& d, ProgramImpl* p, const std::ve
   return true;
 }
 
+// [rt] what nvn_rt.cpp needs to know about a draw (DrawState is private to this file)
+static void RtFillInfo(snap_rt::DrawInfo& ri, const DrawState& d, const ProgramImpl* p, const Cmd& c, bool indexed, VkPrimitiveTopology topo, uint32_t vcount) {
+  ri.vsKey = p->st[0].key; ri.hasGeomTess = p->st[2].valid || p->st[3].valid || p->st[4].valid; ri.topo = topo; ri.vertexCount = vcount;
+  ri.instances = (uint32_t)std::max(indexed ? c.i[5] : c.i[4], 1);
+  ri.ibAddr = indexed ? c.a[0] : 0; for (int i = 0; i < 4; i++) ri.vbAddr[i] = d.vbAddr[i];
+  ri.first = c.i[indexed ? 4 : 1]; ri.base = c.i[3]; ri.count = c.i[2];
+  ri.depthTest = DsGet(d.ds, DS_DT, 1) != 0; ri.depthWrite = DsGet(d.ds, DS_DW, 1) != 0; ri.blend0 = (d.color.blendEn & 1) != 0;
+  const BufBind& u = d.ubo[0][0];
+  if (u.pool && u.pool->storage) { ri.cam = (const uint8_t*)u.pool->storage + u.off; ri.camRange = u.range; }
+  { uint64_t x = 1469598103934665603ull;   // [rt] per-object constants (every vertex bank but the camera bank): draws of one mesh with different transforms
+    for (int b = 1; b < 16; b++) { const BufBind& o = d.ubo[0][b]; if (!o.pool || !o.pool->storage) continue; const uint64_t n = std::min<uint64_t>(o.range, 256) / 8; const uint64_t* w = (const uint64_t*)((const uint8_t*)o.pool->storage + o.off); x = (x ^ (uint64_t)b) * 1099511628211ull; for (uint64_t k = 0; k < n; k++) x = (x ^ w[k]) * 1099511628211ull; }
+    ri.cbHash = x; }
+}
+
 void DoDraw(ReplayCtx& cx, const Cmd& c) {
   Host* h = cx.h;
   DrawState& d = *cx.ds;
@@ -1088,7 +1123,8 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     } }
   { const uint8_t* vu[2] = {}; uint64_t vr[2] = {};   // [upscale] the camera bank c3 of the scene's draws
     for (int i = 0; i < 2; i++) { const BufBind& u = d.ubo[0][i]; if (u.pool && u.pool->storage) { vu[i] = (const uint8_t*)u.pool->storage + u.off; vr[i] = u.range; } }
-    UpscaleOnDraw(cx, vu, vr, 2); }
+    UpscaleOnDraw(cx, vu, vr, 2);
+    { const BufBind& u9 = d.ubo[0][9]; FxOnDraw(cx, vu, vr, (u9.pool && u9.pool->storage) ? (const uint8_t*)u9.pool->storage + u9.off : nullptr, u9.range); } }   // [fx] camera and shadow caster capture (nvn_fx.cpp)
   if (!cx.rendering) BeginRendering(cx, rt);
 
   ProgramImpl* const evalVar = EvalCopyDepthVariant(cx, p, texWrites);
@@ -1105,6 +1141,15 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
   vkCmdSetStencilWriteMask(cx.cb, VK_STENCIL_FACE_BACK_BIT, (uint32_t)d.stWrite[1]);
   vkCmdSetStencilReference(cx.cb, VK_STENCIL_FACE_FRONT_BIT, (uint32_t)d.stRef[0]);
   vkCmdSetStencilReference(cx.cb, VK_STENCIL_FACE_BACK_BIT, (uint32_t)d.stRef[1]);
+  {   // P1 probe (NVN_P1_LOG=1): state of the shadow-map caster draws. Result: depthBiasEnable is OFF on them (no polygon offset), so SNAP_SHADOW_BIAS is a
+      // receiver-side reference-depth offset in the soft-shadow patch (nvn_shadowpcf.cpp), not a vkCmdSetDepthBias scale.
+    static const bool p1 = getenv("NVN_P1_LOG") != nullptr;
+    if (p1 && cx.rt[8] && cx.rt[8]->b.width == cx.rt[8]->b.height && cx.rt[8]->b.width >= 512 && cx.rt[8]->b.width <= 8192 && cx.rt[8]->b.format != 0x36) {
+      const int offBit = d.poly.mode == POLY_POINT ? 1 : d.poly.mode == POLY_LINE ? 2 : 4;
+      static int n = 0;
+      if (n++ < 12) fprintf(stderr, "[p1] shadow caster draw p%d rt0=%p rt8 %ux%u fmt=%x depthBiasEnable=%d (offsetEn=%x mode=%d) factor=%g units=%g clamp=%g cull=%d\n", g_presentCount, (void*)cx.rt[0], cx.rt[8]->b.width, cx.rt[8]->b.height, cx.rt[8]->b.format, (int)((d.poly.offsetEn & offBit) != 0), (unsigned)d.poly.offsetEn, (int)d.poly.mode, d.biasFactor, d.biasUnits, d.biasClamp, (int)d.poly.cull);
+    }
+  }
   vkCmdSetDepthBias(cx.cb, d.biasUnits, h->features.depthBiasClamp ? d.biasClamp : 0.f, d.biasFactor);
   const float bc[4] = {0, 0, 0, 0};
   vkCmdSetBlendConstants(cx.cb, bc);
@@ -1118,25 +1163,33 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     VkDeviceSize o = d.vb[i].buf ? d.vb[i].off : 0;
     vkCmdBindVertexBuffers(cx.cb, (uint32_t)i, 1, &b, &o);
   }
+  snap_rt::DrawCapture rtCap; snap_rt::DrawInfo rtInfo;   // [rt] SNAP_RT=1: transform-feedback capture of scene opaque draws (nvn_rt.cpp)
+  const bool rtWant = snap_rt::Capture();
+  if (rtWant) RtFillInfo(rtInfo, d, p, c, indexed, topo, rewrite ? (uint32_t)rw.size() : (uint32_t)std::max(c.i[2], 0));
   if (rewrite) {
     VkBuffer ib = VK_NULL_HANDLE;
     uint8_t* m = NewScratch(cx, rw.size() * 4, &ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     if (!m) { LogError("index rewrite: scratch allocation failed"); return; }
     memcpy(m, rw.data(), rw.size() * 4);
     vkCmdBindIndexBuffer(cx.cb, ib, 0, VK_INDEX_TYPE_UINT32);
+    if (rtWant) rtCap.Begin(cx, rtInfo);
     if (indexed) vkCmdDrawIndexed(cx.cb, (uint32_t)rw.size(), (uint32_t)std::max(c.i[5], 1), 0, c.i[3], (uint32_t)c.i[4]);
     else vkCmdDrawIndexed(cx.cb, (uint32_t)rw.size(), (uint32_t)std::max(c.i[4], 1), 0, 0, (uint32_t)c.i[3]);
   } else if (indexed) {
     PoolImpl* pool = nullptr; uint64_t off = 0;
     if (!h->ResolveAddress(c.a[0], &pool, &off)) { LogError("index buffer address 0x%llx is not in any memory pool", (unsigned long long)c.a[0]); return; }
     const uint64_t isz = c.i[1] == IDX_U32 ? 4 : 2;
-    if (!pool->buffer && !EnsureBacking(pool)) return;
+    if (!PoolBacked(pool)) return;   // [audit F6] acquire
     SyncPoolRangeOnce(pool, off, isz * (uint64_t)std::max(c.i[2], 0));
     vkCmdBindIndexBuffer(cx.cb, pool->buffer, off, c.i[1] == IDX_U32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+    if (rtWant) rtCap.Begin(cx, rtInfo);
     vkCmdDrawIndexed(cx.cb, (uint32_t)c.i[2], (uint32_t)std::max(c.i[5], 1), 0, c.i[3], (uint32_t)c.i[4]);
   } else {
+    if (rtWant) rtCap.Begin(cx, rtInfo);
     vkCmdDraw(cx.cb, (uint32_t)c.i[2], (uint32_t)std::max(c.i[4], 1), (uint32_t)c.i[1], (uint32_t)c.i[3]);
   }
+  rtCap.End();   // [rt] (a no-op unless this draw was captured; the build runs from the Fx post-tonemap slot, nvn_rt.cpp)
+  FxAfterDraw(cx, p->st[1].key);   // [fx] post-tonemap slot (nvn_fx.cpp)
   AaAfterDraw(cx, p->st[1].key);   // SNAP_AA=smaa / SNAP_SHARPEN: in-place pass after the game's tonemap draw (nvn_aa.cpp)
   if (thumbDraw) {
     fprintf(stderr, "[thumb] recorded\n");
@@ -1210,7 +1263,7 @@ void DoCopyBufferToTexture(ReplayCtx& cx, const Cmd& c) {
   memcpy(&v, c.blob.data() + sizeof r, sizeof v);
   PoolImpl* pool = nullptr; uint64_t off = 0;
   if (!h->ResolveAddress(c.a[0], &pool, &off)) { LogError("CopyBufferToTexture: source 0x%llx is not in any memory pool", (unsigned long long)c.a[0]); return; }
-  if (!pool->buffer && !EnsureBacking(pool)) return;
+  if (!PoolBacked(pool)) return;   // [audit F6] acquire
   static const bool kTexDump = getenv("NVN_TEX_DUMP") != nullptr;   // load pass: read once
   if (pool->storage && kTexDump) {
     const uint64_t n = (uint64_t)r.w * std::max(r.h, 1) * std::max(r.d, 1) * t->fi->bytes / std::max<uint32_t>(t->fi->bw * t->fi->bh, 1);
@@ -1476,13 +1529,51 @@ void PersistScrub(QueueImpl* q, const std::unordered_set<const void*>& dead) {
 // orthographic map per frame (light view-projection in a 64-byte VS buffer at slot 9 of the ShadowCast draws; the receivers read the same matrix,
 // remapped to texture space, at floats 16..31 of a 132-byte buffer at slot 9). Called from BindUbo BEFORE the buffer is mirrored to the GPU: the
 // x and y columns are scaled by 1/k about the map centre. Idempotent: a buffer the game did not rewrite (it still holds our output) is skipped.
-static void ShadowDistanceOnBind(Host* h, ReplayCtx& cx, int stage, int slot, uint64_t addr, uint64_t size) {
+static float ShadowDistK() {
   static const float k = [] {
-    float v = 1.0f;
-    if (const char* l = getenv("SNAP_LIGHTING")) if (!strcmp(l, "high")) v = 2.0f;
+    float v = snaplight::shadow_distance();   // SNAP_LIGHTING preset (hle/lighting_preset.h)
     if (const char* e = getenv("SNAP_SHADOW_DISTANCE")) { float f = (float)atof(e); if (f >= 1.0f && f <= 16.0f) v = f; }
     return v;
   }();
+  return snaplight::ab_on((unsigned long long)g_presentCount) ? k : 1.0f;   // SNAP_LIGHT_AB: even blocks use the original
+}
+
+// P3 (lighting plan): the fade of the dynamic shadow lives in PerViewCBuffer (NVN slot c3 = ubo index 0, 744 bytes): dynamicShadowFarClip +0x2e0 and
+// dynamicShadowFadeLength +0x2e4. Scaled by the same k as the coverage (SNAP_SHADOW_FADE=<scale> overrides). Only those two floats change, and only
+// on binds whose targets are not the Evaluation depth (DEPTH32F_STENCIL8) or a 360x240 photo target. Idempotent (the game rewrites the bank each
+// frame; a bank that still holds our output is skipped). NVN_P1_LOG=1 logs the original and scaled values (probe for the plan's P1).
+static void ShadowFadeOnBind(Host* h, ReplayCtx& cx, int slot, uint64_t addr, uint64_t size) {
+  static const bool p1 = getenv("NVN_P1_LOG") != nullptr;
+  static const float fkSet = [] { const char* e = getenv("SNAP_SHADOW_FADE"); const float f = e ? (float)atof(e) : 0.0f; return (f >= 1.0f && f <= 16.0f) ? f : 0.0f; }();
+  const float fk = !snaplight::ab_on((unsigned long long)g_presentCount) ? 1.0f : fkSet > 0.0f ? fkSet : ShadowDistK();
+  if ((fk <= 1.0f && !p1) || slot != 0 || !addr || size < 0x2e8) return;   // PerViewCBuffer = ubo binding index 0 (NVN c3), 744 bytes
+  if (cx.rt[8] && cx.rt[8]->b.format == 0x36) return;                                              // Evaluation depth target
+  if (cx.rt[0] && cx.rt[0]->b.width == 360 && cx.rt[0]->b.height == 240) return;                  // photo / thumbnail target
+  PoolImpl* pool = nullptr; uint64_t off = 0;
+  if (!h->ResolveAddress(addr, &pool, &off) || !pool->storage || off + size > pool->size) return;
+  float* f = (float*)((uint8_t*)pool->storage + off);
+  const float farc = f[0x2e0 / 4], fade = f[0x2e4 / 4];
+  if (!(farc > 0.0f && farc < 1.0e6f && fade >= 0.0f && fade < 1.0e6f)) return;                     // not a PerViewCBuffer (or garbage)
+  static std::unordered_map<float*, std::array<float, 2>> done;
+  auto it = done.find(f);
+  if (p1) {
+    static int n = 0;
+    if (n++ < 40) fprintf(stderr, "[p1] c3 bind p%d @%p size %llu rt0=%ux%u rt8fmt=%x farclip %g fade %g (cached ours %d)", g_presentCount, (void*)f, (unsigned long long)size,
+                      cx.rt[0] ? cx.rt[0]->b.width : 0u, cx.rt[0] ? cx.rt[0]->b.height : 0u, cx.rt[8] ? cx.rt[8]->b.format : 0, farc, fade,
+                      (int)(it != done.end() && it->second[0] == farc && it->second[1] == fade));
+  }
+  if (fk <= 1.0f) return;
+  if (it != done.end() && it->second[0] == farc && it->second[1] == fade) return;                  // our own output from an earlier bind
+  f[0x2e0 / 4] = farc * fk; f[0x2e4 / 4] = fade * fk;
+  if (done.size() > 4096) done.clear();
+  done[f] = {f[0x2e0 / 4], f[0x2e4 / 4]};
+  static int n2 = 0;
+  if (n2++ < 6) fprintf(stderr, "shadow fade x%.2f applied: farclip %g -> %g, fade length %g -> %g at %p", fk, farc, f[0x2e0 / 4], fade, f[0x2e4 / 4], (void*)f);
+}
+
+static void ShadowDistanceOnBind(Host* h, ReplayCtx& cx, int stage, int slot, uint64_t addr, uint64_t size) {
+  const float k = ShadowDistK();
+  ShadowFadeOnBind(h, cx, slot, addr, size);
   if (k <= 1.0f || slot != 9 || !addr) return;
   const bool cast = stage == 0 && size == 64 && cx.rt[8] && !cx.rt[0] && cx.rt[8]->b.width == 1024 && cx.rt[8]->b.height == 1024;
   const bool recv = size == 132 && cx.rt[8] && cx.rt[8]->b.width != 1024;

@@ -1,0 +1,41 @@
+# fixture: unlock_all
+# soak album idle: Florio Day full ride + evaluation, then sit on album_save photo detail 90 s with no input, then 90 s of A taps
+wait ui=title timeout=150
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=200
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=30
+@f180 6 A
+wait ride timeout=240
+repeat @f0 @f60000 24 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit:FolderSelect timeout=420
+@f150 8 Right
+@f230 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Right
+@f140 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Plus
+@f140 8 Up
+@f220 8 A
+wait ui=evaluation timeout=60
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+repeat @f0 @f60000 40 4 A
+wait ui=album_save:PhotoDetail timeout=150
+repeat @f5400 @f60000 40 4 A
+end @f10800

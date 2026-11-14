@@ -44,6 +44,7 @@ void apply_defaults();                                 // derived paths from dat
 #ifdef _WIN32
 std::string appdata_utf8();                            // %APPDATA% as UTF-8 (wide API; a non-ASCII user name is safe)
 #endif
+bool migrate_legacy_data_root(const std::string& old_root, const std::string& new_root);   // copies old_root/save to new_root/save once (never moves)
 std::string default_data_root();                       // %APPDATA%\SnapRecomp (HOME/.local/share/SnapRecomp elsewhere)
 std::string default_input_path();                      // %SNAP_CONFIG_DIR%\input.json, else <data_root>\input.json
 std::string legacy_input_path();                       // <data_root>\config\input_map.json (version 1, migrated on first load)

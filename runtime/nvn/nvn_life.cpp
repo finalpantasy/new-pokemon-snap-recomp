@@ -4,7 +4,7 @@
 //    whose list was already freed is skipped and counted instead of replaying freed memory, and the same handle twice in one submit (or
 //    again while in flight) takes a second reference instead of a double delete.
 //  - Graveyard: finalized textures, samplers, memory pools, texture / sampler pools and programs are destroyed only after the queue
-//    timeline passes the last submit made before they were retired (the same stamp-at-present rule as OwnPoolReap). Before they are
+//    timeline passes the last submit made before they were retired, on every queue (stamped at the next present). Before they are
 //    freed, texture / sampler pool slots that still point at them are nulled and the queue's persistent draw state forgets them.
 //  - SNAP_NVN_STATS=1: one "[nvnstats]" line every 300 presents with the counters below (measurement only, no behavior change).
 #define NOMINMAX
@@ -13,6 +13,9 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <map>
+#include <memory>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "nvn_internal.h"
@@ -24,21 +27,91 @@ std::atomic<uint64_t> g_lifeStat[LS_COUNT];
 static const char* const kLifeStatName[LS_COUNT] = {
   "resubmit", "staleHandle", "listsMade", "retired", "destroyed", "slotsCleared", "persistScrub", "rbWaitPoolGone",
   "pipeSkip", "bcRecreate", "aaResize", "cubeCopy", "flushGpuOverlap", "clearScissored", "xAlphaViews", "backingRace",
+  "listCtlRetire", "listNoCtl",
 };
 
 // ---- command list handles ------------------------------------------------------------------------------------------------------
+// [audit F5, 2026-11-13] A recorded handle stays submittable until the control memory it was recorded in is reused (NVN; TotK
+// runtime/nvn_api_cmd.c nvnCommandBufferEndRecording / release_copies). The recording keeps its own reference (CmdList::owned) apart
+// from the submissions' references: adding its control memory again (ListRetireCtl) drops the handle, and the list is freed once no
+// submission still has it in flight. It used to hand its only reference to the first submission, so a second submit of the same
+// handle after that one completed found nothing (staleHandle).
+void CmdVecGive(std::vector<Cmd>& v);   // below
 namespace {
 std::mutex g_listMu;
 std::unordered_map<uint64_t, CmdList*> g_lists;
 uint64_t g_nextList = 0x10000;
+std::multimap<uintptr_t, CmdList*> g_ctlIndex;                  // owned recordings by control memory address
+std::unordered_multimap<const void*, CmdList*> g_noCtl;         // owned recordings made without control memory, by recorder
+
+// Under g_listMu: the recording's reference goes; true when nothing else holds the list (the caller frees it outside the lock).
+bool DropOwnerLocked(CmdList* l) {
+  if (!l->owned) return false;
+  l->owned = false;
+  g_lists.erase(l->id);   // the handle is stale from now on
+  return --l->refs <= 0;
+}
+void FreeList(CmdList* l) { CmdVecGive(l->cmds); delete l; }
 }  // namespace
 
-CommandHandle ListRegister(CmdList* l) {
-  std::lock_guard<std::mutex> lk(g_listMu);
-  l->id = g_nextList++;
-  g_lists[l->id] = l;
-  LifeCount(LS_LISTS_MADE);
-  return l->id;
+CommandHandle ListRegister(CmdList* l, const void* recorder, uintptr_t ctl) {
+  std::vector<CmdList*> dead;
+  CommandHandle id;
+  {
+    std::lock_guard<std::mutex> lk(g_listMu);
+    l->id = g_nextList++;
+    l->recorder = recorder;
+    l->ctl = ctl;
+    g_lists[l->id] = l;
+    if (ctl) {
+      // [2026-11-14] a recording at an address that already owns one replaces it: the control memory wrapped (ctlUsed >= ctlSize puts every later
+      // recording at ctlBase), so the older handle's memory is reused and it ends here. A submission in flight keeps its own reference.
+      auto r = g_ctlIndex.equal_range(ctl);
+      uint64_t n = 0;
+      for (auto it = r.first; it != r.second; ++it, n++) if (DropOwnerLocked(it->second)) dead.push_back(it->second);
+      g_ctlIndex.erase(r.first, r.second);
+      if (n) LifeCount(LS_LIST_CTL_RETIRE, n);
+      g_ctlIndex.emplace(ctl, l);
+    }
+    else { g_noCtl.emplace(recorder, l); LifeCount(LS_LIST_NO_CTL); }
+    LifeCount(LS_LISTS_MADE);
+    id = l->id;
+  }
+  for (CmdList* d : dead) FreeList(d);
+  return id;
+}
+
+void ListRetireCtl(const void* recorder, uintptr_t lo, uintptr_t hi) {
+  std::vector<CmdList*> dead;
+  {
+    std::lock_guard<std::mutex> lk(g_listMu);
+    uint64_t n = 0;
+    if (hi > lo)
+      for (auto it = g_ctlIndex.lower_bound(lo); it != g_ctlIndex.end() && it->first < hi; it = g_ctlIndex.erase(it), n++)
+        if (DropOwnerLocked(it->second)) dead.push_back(it->second);
+    auto r = g_noCtl.equal_range(recorder);   // the recorder's recordings that had no control memory end with its next block
+    for (auto it = r.first; it != r.second; ++it, n++) if (DropOwnerLocked(it->second)) dead.push_back(it->second);
+    g_noCtl.erase(r.first, r.second);
+    if (n) LifeCount(LS_LIST_CTL_RETIRE, n);
+  }
+  for (CmdList* l : dead) FreeList(l);
+}
+
+void ListRecorderGone(const void* recorder, uintptr_t ctlLo, uintptr_t ctlHi) {
+  std::vector<CmdList*> dead;
+  {
+    std::lock_guard<std::mutex> lk(g_listMu);
+    // [2026-11-14] the recorder's control memory range too: its recordings used to stay indexed (and leak) after the buffer was finalized
+    if (ctlHi > ctlLo)
+      for (auto it = g_ctlIndex.lower_bound(ctlLo); it != g_ctlIndex.end() && it->first < ctlHi; ) {
+        if (it->second->recorder == recorder) { if (DropOwnerLocked(it->second)) dead.push_back(it->second); it = g_ctlIndex.erase(it); }
+        else ++it;
+      }
+    auto r = g_noCtl.equal_range(recorder);
+    for (auto it = r.first; it != r.second; ++it) if (DropOwnerLocked(it->second)) dead.push_back(it->second);
+    g_noCtl.erase(r.first, r.second);
+  }
+  for (CmdList* l : dead) FreeList(l);
 }
 
 void ListAcquire(int n, const CommandHandle* handles, CmdList** out) {
@@ -54,8 +127,9 @@ void ListAcquire(int n, const CommandHandle* handles, CmdList** out) {
       continue;
     }
     CmdList* l = it->second;
-    if (l->submitted) { l->refs++; LifeCount(LS_RESUBMIT); }   // same handle again (in this call or still in flight): one more reference
-    else l->submitted = true;                                  // the recording's reference moves to its first submit
+    if (l->submitted) LifeCount(LS_RESUBMIT);   // same handle again (in this call, still in flight, or after completion)
+    l->submitted = true;
+    l->refs++;                                   // [audit F5] each submission holds its own reference; the recording keeps its own
     out[i] = l;
   }
 }
@@ -80,15 +154,18 @@ void CmdVecGive(std::vector<Cmd>& v) {
   if (g_cmdVecs.size() < 64) { g_cmdVecs.emplace_back(); g_cmdVecs.back().swap(v); }
 }
 
-void ListRelease(CmdList* l) {
+void ListRelease(CmdList* l) {   // a submission's reference (the recording's own is dropped by DropOwnerLocked)
   if (!l) return;
   {
     std::lock_guard<std::mutex> lk(g_listMu);
     if (--l->refs > 0) return;
-    g_lists.erase(l->id);
+    if (l->owned) {   // not reachable while the recording holds its reference; kept so a miscount cannot leave a dangling handle
+      g_lists.erase(l->id);
+      if (l->ctl) { auto r = g_ctlIndex.equal_range(l->ctl); for (auto it = r.first; it != r.second; ++it) if (it->second == l) { g_ctlIndex.erase(it); break; } }
+      else { auto r = g_noCtl.equal_range(l->recorder); for (auto it = r.first; it != r.second; ++it) if (it->second == l) { g_noCtl.erase(it); break; } }
+    }
   }
-  CmdVecGive(l->cmds);
-  delete l;
+  FreeList(l);
 }
 
 static size_t ListsLive() { std::lock_guard<std::mutex> lk(g_listMu); return g_lists.size(); }
@@ -109,10 +186,39 @@ void TexPoolLive(TexPoolImpl* p, bool live) { RegSet(g_texPools, p, live); }
 void SampPoolLive(SampPoolImpl* p, bool live) { RegSet(g_sampPools, p, live); }
 
 // ---- graveyard ------------------------------------------------------------------------------------------------------------------
+// [audit F4, 2026-11-13] The game creates two queues (main+0x90e524, main+0x90e590), each with its own timeline semaphore, so one
+// queue's counter says nothing about the other's. A grave is stamped with (queue, last submitted value) for EVERY live queue and is
+// destroyed only when each of those queues has completed its value; a queue destroyed since (DestroyQueue finished it first) counts
+// as passed. Queues are named by a serial, never by a pointer or semaphore that could be reused. Persistent draw state is scrubbed in
+// every live queue, not only the presenting one.
 namespace {
-struct Grave { GraveKind k; void* obj; uint64_t value; };   // value 0 = not stamped yet
+struct QueueRec { QueueImpl* q; uint64_t serial; };
+std::mutex g_qMu;                 // guards g_queues; held across GraveReap so a listed QueueImpl stays valid (DestroyQueue unlists it)
+std::vector<QueueRec> g_queues;
+uint64_t g_qSerial = 0;
+using Marks = std::vector<std::pair<uint64_t, uint64_t>>;   // (queue serial, timeline value)
+}  // namespace
+
+void QueueLive(QueueImpl* q, bool live) {
+  if (!q) return;
+  std::lock_guard<std::mutex> lk(g_qMu);
+  auto it = std::find_if(g_queues.begin(), g_queues.end(), [&](const QueueRec& r) { return r.q == q; });
+  if (live && it == g_queues.end()) g_queues.push_back({q, ++g_qSerial});
+  if (!live && it != g_queues.end()) g_queues.erase(it);
+}
+
+namespace {
+struct Grave { GraveKind k; void* obj; std::shared_ptr<const Marks> need; };   // need null = not stamped yet
 std::mutex g_graveMu2;
 std::vector<Grave> g_graves;
+
+bool Passed(const Marks& need, const Marks& done) {
+  for (auto& n : need) {
+    auto it = std::find_if(done.begin(), done.end(), [&](const std::pair<uint64_t, uint64_t>& d) { return d.first == n.first; });
+    if (it != done.end() && it->second < n.second) return false;   // missing = that queue was finished and destroyed
+  }
+  return true;
+}
 
 void DestroyNow(const Grave& g) {
   switch (g.k) {
@@ -174,24 +280,32 @@ void ScrubSlots(const std::unordered_set<const void*>& deadTex, const std::unord
 void Retire(GraveKind k, void* obj) {
   if (!obj) return;
   std::lock_guard<std::mutex> lk(g_graveMu2);
-  g_graves.push_back({k, obj, 0});
+  g_graves.push_back({k, obj, nullptr});
   LifeCount(LS_RETIRED);
 }
 
 void RetireFn(std::function<void()> fn) { if (fn) Retire(GK_FN, new std::function<void()>(std::move(fn))); }
 
-void GraveReap(QueueImpl* q) {
+void GraveReap(QueueImpl* q) {   // under Host::queueMutex: no queue submits or replays meanwhile, so every queue's value is stable
   if (!q || !q->host) return;
+  QueueLive(q, true);   // a queue that presents is live (InitQueue already listed it)
+  std::lock_guard<std::mutex> qlk(g_qMu);
   std::vector<Grave> dead;
   {
     std::lock_guard<std::mutex> lk(g_graveMu2);
     if (g_graves.empty()) return;
-    uint64_t done = 0;
-    vkGetSemaphoreCounterValue(q->host->device, q->timeline, &done);
+    auto need = std::make_shared<Marks>();   // what each queue has submitted: every submit that can use a grave stamped now is <= this
+    Marks done;                              // what each queue has completed
+    for (auto& r : g_queues) {
+      if (r.q->value) need->push_back({r.serial, r.q->value});
+      uint64_t d = 0;
+      if (r.q->timeline && r.q->host) vkGetSemaphoreCounterValue(r.q->host->device, r.q->timeline, &d);
+      done.push_back({r.serial, d});
+    }
     size_t keep = 0;
     for (auto& g : g_graves) {
-      if (!g.value) { g.value = q->value ? q->value : 1; g_graves[keep++] = g; }   // every submit that can use it is <= this value
-      else if (g.value <= done) dead.push_back(g);
+      if (!g.need) { g.need = need; g_graves[keep++] = g; }
+      else if (Passed(*g.need, done)) dead.push_back(g);
       else g_graves[keep++] = g;
     }
     g_graves.resize(keep);
@@ -204,7 +318,7 @@ void GraveReap(QueueImpl* q) {
     if (g.k == GK_SAMPLER) deadSamp.insert(g.obj);
   }
   ScrubSlots(deadTex, deadSamp);
-  PersistScrub(q, all);
+  for (auto& r : g_queues) PersistScrub(r.q, all);   // [audit F4] every queue's persistent draw state, not only the presenting one
   for (auto& g : dead) DestroyNow(g);
 }
 

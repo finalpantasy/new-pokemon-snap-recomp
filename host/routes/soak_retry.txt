@@ -13,6 +13,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -20,6 +23,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -27,6 +33,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -34,6 +43,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -41,6 +53,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -48,6 +63,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -55,6 +73,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -62,6 +83,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -69,6 +93,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -76,6 +103,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -83,6 +113,9 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 @f420 6 Plus
 wait ui=pause_menu timeout=60
@@ -90,5 +123,8 @@ wait !ride for=30 timeout=30
 @f60 6 Down
 @f150 6 A
 @f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
 wait ride timeout=200
 end @f300

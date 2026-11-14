@@ -241,7 +241,7 @@ class Win32Backend final : public Backend {
         merge_pad(out, r);
       }
     }
-    if (!out.focused) { out.pad.reset(); out.lx = out.ly = out.rx = out.ry = out.lt = out.rt = 0; }
+    if (!out.focused) { out.pad.reset(); out.lx = out.ly = out.rx = out.ry = out.lt = out.rt = 0; out.gyro_present = false; out.gyro_x = out.gyro_y = out.gyro_z = 0; }
     // XInput vibration has no timeout of its own: stop it when the window loses focus, or when the game stopped refreshing it (hang, pause).
     if (rumbling_ && set_ && (!out.focused || GetTickCount64() - rumble_tick_ > kRumbleStaleMs)) {
       XVibration z{0, 0};
@@ -249,8 +249,13 @@ class Win32Backend final : public Backend {
       rumbling_ = false;
     }
     if (out.focused) {
+      // Alt+Enter toggles fullscreen at the window level; hide that Enter from the game until it is released.
+      bool enter_down = (GetAsyncKeyState(VK_RETURN) & 0x8000) != 0;
+      if (!enter_down) swallow_enter_ = false;
+      else if (GetAsyncKeyState(VK_MENU) & 0x8000) swallow_enter_ = true;
       for (int k = 1; k < kKeyCount; ++k) {
         int vk = vk_for_key(k);
+        if (vk == VK_RETURN && swallow_enter_) continue;
         if (vk && (GetAsyncKeyState(vk) & 0x8000)) out.keys.set((size_t)k);
       }
       POINT p;
@@ -318,7 +323,7 @@ class Win32Backend final : public Backend {
   bool rumbling_ = false, background_ = false, have_last_ = false;
   ULONGLONG rumble_tick_ = 0;
   static constexpr ULONGLONG kRumbleStaleMs = 2000;   // the game refreshes its values every frame
-  bool lock_ = false, recenter_ = false, clipped_ = false, was_recenter_ = false;
+  bool lock_ = false, recenter_ = false, clipped_ = false, was_recenter_ = false, swallow_enter_ = false;   // swallow_enter_: Alt+Enter (fullscreen) must not reach the game as Plus
   RECT clip_{};
 #ifdef HLE_WITH_SDL3
   SdlPads sdl_;

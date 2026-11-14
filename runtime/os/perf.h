@@ -32,6 +32,7 @@ enum Ctr {
     C_ENSUREIMG,     // TextureImpl::EnsureImage that creates an image (vkCreateImage + memory) (perf pass 4 replay sub-scope)
     C_VIEW,          // image view creation (sampled and attachment views)
     C_RENDBEGIN,     // BeginRendering (render-pass setup incl. attachment views)
+    C_BACKING,       // EnsureBacking: pool mirror creation + whole-pool copy (any thread; perf pass 7)
     C_COUNT
 };
 enum Val {   // plain counters (no time)

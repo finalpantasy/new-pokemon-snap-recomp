@@ -1,0 +1,5 @@
+# fixture: prog_edited
+# Hub idle probe (LenTalk trace): title A taps, hub, then idle 1500 presents; run with SNAP_DUMP_EVERY=15 SNAP_ROUTE_LOG=1.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=400
+end 1600

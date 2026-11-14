@@ -44,6 +44,7 @@ extern "C" volatile int g_fnprof;
 extern "C" void snap_fn_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void snap_skips_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void snap_neo_observe(uint64_t a, uint64_t lr, uint64_t x0);
+extern "C" void snap_highfps_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void loader_init_hit(uint64_t a);
 static thread_local GuestThread *g_cur = nullptr;
 thread_local Cpu *loader::g_tls_cpu = nullptr;   // the Cpu of the last host call on this thread (crash reports)
@@ -494,7 +495,8 @@ int run_initializers(Cpu *c, bool log) {
     // off again unless a tracer had it on before (SNAP_FNTRACE, SNAP_TRACE_LOD, SNAP_SKIPS_REC, SNAP_NEO_CAMFN set it at start).
     // SNAP_FNPROF_KEEP=1 restores the old always-on hook.
     if (log && !fnprof_before && !getenv("SNAP_FNPROF_KEEP")) {
-        g_init_watch.clear();
+        // Only switch the hook off; leave g_init_watch in place so a guest thread still inside
+        // loader_init_hit never sees the unordered_map being cleared under it.
         g_fnprof = 0;
     }
     return n + seen;
@@ -686,6 +688,7 @@ void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
     snap_fn_observe(a, lr, x0);   // host/mods/lodanim.cpp (SNAP_TRACE_LOD); returns at once when unused
     snap_skips_observe(a, lr, x0);   // host/mods/skips.cpp (SNAP_SKIPS_REC)
     snap_neo_observe(a, lr, x0);   // host/mods/neofilm.cpp (dev tracer SNAP_NEO_CAMFN)
+    snap_highfps_observe(a, lr, x0);   // host/mods/highfps.cpp (SNAP_FPS_TRACE / SNAP_FPS_MSWATCH)
     for (int i = 0; i < g_fntrace_n; i++)
         if (g_fntrace[i] == a) { loader::trace("fn %#llx entered from %s x0=%#llx", (unsigned long long)a, loader::symbolize(lr).c_str(), (unsigned long long)x0); return; }
 }

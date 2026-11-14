@@ -717,7 +717,8 @@ struct RouteInit { RouteInit() { const char* e = std::getenv("SNAP_ROUTE_LOG"); 
 // evaluates one "wait" condition (text after '?'); `why` gets a short state note for the log
 bool route_cond(const std::string& c0, std::string* why) {
   const bool neg = !c0.empty() && c0[0] == '!';
-  const std::string c = neg ? c0.substr(1) : c0;
+  std::string c = neg ? c0.substr(1) : c0;
+  if (c.rfind("rail>=", 0) == 0) c = "ride>=" + c.substr(6);   // alias: `wait rail>=<x>` = `wait ride>=<x>`
   const int f = nvn::g_presentCount;
   bool r = false;
   char b[160] = "";
@@ -938,6 +939,17 @@ void script_load() {
 // Applies the script at time `now` (seconds since the first poll) to `p`.
 float g_script_rumble_lo = 0, g_script_rumble_hi = 0;
 bool g_script_gyro_on = false; float g_script_gyro_yaw = 0, g_script_gyro_pitch = 0;   // read by Hub::poll after script_apply
+// Warns when a segment ends (a wait/anchor raised the next one) while some of its lines never started: they would silently be dropped.
+void script_warn_unfired(int k, double el_t, double el_f) {
+  int n = 0; double first = 0; bool fr = false;
+  for (const ScriptEntry& en : g_script.e) {
+    if (en.seg != k || en.is_end) continue;
+    const double now = en.frames ? el_f : el_t;
+    if (en.start > now && (n == 0 || en.start < first)) { first = en.start; fr = en.frames; }
+    if (en.start > now) ++n;
+  }
+  if (n > 0) log("input script: WARNING segment %d ended before %d of its lines started (first at %s%.0f); they never fire", k, n, fr ? "@f" : "", first);
+}
 // "wait" lines and timeouts: starts the next segment when the pending condition holds, or ends the run when time runs out.
 void script_check_wait(uint64_t now_ns_v) {
   static int held_k = -1, held_n = 0, held_f = -1;
@@ -952,6 +964,7 @@ void script_check_wait(uint64_t now_ns_v) {
       if (held_k != k) { held_k = k; held_n = 0; held_f = -1; }
       if (f != held_f) { held_f = f; ++held_n; }
       if (held_n >= g_script.seg_hold[(size_t)k]) {
+        script_warn_unfired(k, el, (double)(f - g_script.cur_f0.load()));
         g_script.cur_t0 = now_ns_v;
         g_script.cur_f0 = f;
         g_script.cur = k + 1;
@@ -1018,6 +1031,7 @@ void script_event(const char* name) {
   if (!g_script.loaded) return;
   int k = g_script.cur.load();
   if (k < (int)g_script.seg_event.size() && g_script.seg_event[(size_t)k] == name) {
+    script_warn_unfired(k, (double)(now_ns() - g_script.cur_t0.load()) * 1e-9, (double)(nvn::g_presentCount - g_script.cur_f0.load()));
     g_script.cur_t0 = now_ns();
     g_script.cur_f0 = nvn::g_presentCount;
     g_script.cur = k + 1;

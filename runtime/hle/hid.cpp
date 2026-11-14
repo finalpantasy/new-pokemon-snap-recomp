@@ -95,11 +95,44 @@ void hid_get_touch_screen_state6(Cpu* c) {
   ensure_init();
   input::hub().poll();
   input::TouchSample t = input::hub().touch();
-  store<int64_t>(st, input::hub().sampling_number());
+  int64_t sn = input::hub().sampling_number();
+  // Hardware semantics: Start (1) only on the first sample of a touch, 0 while held, End (2) once on release
+  // (count=1, last point). Resolved once per sampling number so repeat calls in a frame agree.
+  static std::mutex tmu;
+  static int64_t last_sn = -1;
+  static bool prev_down = false;
+  static input::TouchPoint last_pt{};
+  static uint32_t cached_attr = 0;
+  static int cached_count = 0;
+  static input::TouchPoint cached_pt{};
+  {
+    std::lock_guard<std::mutex> g(tmu);
+    if (sn != last_sn) {
+      last_sn = sn;
+      if (t.count) {
+        cached_attr = prev_down ? 0u : 1u;
+        cached_count = 1;
+        cached_pt = t.pt[0];
+        last_pt = t.pt[0];
+        prev_down = true;
+      } else if (prev_down) {
+        cached_attr = 2u;
+        cached_count = 1;
+        cached_pt = last_pt;
+        prev_down = false;
+      } else {
+        cached_attr = 0;
+        cached_count = 0;
+      }
+    }
+    t.count = cached_count;
+    if (cached_count) t.pt[0] = cached_pt;
+  }
+  store<int64_t>(st, sn);
   store<int32_t>(st + 8, t.count);
   if (t.count) {
     uint8_t* p = st + 16;
-    store<uint32_t>(p + 8, 1);   // attributes: start of touch
+    store<uint32_t>(p + 8, cached_attr);   // attributes: 1 start, 0 held, 2 end
     store<int32_t>(p + 12, 0);   // finger id
     store<int32_t>(p + 16, t.pt[0].x);
     store<int32_t>(p + 20, t.pt[0].y);

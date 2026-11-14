@@ -1,0 +1,3 @@
+# Keep build output inside this tool folder (not on C:).
+[build]
+target-dir = "target"

@@ -1,0 +1,45 @@
+# fixture: prog_edited
+# Photo Editing with waits (2026-11-13): hub Down = Lab (two Downs = Settings), slow A taps through the lab tour (dialogue-driven, ~7000 presents),
+# Photodex -> first Pokemon -> photo -> Photo Editing -> Filters (cursor on No Filter; B&W is the top-right tile).
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=240
+@f200 8 Down
+@f400 8 A
+repeat @f800 @f30000 120 8 A
+wait ui=photo_edit:EffectList timeout=500
+# SHADER A/B (2026-11-13): after the filter list opens, walk every tile of both pages: apply (A) and go back (B), so the PhotoEditing shaders run on a static photo.
+# Run twice (SNAP_XLATE_REV=2 and 3) and compare frames pixel by pixel.
+@f120 8 Right
+@f300 8 A
+@f560 8 B
+@f800 8 Down
+@f980 8 A
+@f1240 8 B
+@f1480 8 Down
+@f1660 8 A
+@f1920 8 B
+@f2160 8 Left
+@f2340 8 A
+@f2600 8 B
+@f2840 8 Up
+@f3020 8 A
+@f3280 8 B
+@f3520 8 R
+@f3700 8 A
+@f3960 8 B
+@f4200 8 Right
+@f4380 8 A
+@f4640 8 B
+@f4880 8 Down
+@f5060 8 A
+@f5320 8 B
+@f5560 8 Left
+@f5740 8 A
+@f6000 8 B
+@f6240 8 Down
+@f6420 8 A
+@f6680 8 B
+@f6920 8 Right
+@f7100 8 A
+@f7360 8 B
+end 7900

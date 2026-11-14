@@ -18,6 +18,7 @@
 29.7 expect_opt gfx_shadow_res 512
 29.75 expect_opt gfx_render_scale 0.50
 29.8 expect_opt gfx_aa none
+29.81 expect_opt gfx_sharpen 0.00
 29.85 expect_opt gfx_pass_bloom off
 29.86 expect_opt gfx_pass_dof off
 29.9 expect_opt gfx_preset verylow
@@ -33,6 +34,28 @@
 29.98 opt gfx_pass_bloom default
 29.981 opt gfx_pass_dof default
 29.982 expect_opt gfx_pass_bloom default
+# AA values shared with the native menu (docs/advanced-graphics-options.md chunk 0): picking the default look keeps the preset's
+# name, and the High rows set by hand (2x supersampling + SMAA) read as High
+29.983 opt gfx_aa default
+29.984 expect_opt gfx_preset normal
+29.985 opt gfx_aa ssaa2,smaa
+29.9851 opt gfx_sharpen 0.30
+29.9852 opt gfx_aniso 16
+29.9853 opt gfx_shadow_res 2048
+29.9854 opt ssao_quality high
+29.9855 expect_opt gfx_preset high
+29.9856 opt gfx_preset normal
+29.9857 expect_opt gfx_aa default
+# HDR mode and peak (chunk 5): 3 modes, Auto peak = the key erased; set back, so not pending
+29.986 opt gfx_hdr scrgb
+29.9861 expect_opt gfx_hdr scrgb
+29.9862 opt gfx_hdr 0
+29.9863 opt gfx_hdr_peak 1500
+29.9864 expect_opt gfx_hdr_peak 1500
+29.9865 opt gfx_hdr_peak default
+29.9866 expect_opt gfx_hdr_peak default
+29.987 expect_when gfx_shadow_dist restart
+29.9871 expect_when gfx_hdr_expand restart
 30 opt gfx_render_scale 1.50
 30.2 opt gfx_aa smaa
 30.4 opt gfx_aniso 8
@@ -45,17 +68,28 @@
 31 opt look warm
 31.2 opt ssao_quality high
 31.4 opt frame_cap 60
-31.6 opt photo_export 0
+31.405 expect_when vsync live
+31.406 opt vsync adaptive
+31.407 expect_opt vsync adaptive
+# new and widened rows and the Shiny Pokemon row (2026-11-14): four more pending restart rows
+31.41 opt gfx_shadow_dist 2
+31.42 opt gfx_hdr_expand 0.50
+31.43 opt gfx_lod_bias -1.5
+31.44 opt shiny 512
+# photo_export is off by default now (runtime/hle/visual_defaults.h, original look, 2026-11-13), so the test turns it ON to stay a change
+31.6 opt photo_export 1
 31.7 opt neo_speed 2.00
 31.75 opt film 100
 31.76 opt skip_cutscenes 1
 31.78 opt gfx_pass_grain off
 31.8 opt audio_output speakers
-32 mods toggle alpha
+# Without a mods.json only the native-options pack starts enabled (ui_options.cpp mods list, as mods::load), so alpha and beta
+# start off: turning beta on and moving it first gives the same expected state as before (beta on and first, alpha off)
+32 mods toggle beta
 32.2 mods move beta -1
 32.4 expect_mods beta:1,alpha:0
 32.5 expect_opt gfx_preset custom
-32.6 expect_pending 19
+32.6 expect_pending 23
 33 expect_opt gfx_render_scale 1.50
 34 tab Graphics
 38 scroll 0.5

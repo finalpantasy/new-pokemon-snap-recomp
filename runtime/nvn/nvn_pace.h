@@ -27,6 +27,8 @@ bool LogOn();    // SNAP_PACE_LOG set
 void AppendDeviceExt(VkPhysicalDevice phys, std::vector<const char*>& dext, VkPhysicalDeviceVulkan11Features* f11);
 void DeviceCreated(VkDevice dev);
 void SwapchainCreated(VkSwapchainKHR sc, void* hwnd);
+// Present mode of the new swapchain is IMMEDIATE (SNAP_VSYNC=off): locked releases go right after the vblank, not mid-frame.
+void SetImmediate(bool on);
 
 // Frame limiter, called before the present. basePeriodNs = presentInterval / paceHz (and the frame cap), 0 = unlimited;
 // vsyncNs = 1 / paceHz (the guest vsync period before it is fitted to the display).

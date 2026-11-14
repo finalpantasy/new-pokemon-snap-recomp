@@ -19,6 +19,33 @@ Output: `build/snap/snap_boot.exe` (64 MB, with a linker map). The script:
 A cold build of the host side takes about 90 s; relinking after a host-only change takes 5 to 10 s. Regenerating and recompiling the lifted
 modules is separate (`recomp/snap_gen.py`, `recomp/snap_build.py`).
 
+Build notes (2026-11-14): the incremental check depends on every `host/**/*.h` and `runtime/**/*.h`, and each object has a `.flags` stamp next to it (hash of its compile command), so changing a header in any directory or a code-generation switch (`--pgo-*`, `--lto`, `--cflags-extra`) rebuilds what it affects. `run_boot.ps1` exits with the game's exit code (124 = killed on timeout, route TIMEOUT = 3); `bench.ps1` prints BENCH RUN FAILED for a nonzero code.
+
+## PGO and ThinLTO (2026-11-13, opt worker)
+
+**PGO is the default when `build\pgo\snap.profdata` exists** (local, never committed: it is derived from generated game code).
+`recomp\snap_build.py --pgo auto` (default) adds `-fprofile-use` for main and sdk, and a new profile changes the flag stamp, so
+the next build recompiles every TU. `host\build_snap.py --pgo-use auto` (default) does the same for the host side; the profile is a
+dependency of every host object. Switch back: `snap_build.py --pgo off` and `build_snap.py --pgo-use off --rebuild` (host objects
+only notice a new profile, not its removal, so pass `--rebuild` once). A/B result and numbers: `analysis\perf\results.md`, "Build optimization: PGO".
+
+Re-train after main is regenerated (functions whose code changed lose PGO until then; clang skips mismatched ones silently):
+
+    tools\venv-recomp\Scripts\python -I recomp\snap_build.py --gen generated\v262144\sdk --out build\w\<you>\gen\sdk --lib snap_sdk --cflags "-march=x86-64-v3 -fprofile-generate"
+    tools\venv-recomp\Scripts\python -I recomp\snap_build.py --gen generated\v262144\main --out build\w\<you>\gen\main --cflags "-march=x86-64-v3 -fprofile-generate"
+    tools\venv-recomp\Scripts\python -I host\build_snap.py --out build\w\<you>\gen\exe --pgo-gen --main-lib build\w\<you>\gen\main\lib\snap_main.lib --sdk-lib build\w\<you>\gen\sdk\lib\snap_sdk.lib
+    $env:LLVM_PROFILE_FILE = '<abs dir>\snap-%p.profraw'; powershell -File host\run_boot.ps1 -Route florio_photos -BuildDir build\w\<you>\gen\exe -Timeout 590
+    tools\llvm\bin\llvm-profdata merge -o build\pgo\snap.profdata <abs dir>\*.profraw      (take build\heavy.lock for this copy)
+
+The instrumented exe runs the whole route at about 50 fps. `host\pgo.cpp` (only in `--pgo-gen` builds) writes the counters every
+`SNAP_PGO_DUMP_S` seconds (default 15) because killed runs skip the exit-time write; on Windows each write appends to the file, so it
+resets the counters after each write and the merge sums disjoint slices. Check the merge: `llvm-profdata show --function=PresentWindowOnce
+--counts` should show about one count per present.
+
+**ThinLTO is opt-in and not recommended**: `snap_build.py --cflags "-march=x86-64-v3 -flto=thin"` (bitcode libs) plus
+`build_snap.py --lto thin`. PGO + ThinLTO was no faster than the plain build in two A/B runs, and every relink takes about 140 s
+instead of 15 to 60 s. `--cflags-extra` passes extra host compile flags.
+
 ## Run
 
     powershell -File host/run_boot.ps1 [-Timeout 300] [-Log analysis\boot\boot_trace.log] run
@@ -201,11 +228,17 @@ of its segment (a finished route need not sit out `-Timeout`). Every met wait lo
 | `ride_end` | a ride was seen and the rail has not moved for 90 presents | same |
 | `film<=<n>` | the course HUD film counter (72 at the start) is at most n (`film<=0`: the film is used up, which ends the expedition) | existing hook `rt_gm_film_c` at `main+0x393d9c` (`neofilm.cpp`): HUD `+0x2b8` |
 
+Game-time rides (2026-11-13): present counts swing about 7 times with PC load, while the rail and camera turns follow game time. Chain `wait rail>=<x>` (alias of `ride>=<x>`) for rail points and use seconds lines (`<start> <hold> tokens`, no `@f`) inside each segment; both stay put under load. Keep `@f` only on `shot=` lines (a `shot=` on a seconds line dumped no frames in run `0-20261113_235715`).
+
+Gotcha: when a `wait` (or `anchor`) is met, the lines of the segment before it stop for good. A line whose start time (for example `@f240`) lies after the moment the wait was met never fires. The runner now logs `input script: WARNING segment <k> ended before <n> of its lines started (first at @f<t>); they never fire` at that point (2026-11-13). Put such lines after the wait, timed from it, or keep the whole sequence before the wait.
+
 Debug: `SNAP_ROUTE_LOG=1` logs every scene, state change, non-frame UI event (1 built, 2 opened, 3 closed, 5/6 state entered/ready,
 7 input on, 16 focus, 18+10 decide, 21+12 decide done), rail start/move/restart, film count and dialog window (`route:` lines in
 `boot_stderr.log`); read it to find the state names for a new route. All of it is off (each hook returns at once) unless a script has a
 `wait` line or `SNAP_ROUTE_LOG` is set. Routes using it: `florio_eval`, `florio_photos`, `post_tutorial_check`, `unlock_all_check`,
 template `core_template.txt` for the course sweep.
+
+Fixture `story_complete` (2026-11-13, secrets worker): `unlock_all` plus every scenario bit (file 9 entry 0 offset 0x3b58 = 0xFFFFFFFFFFF, events 0..43) and all Boss flag bytes (0x3b88..0x3b9b = 1), built with `scripts\snap_save.py patch` (flags per `analysis\core\story.md`). Use it for content gated on story completion (Florio Secret Side Path, Mew). `analysis\core\secrets\run_s.sh` takes it through `SNAP_FIX=story_complete`. Route token `shot=<n>` (in a `@f<start> <hold> shot=<n>` line) dumps a 4-frame burst every n presents.
 
 ### Parallel runs (owner exception to the one-heavy-process rule)
 
@@ -242,9 +275,9 @@ wall time from the first input poll, so a loaded PC shifts the game but not the 
 ## PC tabs in the game's own Settings screen (2026-11-13, `host/mods/nativeopt.cpp`)
 
 The game's Settings screen (lab hub gear) is data driven: `option.lmb` in `common/UI/master/Scenes/option.drp` lists states
-(tabs), elements and focus groups (format and dumper: `scripts/ui/lmb.py dump <option.lmb> [state]`). The PC settings are ten
-extra tabs in two sets of five after the game's "Other" tab (R past Other; L on Game goes to the last one): Quality, Textures,
-Effects, Output, View | Display, Controller, Mouse, Audio, Photos. They use the game's own row widgets (two-choice rows,
+(tabs), elements and focus groups (format and dumper: `scripts/ui/lmb.py dump <option.lmb> [state]`). The PC settings are eleven
+extra tabs in sets of five after the game's "Other" tab (R past Other; L on Game goes to the last one): Quality, Textures,
+Effects, Output, View | Display, Controller, Mouse, Audio, Photos | Shadows & AO. They use the game's own row widgets (two-choice rows,
 pulldowns with their popup), tab bar, help line, sounds and Restore Default Settings button.
 
 - Pack: `python -I scripts/ui/make_native_options.py [--src <option.lmb>] [--out <mods root>] [--if-stale]` writes the local
@@ -258,20 +291,43 @@ pulldowns with their popup), tab bar, help line, sounds and Restore Default Sett
   state `rt_ui_opt_event` (`0x728e10`) builds the page with the game's BuildPage (`0x737360`), renames it and its five tab
   entries, points Prev/Next at the neighbor PC tabs (Other before PC tab 1, Game after the last), adds the PC variables and
   row element entries (the cursor only reaches listed elements) and calls SetState. Calling SetState at any other time does
-  not switch states. After SetState the hook redraws each pulldown row's value text (the player keeps the old text). A popup
+  not switch states. After SetState the hook redraws each pulldown row's value text (the player keeps the old text). A
+  two-choice element's focus action leaves its box at `lb_select` (no unfocus action; the game's handler repaints), so the
+  hook repaints a two-choice row from its value when the cursor leaves it; without that both boxes stayed yellow. A popup
   is the game's own list element (`PulldownMenu`, type 6, f4 = last item): it moves the cursor itself and reports
   `PulldownMenuItemNN` (separate item elements linked by focus groups never moved the cursor). As the game's list helper
   does (`0x776c80`, `0x776bb0`), on decide on the row (before the player switches) the hook registers the items with
-  `player->vtable[0x148](player, &popup state, &"PulldownMenuItemNN", true)`. Limits: the game then puts the cursor on
-  the current value with `player->vtable[0x1f0]`, but on a PC popup the player focuses the list header a frame after
-  SetState whatever is called, so the cursor starts above item 1 (the current value is marked); Sharpening and Master volume are pulldowns, not the
-  game's 0..10 slider: its knob is moved by the game's own tab handler, which a PC page bypasses.
-- Visual extras (owner 2026-11-13: the original look by default): Anti-aliasing (Original = `SNAP_AA=original`, the game's FXAA
-  / SMAA / SMAA + supersampling `ssaa2+smaa`, labeled 1.5x at 4K because of the 3.0 cap), Sharpening (Off / Low 0.30 /
-  Medium 0.50), Texture filtering (Original / 16x anisotropic), Sharper menu text (Off = `off` / On = `auto`, 2x at 1440p
-  and above) and Save PNG copies. Their defaults (and so Restore Default Settings) are read from
-  `runtime\hle\visual_defaults.h` when the pack is built (the pack rebuilds when that file changes); they store explicit
-  values and apply after a restart (the F1 table marks them `kRestart`).
+  `player->vtable[0x148](player, &popup state, &"PulldownMenuItemNN", true)`, focuses the current value
+  (`player->vtable[0x1f0]`), and starts the list itself (goto + play `lb_start_listNN`, NN = items + 1, on the popup's
+  `pulldown_NN_mc` through `vtable[0x90]`/`[0x98]`, as `0x776980` does), then focuses the current value again; the popup
+  states have no `lb_start_list` enter action (the game's do not either). So a popup opens with the cursor (the game's
+  yellow highlight, its only marking of the current value) on the current value (verified 2026-11-14: Render scale opens
+  on 1x, Shadow distance on 1x). A popup grows downward from its row, so a long list on a low row opens from a higher
+  row's popup (`pull_slot` in the script, column 9 of `rows.txt`; row 1 holds 10 items). Limit: Sharpening and Master
+  volume are pulldowns, not the game's 0..10 slider: its knob is moved by the game's own tab handler, which a PC page
+  bypasses.
+- Tab sets: the screen has 2- to 5-tab bars (`window_mc` labels `lb_tab_02..05`, chosen by `{TabNum}`; the game plays it
+  only in Init). Every game and PC tab state replays `lb_tab_0{TabNum}`, and for a short last set (Shadows & AO alone)
+  the hook overwrites `TabNum` in the descriptor's variable map with max(2, tabs in the set); a spare slot is blank.
+  The generator asserts at most 6 rows per tab (no scrolling), 10 items per pulldown, 112-character help.
+- "(env)" after a pulldown's value: the row's `SNAP_*` variable was set by hand before start, so it wins over the saved
+  value (`settings::env_wins`; the F1 menu shows the same warning).
+- Visual extras (owner 2026-11-13 and 2026-11-14: the original base game by default, every enhancement row defaults to
+  Original): Anti-aliasing (stores the F1 table's values, so the quality preset keeps its name: original look = Original
+  `default` / SMAA `smaa` / SMAA + supersampling `ssaa2,smaa`; under `SNAP_VISUALS=enhanced` Original is `off`, the
+  game's FXAA, and `default` is the supersampling entry), Sharpening (Off, 0.1 to 0.7, 0.85, 1.0), Texture filtering
+  (Original / 2x / 4x / 8x / 16x), Sharper menu text (Off = `off` / On = `auto`, 2x at 1440p and above) and Save PNG
+  copies. Their defaults (and so Restore Default Settings) are read from `runtime\hle\visual_defaults.h` when the pack is
+  built (the pack rebuilds when that file changes); they apply after a restart (the F1 table marks them `kRestart`).
+- Advanced rows (2026-11-14, `docs/advanced-graphics-options.md`; all default to the original look): Render scale adds
+  1.75x (10 steps, 0.5x to 4x), Texture sharpness -2 to +2 (10 steps), Frame rate limit adds 75, 165 and 240; Output: HDR
+  output Off / HDR10 (`1`, what the old on/off row stored) / scRGB (`scrgb`), HDR peak Auto (the key erased: the
+  monitor's reported peak, else 1000) or 400 to 4000 nits, HDR highlights (`gfx_hdr_expand` -> `SNAP_HDR_EXPAND`, 0 to 1,
+  default 0.3); tab Shadows & AO: Shadow distance (`gfx_shadow_dist` -> `SNAP_SHADOW_DISTANCE`, 1x to 16x, not in the
+  quality presets). Reserved, not drawn yet: AO radius and strength on Shadows & AO (`SNAP_SSAO_RADIUS` /
+  `SNAP_SSAO_STRENGTH` are parsed in `host/mods/gamemods.cpp` but never written to the pass), the lighting stream's rows
+  after them. Vsync (Output row 6 and F1 Graphics "Frame rate"): On / Adaptive / Fast / Off, live through
+  `snap_vsync_set`, remembered as settings key `vsync` (exported as `SNAP_VSYNC` at the next start; On erases it).
 - `rt_ui_opt_state` (the 8 SetState `blr`s) keeps a template element entry and points the game's Other page's Next at PC tab
   1 and the Game page's Prev at the last PC tab. Choices and popup picks are stored where the
   F1 overlay stores them (`snap::ui::options_test_set`: same keys, defaults, custom stores and presets; the controls mapping;
@@ -285,7 +341,8 @@ pulldowns with their popup), tab bar, help line, sounds and Restore Default Sett
   `SNAP_CONFIG_DIR` to a private folder in test runs too, or Controller/Mouse/Display changes write the user's
   `%APPDATA%` input/window/audio files.
 - Route `host\routes\native_options_tabs.txt` (`post_tutorial`): opens Settings, R to PC tab 1, then visits every PC tab with
-  one change each (pulldown picks with Down inside the popup, choices), Minus on Photos, B twice (the first leaves the Reset button) closes. Run it with
+  one change each (pulldown picks with Down or Up from the current value inside the popup, choices), Minus on Photos, B
+  (leaves the Reset button), R to Shadows & AO and a pick there, R (wraps to Game), L (back to Shadows & AO), B closes. Run it with
   `SNAP_MODS_DIR=build\w\<owner>_mods` (pack built with `--out` there) plus the three switches above.
 
 ## Visual defaults and SNAP_VISUALS (2026-11-13, `runtime/hle/visual_defaults.h`)
@@ -300,7 +357,7 @@ The settings whose defaults can differ from the original game live in one table.
 | UI font supersampling (`SNAP_UI_FONT_SCALE`) | `off` | `auto`: 2x at a 1440p+ window | `gamemods.cpp` (`decide_font_scale`) |
 | PNG photo export (`SNAP_PHOTO_EXPORT`) | 0 (off) | 1 (on) | `photoexport.cpp` |
 
-`SNAP_LOD_BIAS` is not a row: its automatic mode only follows a render scale above 1 and does nothing at 1x, so both profiles behave the same. The ssaa2 scale is 2x the window height over 1080, capped at 3.0 (5760 x 3240) and 8192 px per side, so a 2160p window renders at 3.0, not 4.0; the log line `aa: ssaa2 scale capped ...` shows it. An explicit `SNAP_RENDER_SCALE` is never capped. The window height used for this (and by the upscaler) is `SNAP_WINDOW_H`, then `window.json`, then 720. With no `mods.json`, no mod pack is enabled except `native-options` (the PC tabs in the game's Settings screen); `mods.json` can still disable it.
+`SNAP_LOD_BIAS` is not a row: its automatic mode only follows a render scale above 1 and does nothing at 1x, so both profiles behave the same. The ssaa2 scale is 2x the window height over 1080, capped at 3.0 (5760 x 3240) and 8192 px per side, so a 2160p window renders at 3.0, not 4.0; the log line `aa: ssaa2 scale capped ...` shows it. An explicit `SNAP_RENDER_SCALE` is never capped. The window height used for this (and by the upscaler) is `SNAP_WINDOW_H`, else the primary monitor height when the window is borderless or maximized (`SNAP_WINDOW_MODE` or `window.json`; read once at start, so a later F11 does not change it), else the `window.json` windowed height, else 720. With no `mods.json`, no mod pack is enabled except `native-options` (the PC tabs in the game's Settings screen); `mods.json` can still disable it.
 
 ## Graphics quality presets (F1 > Graphics > Quality preset)
 
@@ -327,6 +384,21 @@ Findings (2026-11-12, florio_eval / florio_photos, hidden 1280x720 window, RTX 4
 - Presents are paced to 60 Hz, so ms/frame below is mostly the limiter plus CPU load, not GPU cost: Normal 18.9 (`3-20261112_131027`), Very Low 17.7 (`0-20261112_141432`, florio_eval, photo scored, 2,375 points shown), Low 17.6 (`1-20261112_141432`), High 18.1 (`0-20261112_142450`), Ultra 18.4 (`1-20261112_142450`), Maximum 19.5 (`0-20261112_143210`, 7680x4320 scene), Maximum with a 3840x2160 window 19.7 (`0-20261112_144203`). Maximum does not lag a 4090 under this pacing; an exclusive `SNAP_PERF` bench is needed for real GPU cost.
 - AO samples and shadow size do not change the course picture (lighting worker: no SSAO in the course, shadows mostly baked).
 - Not done: the one-time preset suggestion from the GPU name; scoring on High, Ultra, Maximum (only Very Low and Low ran `florio_eval`; Normal at 1x/ssaa default scored in earlier runs); the F1 test `tests\hle\run_options_test.ps1` passes the new preset checks (25 checks, FOV expectations removed).
+
+## Fx: host screen-space effects (2026-11-14, `runtime/nvn/nvn_fx.{h,cpp}`, effects in their own files)
+
+All off by default; developer switches only (no options rows yet; rows wanted are in the Fx worker report in `AGENTS.md`).
+
+| Switch | Meaning |
+|---|---|
+| `SNAP_FX=0` | Forces every Fx effect off. Unset or 1: an effect runs only when its own switch is on. |
+| `SNAP_FX_AB=<P>` | Effects run only while (present count / P) is odd: same-view A/B in one run (dump frames N and N+1 at a block edge). |
+| `SNAP_FX_SPLIT=1` | The left half of the frame keeps the game's own picture, the right half gets the effects (one-frame A/B). |
+| `SNAP_FX_LOG=1` | Logs frame phases, camera, shadow caster capture, photo holds and effect runs (`fx:` lines on stderr). |
+| `SNAP_FX_TIME=1` | GPU time of the whole pre-tonemap Fx block (timestamps; avg/max logged every 300 blocks). |
+| `SNAP_CONTACT_SHADOWS=1` | Screen-space contact shadows (`nvn_contact.cpp`, `shaders/contact.frag`). Tuning (test aids): `SNAP_CONTACT_STRENGTH` (0.6), `SNAP_CONTACT_LEN` (0.6 world units), `SNAP_CONTACT_THICK` (0.25), `SNAP_CONTACT_FADE` (45 view units), `SNAP_CONTACT_LSIGN` (+1/-1 forces the light direction sign), `SNAP_CONTACT_DEBUG` (2 tints, 3 view distance, 4 normal, 5 sun facing, 6 depth, 7 the factor itself, 100 cycles). |
+
+Regenerate the host SPIR-V headers (`nvn_fx_spv.h`, `nvn_contact_spv.h`) after editing a shader: `tools\venv-recomp\Scripts\python -I runtime\nvn\shaders\make_fx_spv.py`.
 
 ## Layers and registration order (`bind_host_layers` in `boot.cpp`)
 
@@ -366,8 +438,26 @@ All on by default; each env var restores the old path.
 - `SNAP_UPLOAD_PREFETCH_MB=0`: static textures are deswizzled on the replay thread at first sample, as before. Default: `TextureInitialize` queues the deswizzle on 1 to 4 below-normal workers; the upload checks the guest bytes are unchanged (hash before and after the job and at upload) and copies the result; anything else takes the old path. At most 1536 MB staged (`SNAP_UPLOAD_PREFETCH_MB=<n>`, 0 to 8192, oldest dropped first; pass 6 raised it from 384, which dropped every texture the scene-change bursts then missed). Not for ASTC, linear, multisample or textures over 48 MB.
 - `SNAP_UPLOAD_PREFETCH_IMAGE=1` (pass 5, OFF by default): the prefetch worker also creates the VkImage and its memory after a successful deswizzle (`CreateTexImage`, `runtime\nvn\nvn_vk.cpp`). `EnsureImage` adopts them when the builder and host size are unchanged (`upload_pref_img` column); otherwise the worker's image is destroyed. Two A/B pairs: `ensureimg` per burst went from 41-49 ms to 15-29 ms, but hub-burst upload time doubled and scratch allocation slowed, so it stays off.
 - `SNAP_UPLOAD_PREFETCH_HELP=1` (pass 5, OFF by default): when the replay reaches a texture whose prefetch job has not started, the replay thread runs up to 8 queued jobs from the front of the queue, then its own, while the workers keep going. Default, as before: the job is cancelled and the texture is deswizzled on the replay thread. No measured gain; burst misses are rarely "not started" (`pref_miss_*` columns: `none` never queued or dropped, `fail` bytes changed during the job, `hash` bytes changed since, `late` not started; pass 6 adds `pref_miss_drop` evicted by the budget, and per `TexPrefetch` call `pref_skip_kind`, `pref_skip_nosrc`, `pref_skip_budget`).
+- `SNAP_TEXMEM_BLOCK_MB=0` / `SNAP_SCRATCH_BLOCK_MB=0` (pass 7): one `vkAllocateMemory` per texture image / per scratch buffer, as before. Default: allocations up to a quarter block come from shared 64 MB blocks (`runtime\nvn\nvn_submem.cpp`; first fit, coalescing free list; images need no dedicated allocation). `SNAP_SUBMEM_SPARE=<n>` (default 2, 0 to 8): a helper thread keeps n empty blocks of each pool ready, so a burst does not allocate blocks on the replay thread; 0 = allocate on demand. `SNAP_SUBMEM_RESERVE=<n>` (pass 9, default 8, 0 to 32): from the first image allocation at boot, the helper thread keeps the image pool at n blocks or more (empty target = max(spare, n - blocks in use)), so the first hub entry finds its blocks ready; 0 = spare blocks only.
+- `SNAP_POOL_BACK_AHEAD=0` (pass 7): a memory pool's Vulkan mirror (allocation plus whole-pool copy) is created at the first draw that binds it, as before. Default: `BufferInitialize` queues it on a prefetch worker (needs `SNAP_UPLOAD_PREFETCH_MB` > 0; pools over 256 MB stay lazy). New column `backing_ms`: mirror creation time on any thread.
+- `SNAP_UPLOAD_PREFETCH_STAGING=0` (pass 8): prefetch workers deswizzle into a heap buffer and the upload copies it into a new staging buffer on the replay thread, as before. Default: the worker writes straight into its own mapped staging buffer (a scratch-block range, `nvn_submem.cpp`), and the upload records the GPU copy from it with no CPU copy. Textures over 16 MB, or with `SNAP_SCRATCH_BLOCK_MB=0`, use the old path. Staged bytes still count against `SNAP_UPLOAD_PREFETCH_MB`, but they now sit in pinned host-visible memory.
 - `SNAP_DUMP_EVERY=<s>` (pass 5, debug, `host\boot.cpp`): guest thread dump (wait kind, wait key, guest call chain per thread) into the trace every s seconds. For hangs that keep presenting, which the 8 s silence watchdog never sees.
 - New `SNAP_PERF` columns: `ensureimg_ms`, `view_ms`, `rendbegin_ms` (replay sub-scopes), `upload_pref` (uploads served by the prefetch); `upload_bytes` is now filled; `poolsync_bytes` counts bytes actually copied.
+- `SNAP_NVN_CMD_RECYCLE=0` (CPU sampler pass, `analysis\perf\cpu_profile.md`): every recording grows a fresh `vector<Cmd>`, as before. Default: released lists' vectors are pooled and a new recording reserves the largest recording seen.
+- `SNAP_REPLAY_SCRATCH=0`: `PrepareTextures`, `WriteDescriptors`, `DoDraw` and `DoDispatch` allocate their per-draw vectors and deques, as before. Default: thread-local scratch vectors.
+- `SNAP_POOLSYNC_SNAPSHOT=1` (OFF by default): one whole-pool `GetWriteWatch` per replay epoch lets clean ranges skip the per-range syscall; the gain was too small to keep.
+- `SNAP_VIEW_LAST=0` (CPU round 2, 2026-11-14): `TextureImpl::View` builds the string key and probes the view map on every call, as before. Default: a repeat of the texture's last view returns its cached handle.
+- `SNAP_VA_CACHE=0`: `Host::ResolveAddress` takes `vaMutex` and walks the pool map on every call, as before. Default: a per-thread 4-entry cache, invalidated by `Host::vaGen` when a pool is registered or unregistered.
+- `SNAP_SAMPLE=1` or `=<path prefix>` (profiling, off by default; `runtime\os\sampler.cpp`): host sampling profiler. Knobs: `SNAP_SAMPLE_US` (period, default 1000), `SNAP_SAMPLE_WRITE_S` (rewrite interval, default 20), `SNAP_SAMPLE_MIN_KCYC` (idle gate, default 100). Read with `python -I analysis\perf\cpu_profile.py <prof> --map <that build's snap_boot.map>`.
+
+## Shiny Pokemon (2026-11-14, `runtime/nvn/nvn_shiny.cpp`, off by default, cosmetic only)
+
+Build the pack once from your own extracted textures: `python -E -P scripts\hd\make_shiny_pack.py` (output `%APPDATA%\SnapRecomp\mods\shiny-pokemon\`, outside git; palettes in `scripts\hd\shiny\palettes.json`).
+
+- `SNAP_SHINY=1`: enable (default 0). Menu row "Shiny Pokémon" (native Photos tab row 5, F1 Photos; 2026-11-14): Off (default, key `shiny` erased) / Rare 1/4096 / Common 1/512; `settings.cpp` turns the key into `SNAP_SHINY=1` + `SNAP_SHINY_ODDS=<n>` at start, so it applies after a restart (`nvn_shiny.cpp` reads the switches once). No forced/test choice in the menu.
+- `SNAP_SHINY_ODDS=<n>`: 1 in n per spawned instance (default 4096; 1 = every instance of a pack species).
+- `SNAP_SHINY_SEED=<n>`: fixed seed for repeatable rolls (default: random profile seed in the pack folder, a new roll each launch).
+- `SNAP_SHINY_FORCE=<hex key>`: that body texture is always shiny. `SNAP_SHINY_TRACE=<hex key|all>`: log draw state or all texture keys. `SNAP_SHINY_DIR=<dir>`: pack folder.
 
 ## Scheduler switches (nn::os review fixes, 2026-11-13; `analysis\core\review_os.md`, `runtime\os\os_kernel.cpp`)
 
@@ -379,6 +469,36 @@ All fixes are on by default. `SNAP_SCHED_LEGACY=1` (or `all`) restores every old
 - `deadline` (finding 10): the 2 ms overflow deadline is armed once per core wait. Default: it restarts when the holder asked to yield changes, and is cleared when nobody is.
 - `hostblock` (finding 9): file reads (`runtime\hle\fs_core.cpp` `Fs::read_file`) and VAMM retry sleeps keep the virtual core. Default: they release it like a Horizon IPC wait (`os_io_begin`/`os_io_end`).
 - `events` (finding 11): manual-clear TimerEvent/LightEvent waiters re-check only the flag, so Signal followed at once by Clear can leave them asleep. Default: a waiter woken by a signal returns signalled.
+- `evspin`: Event and SystemEvent `Wait`/`TimedWait`/`TryWait` calls that return without blocking are not check-ins. Default: they poll for preemption; a wait on a manual-clear Event that stays signalled, and a TryWait that fails or leaves a manual-clear Event signalled, count as a spin pass (`os_spin_gate`). The `LevelManager_LoadResource` loop at main+0x47d3e0 spins this way for minutes and used to hold its virtual core, so pinned threads ran only on 2 ms overflow grants.
 
 Diagnostics: `SNAP_OS_STARVE_MS` (50) and `SNAP_OS_STARVE_LOG=1`. A core wait longer than that while another core is free counts in `OsStats::core_starved` (shown in the watchdog dump line `dump: ... starved N, migrations M/R, yield_any Y`), and with the log switch prints `[os] starved: thread ... holders: ...`. It should stay near 0; a pinned waiter behind a better pinned holder also counts. Each core waiter in the dump now shows how long it has waited (`id/prio/mask/ms`).
-Not switchable (plain bug fixes): MultiWait signal fence, guest ticks read inside the pause lock, `InternalConditionVariable::TimedWait` far targets, thread start/destroy and join/destroy use-after-free, Link during WaitAny wakes the waiter, watchdog dump takes the scheduler lock (retries up to 500 ms), `SNAP_OS_CORES=0` means unlimited.
+Not switchable (plain bug fixes): MultiWait signal fence, guest ticks read inside the pause lock, `InternalConditionVariable::TimedWait` far targets, thread start/destroy and join/destroy use-after-free, Link during WaitAny wakes the waiter, watchdog dump takes the scheduler lock (retries up to 500 ms; if still held it prints only the counters and skips the thread walk), `SNAP_OS_CORES=0` means unlimited.
+
+## Load-time switches (load pass, 2026-11-13; `analysis\perf\results.md` "Load times")
+
+On by default unless noted; each env var restores the old path.
+
+- `SNAP_FNPROF_KEEP=1`: keep the per-function `FN_ENTER` hook on for the whole run, as before. Default: `run_initializers` (`host\loader.cpp`) turns it off after the init log unless a tracer (`SNAP_FNTRACE`, `SNAP_TRACE_LOD`, `SNAP_SKIPS_REC`, `SNAP_NEO_CAMFN`) had it on. It cost a hash lookup and three observer calls on every lifted function entry, about a fifth of the guest CPU samples in a boot profile.
+- `SNAP_PACE_RELEASE_CORE=0`: the presenting JobWorker keeps its virtual core while the frame limiter sleeps, as before. Default: `Pace` (`runtime\nvn\nvn_vk.cpp`) runs inside `os_host_block_begin/end`, like vsync on the Switch, so pinned loader threads (`ResourceUncompress` p31) run during the sleep. `SNAP_NVN_RELEASE_CORE=1` (pass 3, still opt-in) releases the core for the whole submit/present/wait; it added nothing measurable on top.
+- `SNAP_SHADER_FASTIO=0`: shader cache files (`.spv`, `.json`, `.efz`) read with `std::ifstream` byte iterators and one BCrypt provider open per hash, as before. Default: one sized Win32 read and one shared provider (`runtime\nvn\nvn_shader.cpp`). Boot creates about 6,200 programs.
+- `SNAP_OS_SPARE_CORES=<n>` (OFF by default): n extra virtual cores any thread may take whatever its mask; guests still see cores 0..2 (`GetCurrentCoreNumber`, core masks). One run: boot to title 20 s, but the lab hub then ran at about 9 fps with JobWorkers blocked on locks (the job system at `0x54c2ec` reads the core number, and two threads now "share" a core). Do not use for play.
+- Not switchable: `NVN_DRAW_SIG`, `NVN_RT_DUMP` and `NVN_TEX_DUMP` are read once instead of by `getenv` per draw (`runtime\nvn\nvn_draw.cpp`; `getenv` was 4% of the exe samples).
+- Tools: `SNAP_HLE_TRACE=open` logs only fs opens (load-phase markers: `title.drp` = title screen, `LC_101_A.drp` = lab, `LC_001_A.drp` = Florio). `SNAP_HOST_PROF=<file>` (`runtime\os\hostprof.cpp`, debug) samples the RIP of every thread that ran in the last 2 ms between `SNAP_HOST_PROF_FROM` and `_TO` seconds and writes `<exe offset> <count>` lines; map them with `snap_boot.map` (most samples land in ntdll waits; compare exe functions with each other).
+
+## Frame pacing and vsync (2026-11-13/14; `analysis\perf\pacing.md`, `runtime\nvn\nvn_pace.{h,cpp}`)
+
+- `SNAP_PACE=legacy`: the old frame limiter (steady 60 Hz schedule, 1.5 ms spin), the old free-running 16667 us guest vsync thread and the queue lock held across the acquire. Default: one frame clock for the limiter and the guest `nn::vi` vsync, locked to the monitor's vblanks when its refresh is a whole multiple of 60 (60, 59.94, 120 Hz), a steady-clock grid otherwise (144 Hz).
+- `SNAP_PACE_LOG=<file.csv>`: one row per present (release interval, guest work, limiter wait, present wait, acquire, `vkQueuePresentKHR`, vsync ticks and phase, mode). Test overrides: `SNAP_PACE_MONITOR=<n>` (follow `\\.\DISPLAY<n>`), `SNAP_PACE_REFRESH=<hz>` (a value below the real refresh is flagged within 3 vblanks and paced on the steady clock at the target rate), `SNAP_PACE_WAIT=0` (no `VK_KHR_present_wait` queue cap), `SNAP_PACE_VBLANK=0` (no vblank thread), `SNAP_VSYNC_HZ=<hz>` (legacy vsync loop period).
+- `SNAP_VSYNC=on|adaptive|fast|off` (default `on`): swapchain present mode only. `on` = FIFO (no tearing; today's behavior). `adaptive` = FIFO_RELAXED (tears only when a frame misses its vblank). `fast` = MAILBOX (no tearing, lowest latency; the GPU may render frames that are never shown). `off` = IMMEDIATE (tearing; when locked to the display the frame is released 0.5 ms after the vblank, so the tear line sits near the top). A mode the driver does not offer falls back (`off` to MAILBOX, then FIFO; the others to FIFO); the choice is logged once as `[vsync] SNAP_VSYNC=<v> -> present mode <M>`. Every mode keeps the frame limiter (60 fps or the frame cap) and the guest's 60 Hz vsync, so ride and game timing do not change; with a VRR (G-Sync/FreeSync) display use `on` or `adaptive`. Aliases: `relaxed`, `mailbox`, `immediate`/`0`. Live switch: `extern "C" void snap_vsync_set(const char* mode)` (same values) recreates the swapchain at the next present, no restart; `snap_vsync_get()` returns the active value. Menu: the Vsync row (native Output tab, F1 Graphics) calls it and stores settings key `vsync` (2026-11-14). A game asking for present interval 0 still gets IMMEDIATE/MAILBOX as before.
+
+## Ray tracing track (2026-11-14, rt worker; `runtime\nvn\nvn_rt.{h,cpp}`, `docs\lighting-rt-plan.md` section 4)
+
+Everything is off unless `SNAP_RT=1`: with it unset the device, shader modules, pipelines and buffers are what they were. The device needs `VK_KHR_acceleration_structure`, `VK_KHR_ray_query`, `VK_KHR_deferred_host_operations`, `VK_EXT_transform_feedback` and the Vulkan 1.2 `bufferDeviceAddress` feature; if any is missing the log says `[rt] off: ...` and the game runs as before. Memory pools the game creates are not touched (only the layer's own buffers carry device-address flags).
+
+- `SNAP_RT=1`: master switch. `SNAP_RT_CAPTURE=0`: device features only (M0), no vertex patch, no capture.
+- `SNAP_RT_DEBUG=1|2|3`: ray-query overlay after the tonemap draw. 1 = sanity colors (green: ray hit matches the scene depth, red: hit in front of the depth, blue: hit behind it, magenta: depth but no hit, orange: hit on a sky pixel), 2 = hit-distance heat map, 3 = statistics only. `SNAP_RT_FLIPY=0|1` overrides the clip-y to screen-y mapping (default follows the window origin mode).
+- `SNAP_RT_LOG=<n>`: stats every n presents (default 120 with `SNAP_RT_DEBUG`, off otherwise): triangles and draws captured, BLAS builds, live cache entries and memory, CPU record cost, GPU ms of convert+BLAS+TLAS (timestamps) and of the overlay, and the overlay's per-pixel class percentages.
+- `SNAP_RT_ARENA_MB` (384), `SNAP_RT_BLAS_MB` (512), `SNAP_RT_SCRATCH_MB` (256): capture arena, BLAS storage and build scratch. A draw that does not fit is skipped and counted.
+- `SNAP_RT_TTL=<frames>` (900): how long a draw seen in 3 or more frames stays in the TLAS after it last drew; draws seen fewer than 3 times drop after 2 frames.
+- `SNAP_RT_KEYCB=0|1` (1): the draw identity for the BLAS cache includes a hash of the per-object vertex constants (tells apart draws that share one mesh); 0 keys by mesh identity only.
+- Photo and Evaluation frames get no capture and no build (`FxIsPhotoFrame`, `FxWritable`); scene depth is only sampled, never written. Validation: `NVN_VK_VALIDATION=1`.

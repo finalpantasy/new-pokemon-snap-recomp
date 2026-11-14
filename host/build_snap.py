@@ -8,6 +8,7 @@ Compiles (BelowNormal, incremental by mtime, at most --jobs compiles at once): h
 links them with the lifted main and sdk libraries (build/eh/*/lib, from recomp/snap_build.py) using lld.
 """
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -43,7 +44,7 @@ def main():
     ap.add_argument('--name', default='snap_boot')
     # code-generation switches (host/README.md "PGO and ThinLTO"); pair them with the same flags on recomp/snap_build.py --cflags
     ap.add_argument('--pgo-gen', action='store_true', help='instrumented build (-fprofile-generate, host/pgo.cpp dump thread)')
-    ap.add_argument('--pgo-use', default='', help='optimize with this .profdata (-fprofile-use)')
+    ap.add_argument('--pgo-use', default='auto', help="optimize with this .profdata; 'auto' (default) = build/pgo/snap.profdata if it exists, 'off' = none")
     ap.add_argument('--lto', choices=('', 'thin'), default='', help='ThinLTO for the host objects and the final link')
     ap.add_argument('--cflags-extra', default='', help='extra flags for the host compile (e.g. -O3)')
     args = ap.parse_args()
@@ -91,23 +92,40 @@ def main():
     if args.pgo_gen:
         cg += ['-fprofile-generate']
         cflags += ['-DSNAP_PGO_GEN']
-    if args.pgo_use:
-        cg += ['-fprofile-use=' + str(Path(args.pgo_use).resolve())]
+    prof = None
+    if args.pgo_use == 'auto':
+        p = ROOT / 'build' / 'pgo' / 'snap.profdata'
+        prof = p if p.exists() and not args.pgo_gen else None
+    elif args.pgo_use != 'off':
+        prof = Path(args.pgo_use).resolve()
+    if prof:
+        cg += ['-fprofile-use=' + str(prof)]
+        print(f'PGO: {prof}')
     if args.lto:
         cg += ['-flto=thin']
     cflags += cg + args.cflags_extra.split()
     env = vc_env()
 
+    # header dependencies: every header under host/ and runtime/ (2026-11-14: the old per-directory glob missed cross-directory includes such as hle/visual_defaults.h from nvn/)
+    hdrs = [h for d in (ROOT / 'host', ROOT / 'runtime') for h in d.rglob('*.h')] + [h for h in (ROOT / 'generated' / 'boot').glob('*.h')]
+    hdr_mtime = max(h.stat().st_mtime for h in hdrs)
+    if prof:
+        hdr_mtime = max(hdr_mtime, prof.stat().st_mtime)   # a new profile recompiles the host side
+
     def compile_one(item):
         src, std = item
         o = obj / (src.parent.name + '_' + src.stem + '.obj')
-        deps = [src] + list((ROOT / 'host').glob('*.h')) + list((ROOT / 'runtime').glob('*.h')) + list((ROOT / 'runtime' / src.parent.name).glob('*.h'))
-        if src.parent.name == 'upscale':
-            deps += list(src.parent.glob('*.h')) + list(src.parent.parent.glob('*.h'))
-        if not args.rebuild and o.exists() and o.stat().st_mtime > max(d.stat().st_mtime for d in deps):
+        cmd = [str(LLVM / 'clang++.exe'), f'-std=c++{std}'] + cflags + ['-c', str(src), '-o', str(o)]
+        # flags stamp: any change of compiler flags or switches (PGO, LTO, --cflags-extra, defines) forces a rebuild of this object
+        stamp = o.with_suffix('.flags')
+        want = hashlib.sha1('|'.join(cmd).encode()).hexdigest()
+        if (not args.rebuild and o.exists() and stamp.exists() and stamp.read_text() == want
+                and o.stat().st_mtime > max(src.stat().st_mtime, hdr_mtime)):
             return o, 0, ''
-        r = subprocess.run([str(LLVM / 'clang++.exe'), f'-std=c++{std}'] + cflags + ['-c', str(src), '-o', str(o)], env=env,
-                           creationflags=BELOW_NORMAL, capture_output=True, text=True, timeout=1800)
+        stamp.unlink(missing_ok=True)
+        r = subprocess.run(cmd, env=env, creationflags=BELOW_NORMAL, capture_output=True, text=True, timeout=1800)
+        if r.returncode == 0:
+            stamp.write_text(want)
         return o, r.returncode, r.stderr
     objs, fail = [], 0
     with ThreadPoolExecutor(jobs) as ex:

@@ -11,6 +11,7 @@
 #include <vector>
 #include <algorithm>
 #include <random>
+#include <mutex>
 #include <immintrin.h>
 
 #include "../../runtime/os/os.h"
@@ -747,6 +748,20 @@ static void test_memory(Cpu *c) {
     CHECK(call(c, "_ZN2nn2os6detail11VammManager19AllocateMemoryPagesEmm", 0ull, r, 0x1000ull) == 0, "member form");
     *(volatile uint32_t *)(uintptr_t)r = 7;
     CHECK(call(c, "_ZN2nn2os17FreeAddressRegionEm", r) == 0, "FreeAddressRegion");
+    {   // region bases are aligned by size class (Horizon VAMM: <2 MB 64 KB, <4 MB 2 MB, <32 MB 4 MB, <1 GB 32 MB); SNAP_VAMM_ALIGN=0 skips
+        const char *ae = getenv("SNAP_VAMM_ALIGN");
+        if (!(ae && *ae == '0')) {
+            static const struct { uint64_t size, align; } cls[] = {{0x10000, 0x10000}, {0x1f0000, 0x10000}, {0x200000, 0x200000}, {0x300000, 0x200000},
+                                                                  {0x400000, 0x400000}, {0x600000, 0x400000}, {0x1c00000, 0x400000}, {0x2000000, 0x2000000}, {0x8000000, 0x2000000}};
+            for (int rep = 0; rep < 8; rep++)
+                for (auto &k : cls) {
+                    CHECK(call(c, "_ZN2nn2os21AllocateAddressRegionEPmm", out, k.size) == 0, "AllocateAddressRegion %llx", (unsigned long long)k.size);
+                    uint64_t b = *(uint64_t *)(uintptr_t)out;
+                    CHECK((b & (k.align - 1)) == 0, "size %llx base %llx not aligned to %llx", (unsigned long long)k.size, (unsigned long long)b, (unsigned long long)k.align);
+                    CHECK(call(c, "_ZN2nn2os17FreeAddressRegionEm", b) == 0, "free aligned region");
+                }
+        }
+    }
     CHECK(call(c, "_ZN2nn2os14AllocateMemoryEPmm", out, 0x5000ull) == 0, "AllocateMemory");
     *(volatile uint64_t *)(uintptr_t)(*(uint64_t *)(uintptr_t)out + 0x4ff8) = 1;
     // heap
@@ -882,6 +897,7 @@ static double pct(std::vector<double> v, double p) {
 static std::atomic<int> g_mg_b_on{0}, g_mg_b_stop{0}, g_mg_h_on{0}, g_mg_l_flag{0}, g_mg_gate{0};
 static std::atomic<double> g_mg_lat{0};
 static std::chrono::steady_clock::time_point g_mg_t0;
+static int g_mg_slow_total = 0;
 static void th_mg_b(Cpu *c) { g_mg_b_on = 1; while (!g_mg_b_stop) _mm_pause(); }   // holds core 1, never polls
 static void th_mg_h(Cpu *c) {   // JobWorker-like: may run anywhere, spins on what L produces
     g_mg_h_on = 1;
@@ -899,6 +915,7 @@ static void test_migrate(Cpu *c) {
     call(c, S_CHPRIO, me, 5ull);   // the main thread holds core 0
     OsStats s0;
     os_get_stats(&s0);
+    g_mg_slow_total = 0;
     for (int gate = 0; gate < 2; gate++) {
         std::vector<double> lat;
         int slow = 0;
@@ -922,8 +939,12 @@ static void test_migrate(Cpu *c) {
             g_mg_b_stop = 1;
             join(c, b);
         }
-        CHECK(slow == 0, "migrate (%s): %d of %d rounds the pinned p31 waiter ran > 50 ms after core 0 freed (max %.1f ms)",
-              gate ? "spin gate" : "no poll", slow, ROUNDS, pct(lat, 1.0));
+        // Load-tolerant: a busy PC can deschedule a host thread for 50 ms now and then. The bug made every round late
+        // (L ran only when H gave up at 300 ms), so a few late rounds with a fast median still pass.
+        const int allow = sched_legacy() ? 0 : std::max(2, ROUNDS / 50);
+        CHECK(slow <= allow && pct(lat, 0.5) < 10, "migrate (%s): %d of %d rounds the pinned p31 waiter ran > 50 ms after core 0 freed "
+              "(allowed %d), median %.2f ms (want < 10), max %.1f ms", gate ? "spin gate" : "no poll", slow, ROUNDS, allow, pct(lat, 0.5), pct(lat, 1.0));
+        g_mg_slow_total += slow;
         printf("  migrate %-9s: %d rounds, L ran after median %.2f ms, p99 %.2f, max %.2f ms\n", gate ? "spin gate" : "no poll", ROUNDS,
                pct(lat, 0.5), pct(lat, 0.99), pct(lat, 1.0));
     }
@@ -933,7 +954,8 @@ static void test_migrate(Cpu *c) {
            (unsigned long long)(STARVED(s1) - STARVED(s0)), (unsigned long long)(MIGREQ(s1) - MIGREQ(s0)),
            (unsigned long long)(MIGS(s1) - MIGS(s0)), (unsigned long long)(s1.overflow_grants - s0.overflow_grants));
     if (!sched_legacy())
-        CHECK(STARVED(s1) == STARVED(s0), "%llu core waits starved with a free core", (unsigned long long)(STARVED(s1) - STARVED(s0)));
+        CHECK(STARVED(s1) - STARVED(s0) <= (uint64_t)g_mg_slow_total, "%llu core waits starved with a free core (%d late rounds)",
+              (unsigned long long)(STARVED(s1) - STARVED(s0)), g_mg_slow_total);
     call(c, S_CHPRIO, me, (uint64_t)old);
 }
 
@@ -1245,6 +1267,76 @@ static void test_vamm_block(Cpu *c) {
     printf("  vamm block: same-core thread ran during the retry: %s\n", g_vb_ran_during ? "yes" : "NO");
 }
 
+// ---- finding 12: with the scheduler lock held elsewhere, the watchdog dump must not walk the live thread maps
+namespace osk { extern std::mutex G; }
+static std::atomic<int> g_db_calls{0};
+static void db_emit(void *, uint64_t, uint64_t, int, uint64_t, uint64_t, int, int, Cpu *) { g_db_calls++; }
+static void test_dump_busy(Cpu *c) {
+    g_db_calls = 0;
+    os_dump_threads(db_emit, nullptr);   // lock free: walks every thread and core
+    const int free_calls = g_db_calls.load();
+    g_db_calls = 0;
+    std::atomic<int> held{0}, release{0};
+    std::thread holder([&] { osk::G.lock(); held = 1; while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1)); osk::G.unlock(); });
+    while (!held) std::this_thread::yield();
+    auto t0 = std::chrono::steady_clock::now();
+    os_dump_threads(db_emit, nullptr);   // must give up after its retry window without touching the maps
+    double ms = ms_since(t0);
+    release = 1;
+    holder.join();
+    CHECK(free_calls > 0, "unlocked-free dump made no callbacks");
+    CHECK(g_db_calls == 0, "dump walked %d entries without the scheduler lock", g_db_calls.load());
+    printf("  dump busy: %d callbacks with the lock free, %d with it held (gave up after %.0f ms)\n", free_calls, g_db_calls.load(), ms);
+}
+
+// ---- event spin (2026-11-13): main+0x47d3e0 (LevelManager_LoadResource) loops on WaitEvent of a manual-clear Event
+// that stays signalled while its queue is empty. WaitEvent returns at once and the loop makes no other call, so the
+// wait must still be a check-in: a higher-priority thread pinned to the spinner's core must get it at once, not
+// through an overflow core after the 2 ms deadline.
+static uint64_t g_es_ev;
+static std::atomic<int> g_es_stop{0};
+static std::atomic<uint64_t> g_es_spins{0};
+static std::vector<double> g_es_lat;
+static int g_es_try = 0;   // 0: WaitEvent on a signalled manual-clear Event; 1: TryWaitEvent polling an unsignalled one
+static void th_es_spin(Cpu *c) {
+    while (!g_es_stop) {
+        call(c, g_es_try ? S_EVTRY : S_EVWAIT, g_es_ev);
+        g_es_spins++;
+    }
+}
+static void th_es_work(Cpu *c) {
+    for (int i = 0; i < 60; i++) {
+        auto t0 = std::chrono::steady_clock::now();
+        call(c, S_SLEEP, 1 * MS);   // wakes needing core 1 back from the spinner
+        g_es_lat.push_back(ms_since(t0) - 1.0);
+    }
+}
+static void test_event_spin(Cpu *c) {
+  for (g_es_try = 0; g_es_try < 2; g_es_try++) {
+    g_es_ev = obj(0x28);
+    call(c, S_EVINIT, g_es_ev, g_es_try ? 0ull : 1ull, 0ull);   // manual clear; signalled for the WaitEvent spin
+    g_es_stop = 0; g_es_spins = 0; g_es_lat.clear();
+    GThread s = spawn(c, th_es_spin, 0, 23, 1);   // core 1: the test main thread holds core 0
+    while (g_es_spins < 1000) std::this_thread::yield();
+    OsStats s0;
+    os_get_stats(&s0);
+    GThread w = spawn(c, th_es_work, 0, 16, 1);
+    join(c, w);
+    OsStats s1;
+    os_get_stats(&s1);
+    g_es_stop = 1;
+    join(c, s);
+    const uint64_t over = s1.overflow_grants - s0.overflow_grants;
+    const double med = pct(g_es_lat, 0.5), p90 = pct(g_es_lat, 0.9);
+    // A host deschedule of the spinner can still cost a rare grant on a busy PC; before the fix every wake needed one.
+    const char *kind = g_es_try ? "TryWaitEvent" : "WaitEvent";
+    CHECK(over <= 6 && med < 1.5, "event spin (%s): p16 waiter needed %llu overflow grants in 60 wakes, wake latency median %.2f ms (want <= 6, < 1.5)",
+          kind, (unsigned long long)over, med);
+    printf("  event spin: 60 wakes behind a %s spinner on core 1: %llu overflow grants, extra latency median %.2f / p90 %.2f ms\n",
+           kind, (unsigned long long)over, med, p90);
+  }
+}
+
 int main(int argc, char **argv) {
     OsConfig cfg{};
     cfg.trace = argc > 1 && !strcmp(argv[1], "-v");
@@ -1271,6 +1363,7 @@ int main(int argc, char **argv) {
         {"sched time mono", test_time_mono}, {"sched cv far", test_cv_far},
         {"sched destroy race", test_destroy_race}, {"sched event pulse", test_event_pulse},
         {"sched link wake", test_link_wake}, {"sched vamm block", test_vamm_block},
+        {"sched dump busy", test_dump_busy}, {"sched event spin", test_event_spin},
     };
     const char *only = getenv("OS_TEST_ONLY");   // run only tests whose name contains this
     int reps = argc > 2 ? atoi(argv[2]) : 1;

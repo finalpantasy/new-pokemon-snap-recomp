@@ -12,9 +12,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <set>
 
 #include "nvn_internal.h"
 #include "nvn_state.h"
+#include "nvn_shiny.h"   // shiny mod
 
 namespace nvn {
 extern bool g_customBorder;   // nvn_vk.cpp: VK_EXT_custom_border_color enabled
@@ -180,16 +182,19 @@ Boolean BufferInitialize(void* buf, const void* builder) {
   if (!p) { LogError("BufferInitialize: builder has no memory pool (pool=%p hdr magic=%llx impl=%p off=0x%llx size=0x%llx)", b->pool, b->pool ? (unsigned long long)static_cast<const ObjHdr*>(b->pool)->magic : 0ull, b->pool ? static_cast<const ObjHdr*>(b->pool)->impl : nullptr, (unsigned long long)b->offset, (unsigned long long)b->size); return 0; }
   auto* i = new BufferImpl();
   i->pool = p; i->offset = b->offset; i->size = b->size;
+  PoolBackAhead(p);   // [perf pass 7] mirror created on a prefetch worker, not at the first draw (SNAP_POOL_BACK_AHEAD=0 = old path)
   if (PoolAcctOn()) { i->acctVa = p->va; PoolAcct(p, p->va, (int64_t)i->size); }
   if (ArenaAcctOn()) { i->arenaSlot = ArenaAcct(p, i->offset, (int64_t)i->size, 0); i->arenaBorn = (int)g_presentCount; }
   ArenaPoolCheck();
   Bind(buf, MAGIC_BUFFER, i);
+  if (ShinyActive()) ShinyBufferInit(p->va + (uint64_t)b->offset, (uint64_t)b->size);   // shiny mod: buffer creation record
   return 1;
 }
 void BufferFinalize(void* buf) {
   auto* i = Impl<BufferImpl>(buf, MAGIC_BUFFER);
   if (i && i->acctVa) PoolAcct(i->pool, i->acctVa, -(int64_t)i->size);
   if (i && i->arenaSlot >= 0) ArenaUnacct(i->arenaSlot, (int64_t)i->size, i->arenaBorn);
+  if (i && ShinyActive()) ShinyBufferFinalize(i->pool->va + (uint64_t)i->offset, (uint64_t)i->size);   // shiny mod: end of an instance's buffer
   if (i && i->ownPool) OwnPoolRetire(i->pool);   // private storage from the null-pool fallback above: freed once the GPU is past it
   delete i;
   Unbind(buf);
@@ -290,6 +295,11 @@ Boolean SamplerInitialize(void* samp, const void* builder) {
   if (aniso > 1.f && h->props.limits.maxSamplerAnisotropy > 1.f) {
     VkPhysicalDeviceFeatures f; vkGetPhysicalDeviceFeatures(h->phys, &f);
     if (f.samplerAnisotropy) { ci.anisotropyEnable = VK_TRUE; ci.maxAnisotropy = std::min(aniso, h->props.limits.maxSamplerAnisotropy); }
+  }
+  if (b->compareMode != 0 && getenv("NVN_P1_LOG")) {   // P1 probe: filters of the compare (shadow) samplers, each distinct combination once
+    static std::set<int> seen;
+    const int key = (b->minFilter << 16) | (b->magFilter << 8) | b->compareFunc | (b->wrap[0] << 24);
+    if (seen.insert(key).second) fprintf(stderr, "[p1] compare sampler: minFilter %d magFilter %d compareFunc %d wrap %d,%d,%d border %g\n", b->minFilter, b->magFilter, (int)b->compareFunc, (int)b->wrap[0], (int)b->wrap[1], (int)b->wrap[2], b->border[0]);
   }
   if (b->compareMode != 0) { ci.compareEnable = VK_TRUE; ci.compareOp = (VkCompareOp)std::clamp(b->compareFunc - 1, 0, 7); }
   ci.minLod = mips ? std::max(b->lodMin, 0.f) : 0.f;
@@ -643,36 +653,14 @@ void PoolAcctDump(const char* why) {
 }
 
 // ---- Fallback pools (BufferInitialize with no memory pool): deferred destruction -------------------------------------------------
-// A finalized fallback buffer may still be read by command lists already submitted. Its pool is destroyed only after the queue's
-// timeline passes the last value submitted when the next present saw it (stamp), as the queue does for its own retired objects.
-namespace {
-struct OwnPoolGrave { PoolImpl* p; uint64_t value; };   // value 0 = not stamped yet
-std::mutex g_graveMu;
-std::vector<OwnPoolGrave> g_grave;
-}  // namespace
+// A finalized fallback buffer may still be read by command lists already submitted. [audit F4, 2026-11-13] Its pool goes through the
+// shared graveyard (nvn_life.cpp GraveReap): destroyed only after EVERY queue passes what it had submitted when the next present stamped
+// it. The old private list compared one queue's stamp against whichever queue presented, and each queue has its own timeline.
 void OwnPoolRetire(PoolImpl* p) {
   if (!p) return;
-  std::lock_guard<std::mutex> lk(g_graveMu);
-  g_grave.push_back({p, 0});
+  RetireFn([p] { void* mem = p->storage; DestroyPool(p); _aligned_free(mem); });
 }
-void OwnPoolReap(QueueImpl* q) {
-  if (!q || !q->host) return;
-  std::vector<PoolImpl*> dead;
-  {
-    std::lock_guard<std::mutex> lk(g_graveMu);
-    if (g_grave.empty()) return;
-    uint64_t done = 0;
-    vkGetSemaphoreCounterValue(q->host->device, q->timeline, &done);
-    size_t keep = 0;
-    for (auto& g : g_grave) {
-      if (!g.value) { g.value = q->value ? q->value : 1; g_grave[keep++] = g; }
-      else if (g.value <= done) dead.push_back(g.p);
-      else g_grave[keep++] = g;
-    }
-    g_grave.resize(keep);
-  }
-  for (PoolImpl* p : dead) { void* mem = p->storage; DestroyPool(p); _aligned_free(mem); }
-}
+void OwnPoolReap(QueueImpl*) {}   // kept for the present path; GraveReap does the work
 
 // ---- SNAP_ARENA_LOG: the game's GPU arenas (B1 follow-up: what fills arena 7?) --------------------------------------------------
 // Arena object at [main+0x12febc0]; per type t the TLSF-style heap sits at +t*0x838+0x21d0 with base +0x21e0, size +0x21e8 and free

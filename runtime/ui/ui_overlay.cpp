@@ -381,7 +381,7 @@ static void ui_present_impl(const SnapUiFrame* f) {
     if (!hubr.message().empty()) g.toast_until = now + 12.0;
   }
   const bool toast = !open && now < g.toast_until;
-  if (!open && !shader && !toast) return;
+  if (!open && !shader && !toast && !shiny_fx_active()) return;
   if (!init_imgui(f)) return;
   if (open || shader) hubr.poll(8);   // keeps rebinding and the live readout fresh even when the game is not polling
 
@@ -406,6 +406,7 @@ static void ui_present_impl(const SnapUiFrame* f) {
     } else if (!draw_toast(size, now)) {
       g.toast_until = 0;
     }
+    if (!open && !shader) draw_shiny_fx(size);   // shiny capture effect (ui_shiny.cpp)
     ImGui::Render();
     dd = ImGui::GetDrawData();
   }

@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -126,8 +127,14 @@ struct Cmd {
   void* p[2] = {};            // ProgramImpl*, pool impls
   std::vector<uint8_t> blob;  // arrays (vertex attribs, streams, copy region + view)
 };
-// id = the CommandHandle given to the guest (nvn_life.cpp); refs/submitted are guarded by the list table's mutex.
-struct CmdList { std::vector<Cmd> cmds; uint64_t id = 0; int refs = 1; bool submitted = false; };
+// id = the CommandHandle given to the guest (nvn_life.cpp); refs/submitted/owned are guarded by the list table's mutex.
+// [audit F5, 2026-11-13] refs = the recording's own reference (owned, held until the control memory it was recorded in is added again)
+// + one per submission in flight. The handle can be submitted any number of times while owned.
+struct CmdList {
+  std::vector<Cmd> cmds; uint64_t id = 0; int refs = 1; bool submitted = false; bool owned = true;
+  const void* recorder = nullptr;   // the CommandBufferImpl that recorded it
+  uintptr_t ctl = 0;                // guest control memory address it was recorded at (0 = the recorder had none)
+};
 
 struct CommandBufferImpl {
   Host* host = nullptr;
@@ -138,6 +145,9 @@ struct CommandBufferImpl {
   size_t cmdsHigh = 0;   // [cpuprof] largest recording of this buffer: EndRecording reserves this much in the next vector
   // memory handed to us by the guest (kept for diagnostics; NVN command words are never written)
   uint64_t commandBytes = 0, controlBytes = 0;
+  // [audit F5] the last control memory block added: each recording is placed at ctlBase + ctlUsed (NVN's handle lives there), and
+  // adding that memory again retires the recordings made in it (ListRetireCtl)
+  uintptr_t ctlBase = 0; size_t ctlSize = 0, ctlUsed = 0;
 };
 
 struct PoolImpl {
@@ -172,7 +182,11 @@ struct PoolImpl {
   bool Cpu() const { return !(flags & MP_CPU_NO_ACCESS); }
 };
 bool EnsureBacking(PoolImpl* p);
-bool PoolAcctOn();                                   // SNAP_POOL_LOG=1 (nvn_gfx.cpp)
+// [audit F6, 2026-11-13] EnsureBacking publishes p->buffer last with a release store (after the memory bind and p->mapped). Every
+// reader takes it with an acquire load (a plain mov on x86, so no per-draw cost) before it uses buffer, mapped or memory.
+inline VkBuffer PoolBuffer(const PoolImpl* p) { return __atomic_load_n(&p->buffer, __ATOMIC_ACQUIRE); }
+inline bool PoolBacked(PoolImpl* p) { return PoolBuffer(p) != VK_NULL_HANDLE || EnsureBacking(p); }
+bool PoolAcctOn();                                  // SNAP_POOL_LOG=1 (nvn_gfx.cpp)
 void PoolAcct(PoolImpl* p, uint64_t va, int64_t bytes);   // +bytes when a buffer/texture is placed in p (va = p->va), -bytes at finalize; ignored if p is gone
 void PoolAcctDump(const char* why);                  // every pool of 1 MiB or more: size, live, peak, count
 // SNAP_ARENA_LOG=1 (nvn_gfx.cpp): the game's GPU arenas (allocator main+0x911fc0): which arena a buffer/texture sits in, per guest
@@ -245,10 +259,12 @@ struct TextureImpl {
   float scale = 1.0f;
   uint32_t HW() const { return hostW ? hostW : (uint32_t)b.width; }
   uint32_t HH() const { return hostH ? hostH : (uint32_t)b.height; }
+  TextureImpl* shAlt = nullptr; uint64_t shKey = 0; bool shTried = false;   // shiny mod (nvn_shiny.cpp): data key of a body texture and its recolored twin
   TextureImpl* abAlt = nullptr; bool abTried = false;   // SNAP_MODS_AB test aid: the original-texture twin of a replaced texture (see ResolveHandle)
   bool uploaded = false;   // contents defined (static data uploaded, copied to, or rendered to)
   uint64_t srcHash = 0, hashSeq = 0;   // CPU-written (linear) pool textures: hash of the guest bytes at the last upload, replay that checked it
   std::unordered_map<std::string, VkImageView> views;   // see TextureImpl::View
+  char viewLastKey[15] = {}; VkImageView viewLast = VK_NULL_HANDLE;   // [cpuprof2] View's last hit (views are never erased while the texture lives)
   std::unordered_map<VkImageView, VkImageViewType> viewTypes;   // the type each cached view was created with (tests, diagnostics)
   VkImageViewType ViewTypeOf(VkImageView v) const { auto it = viewTypes.find(v); return it == viewTypes.end() ? VK_IMAGE_VIEW_TYPE_MAX_ENUM : it->second; }
   // Per-subresource layouts. `layout` is the layout of every subresource while subLayout is empty; after a ranged transition
@@ -285,6 +301,8 @@ struct StageProg {
   char fkey[72] = {};                  // the full translation cache key (nvn_pipeline.cpp reloads the stage from the cache by it)
   int stage = 0;                       // NVN stage: 0 VS 1 FS 2 GS 3 TCS 4 TES 5 CS
   VkShaderModule mod = VK_NULL_HANDLE;
+  VkShaderModule modAlt = VK_NULL_HANDLE;         // SNAP_XLATE_AB test aid: the same fragment program from the other translator revision (nvn_shader.cpp)
+  std::vector<uint32_t> spvAlt;                   // ... and its words (alpha-test / output patching)
   std::vector<MCb> cb;
   std::vector<MSb> sb;
   std::vector<MTex> tex, img;
@@ -298,6 +316,14 @@ struct StageProg {
   VkDeviceMemory constMem = VK_NULL_HANDLE;
   uint64_t constSize = 0;
 };
+// [audit F3, 2026-11-13] Copies every field except fragMods (left empty). fragMods is a cache that pipeline builds on worker threads
+// insert into under their own lock, so a whole-object copy of a shared stage ("a = b") can read the map while it changes. A copied
+// stage builds its own variants on demand. A field added to StageProg must be added here.
+inline void CopyStageMeta(StageProg& d, const StageProg& s) {
+  d.valid = s.valid; memcpy(d.key, s.key, sizeof d.key); memcpy(d.fkey, s.fkey, sizeof d.fkey); d.stage = s.stage; d.mod = s.mod; d.modAlt = s.modAlt; d.spvAlt = s.spvAlt;
+  d.cb = s.cb; d.sb = s.sb; d.tex = s.tex; d.img = s.img; d.fragOutputMap = s.fragOutputMap; d.spv = s.spv; d.fragMods.clear();
+  d.inputMask = s.inputMask; d.outLocs = s.outLocs; d.constBuf = s.constBuf; d.constMem = s.constMem; d.constSize = s.constSize;
+}
 struct ShaderData { uint64_t data; const void* control; };   // [TOTK-NVN] NVNshaderData: {address, control*}
 struct ProgramImpl {
   Host* host = nullptr;
@@ -309,13 +335,19 @@ struct ProgramImpl {
   VkPipelineLayout layout = VK_NULL_HANDLE;
 };
 bool PatchAlphaTest(const std::vector<uint32_t>& in, int func, std::vector<uint32_t>& out);   // nvn_alpha.cpp
+bool GtaoPatchFragment(std::vector<uint32_t>& words, const char* key);   // nvn_gtao.cpp (P8, SNAP_SSAO_GTAO): the HBAO fragment program becomes GTAO
+bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, float bias, std::vector<uint32_t>& out);   // nvn_shadowpcf.cpp (P5, SNAP_SHADOW_FILTER)
+bool ShadowFilterApplies(const StageProg& fs);   // nvn_shadowpcf.cpp: the fragment stage has a patchable depth-compare tap (cached per stage key)
+float ShadowFilterBias();   // nvn_shadowpcf.cpp: SNAP_SHADOW_BIAS (n * 1e-4 of reference depth)
+int ShadowFilterTaps();      // nvn_shadowpcf.cpp: SNAP_SHADOW_FILTER 0 (off) / 8 / 16
+float ShadowFilterRadius();  // nvn_shadowpcf.cpp: SNAP_SHADOW_SOFTNESS kernel radius in UV units
 bool SpvSetLocalSize(std::vector<uint32_t>& spv, uint32_t x, uint32_t y, uint32_t z);   // compute workgroup size from the NVN control section
 bool SpvAddEarlyFragmentTests(std::vector<uint32_t>& spv);              // nvn_alpha.cpp: layout(early_fragment_tests) from control+0x718 bit 0
 bool SpvAddStorageImageCaps(std::vector<uint32_t>& spv);                  // nvn_alpha.cpp: SPIR-V fixes for the translated modules
 uint32_t SpvVertexInputMask(const std::vector<uint32_t>& in);
 std::vector<int> SpvFragmentOutputs(const std::vector<uint32_t>& in);
 bool PatchFragmentOutputs(const std::vector<uint32_t>& in, int nColor, bool dual, std::vector<uint32_t>& out);
-bool PatchIntOutputs(const std::vector<uint32_t>& in, const int kinds[8], std::vector<uint32_t>& out);   // [vkval] float output into an integer attachment: bitcast
+bool PatchIntOutputs(const std::vector<uint32_t>& in, const int kinds[8], std::vector<uint32_t>& out, int* skipped = nullptr);   // [vkval] float output into an integer attachment: bitcast
 bool ProgramSetShadersImpl(ProgramImpl* p, int n, const ShaderData* sd);
 bool ProgramBuildLayout(ProgramImpl* p);
 // BindProgram(prog, stagesMask) is per stage (the game binds a vertex-only and a fragment-only program). Returns the program whose stages
@@ -433,6 +465,7 @@ struct Host {
   // poolVa + offset, and replay maps an address back to (pool, offset) with ResolveAddress.
   std::mutex vaMutex;
   std::map<uint64_t, PoolImpl*> vaMap;
+  std::atomic<uint64_t> vaGen{1};   // [cpuprof2] bumped on every vaMap change; ResolveAddress's per-thread cache trusts entries of this generation
   uint64_t nextVa = 0x100000000ull;
   void RegisterPool(PoolImpl* p);
   void UnregisterPool(PoolImpl* p);
@@ -527,6 +560,14 @@ bool CreateTexImage(Host* host, const TextureBuilder& b, const FormatInfo* fi, u
 bool TexPrefetchTakeImage(TextureImpl* t);   // nvn_tex_vk.cpp: EnsureImage adopts a prefetch worker's image (SNAP_UPLOAD_PREFETCH_IMAGE=1 = on)
 void TexPrefetchShutdown();                  // Host::Shutdown: drop staged jobs (and their images) before the device goes
 void ScratchPoolDrain(Host* h);              // Host::Shutdown: destroy the recycled scratch buffers (nvn_vk.cpp)
+// [perf pass 7] block sub-allocator (nvn_submem.cpp): images and scratch buffers share VkDeviceMemory blocks.
+enum { SUBMEM_IMAGE = 0, SUBMEM_SCRATCH = 1 };
+uint64_t SubMemBlockBytes(int kind);         // 0 = off (SNAP_TEXMEM_BLOCK_MB / SNAP_SCRATCH_BLOCK_MB)
+bool SubMemAlloc(Host* h, int kind, uint64_t handle, const VkMemoryRequirements& mr, uint32_t type, VkDeviceMemory* mem,
+                 uint64_t* off, uint8_t** map);   // false: caller allocates its own memory
+bool SubMemFree(Host* h, int kind, uint64_t handle);   // false: the handle was not sub-allocated (caller frees its memory)
+void SubMemDrain(Host* h);                   // Host::Shutdown, last
+void PoolBackAhead(PoolImpl* p);             // [perf pass 7] nvn_tex_vk.cpp: EnsureBacking on a prefetch worker (BufferInitialize)
 // NVN window-origin -> Vulkan viewport. NVN follows OpenGL clip control: NDC +y is up in both origin modes and window row
 // 0 is memory row 0 (the viewport and scissor y are rows from the window origin). Vulkan's NDC +y points down, so
 // UPPER_LEFT needs a negative-height viewport: NDC +1 lands on the first row of the viewport rectangle, which is the
@@ -542,7 +583,11 @@ void DebugDumpTexture(const TextureImpl* t, const char* tag, const void* data, u
 bool DebugDrawLogActive();
 void DebugDrawLog(const char* fmt, ...);
 extern int g_presentCount;
-extern uint64_t g_replaySeq;           // incremented once per replayed command list
+// SNAP_XLATE_AB=1 (test aid, off = no cost): fragment pipelines alternate every present between the translation of SNAP_XLATE_REV and the one of
+// SNAP_XLATE_AB_REV (cache dir SNAP_XLATE_AB_DIR). On a frozen scene (pause menu) two consecutive presents render the same frame with the two
+// translations; dump both and diff. Returns 0 (normal module) or 1 (alternate module).
+inline int XlateAbVariant() { static const bool on = getenv("SNAP_XLATE_AB") != nullptr; return on ? (g_presentCount & 1) : 0; }
+extern uint64_t g_replaySeq;          // incremented once per replayed command list
 void RefreshDynamicTexture(ReplayCtx& cx, TextureImpl* t);   // re-uploads a CPU-written pool texture whose guest bytes changed
 // nvn_xfer.cpp: replay of the GPU->guest transfer commands and the readback queue
 void DoCopyTextureToBuffer(ReplayCtx& cx, const struct Cmd& c);
@@ -568,11 +613,14 @@ bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer
 extern int g_fdBurst;   // NVN_FRAME_DUMP burst counter (set by the photo-thumbnail debug log)
 
 // ---- object lifetime against the GPU timeline (nvn_life.cpp; analysis/core/review_nvn.md 1-4, 10) -------------------------------
-CommandHandle ListRegister(CmdList* l);                                   // EndRecording: the handle is a table id
+CommandHandle ListRegister(CmdList* l, const void* recorder = nullptr, uintptr_t ctl = 0);   // EndRecording: the handle is a table id
 void ListAcquire(int n, const CommandHandle* handles, CmdList** out);     // QueueSubmitCommands: a reference per handle; unknown -> nullptr
-void ListRelease(CmdList* l);                                             // QueueImpl::Reap
+void ListRelease(CmdList* l);                                             // QueueImpl::Reap: the submission's reference
+void ListRetireCtl(const void* recorder, uintptr_t lo, uintptr_t hi);     // AddControlMemory [lo,hi): its recordings' handles end
+void ListRecorderGone(const void* recorder, uintptr_t ctlLo = 0, uintptr_t ctlHi = 0);                              // CommandBufferFinalize: recordings made without control memory end
+void QueueLive(QueueImpl* q, bool live);   // InitQueue / DestroyQueue (after it finished): the queues GraveReap stamps and waits for
 enum GraveKind : uint8_t { GK_TEXTURE, GK_SAMPLER, GK_POOL, GK_TEXPOOL, GK_SAMPPOOL, GK_PROGRAM, GK_FN };
-void Retire(GraveKind k, void* obj);   // destroyed once the queue timeline passes every submit made before this call
+void Retire(GraveKind k, void* obj);   // destroyed once every queue's timeline passes every submit made before this call
 void RetireFn(std::function<void()> fn);   // the same for host-owned Vulkan objects (runs fn then)
 void GraveReap(QueueImpl* q);          // at present, under queueMutex
 void GraveDrain(Host* h);              // Host::Shutdown after vkDeviceWaitIdle
@@ -583,6 +631,7 @@ void PersistScrub(QueueImpl* q, const std::unordered_set<const void*>& dead);   
 enum LifeStat {
   LS_RESUBMIT, LS_STALE_HANDLE, LS_LISTS_MADE, LS_RETIRED, LS_DESTROYED, LS_SLOTS_CLEARED, LS_PERSIST_SCRUB, LS_RB_WAIT_POOL_GONE,
   LS_PIPE_SKIP, LS_BC_RECREATE, LS_AA_RESIZE, LS_CUBE_COPY, LS_FLUSH_GPU_OVERLAP, LS_CLEAR_SCISSORED, LS_X_ALPHA_VIEWS, LS_BACKING_RACE,
+  LS_LIST_CTL_RETIRE, LS_LIST_NO_CTL,
   LS_COUNT
 };
 extern std::atomic<uint64_t> g_lifeStat[LS_COUNT];

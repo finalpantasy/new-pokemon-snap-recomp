@@ -87,8 +87,22 @@ static void skip_wait(uint64_t x0) {
 // Inline hook (recomp/snap_gen.py MAIN_INLINE_HOOKS, before the first instruction of main+0x676630): x0 = the dialogue window object.
 namespace hle::input { void route_dialog(); }   // runtime/hle/input_core.cpp (route "wait dialog")
 
+// Read on the first hook call, not at install: settings.cfg is exported into the environment after the mods install (2026-11-14: the saved setting was ignored).
+static void skip_cfg_once() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        const char* sc = getenv("SNAP_SKIP_CUTSCENES");
+        if (sc && *sc && *sc != '0') {
+            g_skip_log = getenv("SNAP_SKIPS_LOG") && *getenv("SNAP_SKIPS_LOG") != '0';
+            if (const char* d = getenv("SNAP_SKIP_DELAY")) { int v = atoi(d); if (v >= 2 && v <= 600) g_skip_delay = v; }
+            g_skip_dlg = true;   // needs no function profile: the inline hook rt_gm_skip_wait does the watching
+        }
+    });
+}
+
 extern "C" void rt_gm_skip_wait(Cpu* c) {
     hle::input::route_dialog();
+    skip_cfg_once();
     if (g_skip_dlg) skip_wait(c->x[0]);
 }
 
@@ -115,13 +129,7 @@ extern "C" void snap_skips_observe(uint64_t a, uint64_t lr, uint64_t x0) {
 
 namespace loader {
 void snap_skips_install() {
-    const char* sc = getenv("SNAP_SKIP_CUTSCENES");
-    if (sc && *sc && *sc != '0') {
-        g_skip_dlg = true;   // needs no function profile: the inline hook rt_gm_skip_wait does the watching
-        g_skip_log = getenv("SNAP_SKIPS_LOG") && *getenv("SNAP_SKIPS_LOG") != '0';
-        if (const char* d = getenv("SNAP_SKIP_DELAY")) { int v = atoi(d); if (v >= 2 && v <= 600) g_skip_delay = v; }
-    }
-    const char* e = getenv("SNAP_SKIPS_REC");
+    const char* e = getenv("SNAP_SKIPS_REC");   // SNAP_SKIP_CUTSCENES is read lazily (skip_cfg_once)
     if (e && *e) {
         char out[260] = "analysis/mods/skips_rec.tsv";
         unsigned long long from = 0, len = 0;

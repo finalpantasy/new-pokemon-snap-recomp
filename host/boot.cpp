@@ -456,9 +456,11 @@ static void bind_codec_stubs() {
 
 // Frame counters from the NVN hooks (presented frames and submitted command lists), traced every 30 presents.
 static std::atomic<uint64_t> g_presents{0}, g_submits{0};
+extern "C" void snap_highfps_on_present(uint64_t n);
 static void hook_present(void *, int slot, int w, int h) {
     snap_window_on_present();   // blocks here while the window is paused (focus lost)
     uint64_t n = ++g_presents;
+    snap_highfps_on_present(n);   // host/mods/highfps.cpp (SNAP_FPS); returns at once when unused
     if (n <= 3 || n % 30 == 0) trace("nvn: present #%llu slot %d %dx%d (submits %llu)", (unsigned long long)n, slot, w, h, (unsigned long long)g_submits.load());
 }
 static void hook_submit(void *, int, int) { ++g_submits; }
@@ -555,6 +557,7 @@ static void bind_host_layers() {
     hle::os_hooks().init_system_event = [](void *ev, bool manual) { os_system_event_create((uint64_t)ev, manual ? 0 : 1); };
     hle::os_hooks().signal_system_event = [](void *ev) { os_system_event_signal((uint64_t)ev); };
     snap_audio_set_os_hooks([](void *ev) { os_system_event_signal((uint64_t)ev); });
+    snap_audio_set_event_init_hook([](void *ev) { os_system_event_create((uint64_t)ev, 1); });   // audio device notification event (autoclear): the game's TryWaitSystemEvent on it fataled without this
 }
 
 // The musl thread-pointer hooks. Both modules have an empty PT_TLS, so the guest's thread-local words (tpidr_el0 + small
@@ -720,6 +723,7 @@ static int cmd_run(Cpu *c) {
     if (nnmain) { trace("boot: calling nnMain"); call_guest(c, nnmain); trace("boot: nnMain returned"); }
     trace("boot: total %.3f s", now_s() - t0);
     summarize_run();
+    hle::vi_stop_vsync();   // the vsync feeder thread must not be joinable at normal exit (std::terminate)
     return 0;
 }
 

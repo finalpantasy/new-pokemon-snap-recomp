@@ -20,8 +20,11 @@ $env:SNAP_PERF = $prefix
 try {
     & powershell -NoProfile -File (Join-Path $PSScriptRoot 'run_boot.ps1') -Route $Route -Timeout $Timeout -ShotMax 0 @Rest
 } finally { Remove-Item Env:SNAP_PERF -ErrorAction SilentlyContinue }
+$runExit = $LASTEXITCODE
+if ($runExit) { Write-Host "BENCH RUN FAILED: run_boot exit code $runExit (124 = timed out and killed); the numbers below are from a partial run" }
 $meta = @{ run = "bench_${Route}_$stamp"; route = $Route; stamp = $stamp; timeout = $Timeout; git = ((git rev-parse --short HEAD 2>$null) -join ''); dirty = [bool](git status --porcelain 2>$null); cache = $cache } | ConvertTo-Json
 $mf = "$prefix.meta.json"; $meta | Set-Content $mf -Encoding utf8
 if (Test-Path "${prefix}_frames.csv") {
     python -I (Join-Path $root 'analysis\perf\bench_report.py') $prefix $rf "$prefix.md" "$prefix.csv" $mf
 } else { Write-Host "no frames log at ${prefix}_frames.csv (run too short, or this exe has no SNAP_PERF)" }
+if ($runExit) { exit $runExit }

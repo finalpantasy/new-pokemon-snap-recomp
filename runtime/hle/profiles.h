@@ -47,6 +47,9 @@ class Store {
   std::string save_dir(const std::string& id) const;          // <root>/<id>/save
   std::string last_used() const { return last_used_; }
   void set_last_used(const std::string& id);                  // also stamps last_played
+  // True while a running game (this process or another) holds the profile's save lock (<save_dir>/.snap.lock). Clear and
+  // Delete refuse such a profile, and a pending action on it stays queued.
+  bool in_use(const std::string& id) const;
   int64_t size_bytes(const std::string& id) const;            // total size of the profile's save files
   bool has_data(const std::string& id) const;                 // any save file present
 
@@ -70,7 +73,7 @@ class Store {
   void queue(const std::string& op, const std::string& id);
   const std::vector<PendingOp>& pending() const { return pending_; }
   bool is_pending(const std::string& id, const char* op = nullptr) const;
-  void apply_pending();                                       // call before anything is mounted
+  void apply_pending();                                       // call before anything is mounted; ops on an in_use profile stay queued
 
  private:
   std::string next_id();

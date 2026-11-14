@@ -42,8 +42,8 @@ struct Cfg {
   bool parsed = false;
   int want = BK_OFF;
   bool dlaa = false;
-  int quality = 1;   // 0 native, 1 quality, 2 balanced, 3 performance
-  double ratio = 1.5;
+  int quality = 0;   // 0 native, 1 quality, 2 balanced, 3 performance
+  double ratio = 1.0;
   bool jitter = true, mv = true;
   int log = 0;
   int probe = -1;    // SNAP_UPSCALE_PROBE=<present>: dump the scene draws' vertex constant banks around that present
@@ -65,13 +65,13 @@ void Parse() {
     else if (!_stricmp(u, "xess")) C.want = BK_XESS;
     else if (*u && _stricmp(u, "off")) Logf("unknown SNAP_UPSCALER '%s' (off, dlss, dlaa, fsr, xess): off", u);
   }
-  int q = 1;
+  int q = 0;  // unset = native: the options menu default is "native" and set_of drops default values, so the env var is absent then
   if (const char* e = getenv("SNAP_UPSCALE_QUALITY")) {
     if (!_stricmp(e, "native") || !_stricmp(e, "dlaa")) q = 0;
     else if (!_stricmp(e, "quality")) q = 1;
     else if (!_stricmp(e, "balanced")) q = 2;
     else if (!_stricmp(e, "performance")) q = 3;
-    else Logf("unknown SNAP_UPSCALE_QUALITY '%s' (native, quality, balanced, performance): quality", e);
+    else Logf("unknown SNAP_UPSCALE_QUALITY '%s' (native, quality, balanced, performance): native", e);
   }
   if (C.dlaa) q = 0;
   C.quality = q; C.ratio = kRatio[q];
@@ -651,6 +651,12 @@ void UpscaleViewportJitter(const ReplayCtx& cx, float* jx, float* jy) {
   CurJitter(cx, jx, jy);
   U.ecb = cx.cb; U.ejx = *jx; U.ejy = *jy;
   if (*jx != 0 || *jy != 0) U.jitUsed = true;
+}
+
+// [fx] The jitter (host pixels) the current frame's scene draws were rendered with, for screen-space effects (nvn_fx.cpp). 0, 0 without a jittering upscaler.
+void UpscaleSceneJitter(float* jx, float* jy) {
+  *jx = *jy = 0;
+  if (U.on && U.jitUsed && !U.frameHold) { *jx = U.jx; *jy = U.jy; }
 }
 
 TextureImpl* UpscaleSubstitute(const ReplayCtx& cx, TextureImpl* t) {

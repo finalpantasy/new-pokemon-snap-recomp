@@ -155,9 +155,32 @@ void event_clear(uint64_t e) {
 void ov_InitializeEvent(Cpu *c) { event_init(c->x[0], c->x[1] & 1, (int)(uint32_t)c->x[2]); }
 void ov_FinalizeEvent(Cpu *c) { gst<uint8_t>(c->x[0] + EV_STATE, 0); mw_forget_object(c->x[0]); }
 void ov_SignalEvent(Cpu *c) { event_signal(c->x[0]); poll_preempt(self()); }
-void ov_WaitEvent(Cpu *c) { event_wait(c->x[0], NS_INFINITE); }
-void ov_TryWaitEvent(Cpu *c) { c->x[0] = event_try_wait(c->x[0]); }
-void ov_TimedWaitEvent(Cpu *c) { c->x[0] = event_wait(c->x[0], (int64_t)c->x[1]); }
+// A wait that returns at once never reaches the scheduler, so a guest loop around it never gives up its virtual core.
+// main+0x47d3e0 (LevelManager_LoadResource) loops on WaitEvent of a manual-clear Event that stays signalled while its
+// queue is empty, for minutes, and pinned higher-priority threads got that core only through overflow grants (jungle
+// ride at 7 fps, 2026-11-13). Such a wait is a check-in, and a manual-clear one that stays signalled is a spin pass.
+// TryWait is a spin pass unless it consumed an AutoClear signal: a failed TryWait is the polling form of the same loop.
+// SystemEvent waits run on the same Event fields and get the same treatment.
+static void event_checkin(Cpu *c, bool spin) {
+    if (legacy(LG_EV_SPIN)) return;
+    if (spin) os_spin_gate(c, 0);   // polls preempt, yields on long spins
+    else poll_preempt(self());
+}
+static bool manual_clear(uint64_t e) { return gld<uint8_t>(e + EV_CLEAR_MODE) != 1; }
+static void wait_checked(Cpu *c, uint64_t e, int64_t ns, bool timed) {
+    const bool spin = gld<uint8_t>(e + EV_SIGNALED) && manual_clear(e);   // returns at once and stays signalled
+    const bool ok = event_wait(e, ns);
+    if (timed) c->x[0] = ok;
+    event_checkin(c, spin);
+}
+static void try_wait_checked(Cpu *c, uint64_t e) {
+    const bool ok = event_try_wait(e);
+    c->x[0] = ok;
+    event_checkin(c, !ok || manual_clear(e));
+}
+void ov_WaitEvent(Cpu *c) { wait_checked(c, c->x[0], NS_INFINITE, false); }
+void ov_TryWaitEvent(Cpu *c) { try_wait_checked(c, c->x[0]); }
+void ov_TimedWaitEvent(Cpu *c) { wait_checked(c, c->x[0], (int64_t)c->x[1], true); }
 void ov_ClearEvent(Cpu *c) { event_clear(c->x[0]); }
 
 // ---- SystemEvent: always an intra-process Event here (state byte 1); inter-process events have no meaning on
@@ -179,9 +202,9 @@ void ov_DestroySystemEvent(Cpu *c) {
     mw_forget_object(c->x[0]);
 }
 void ov_SignalSystemEvent(Cpu *c) { sev_check(c->x[0]); event_signal(c->x[0]); }
-void ov_WaitSystemEvent(Cpu *c) { sev_check(c->x[0]); event_wait(c->x[0], NS_INFINITE); }
-void ov_TryWaitSystemEvent(Cpu *c) { sev_check(c->x[0]); c->x[0] = event_try_wait(c->x[0]); }
-void ov_TimedWaitSystemEvent(Cpu *c) { sev_check(c->x[0]); c->x[0] = event_wait(c->x[0], (int64_t)c->x[1]); }
+void ov_WaitSystemEvent(Cpu *c) { sev_check(c->x[0]); wait_checked(c, c->x[0], NS_INFINITE, false); }
+void ov_TryWaitSystemEvent(Cpu *c) { sev_check(c->x[0]); try_wait_checked(c, c->x[0]); }
+void ov_TimedWaitSystemEvent(Cpu *c) { sev_check(c->x[0]); wait_checked(c, c->x[0], (int64_t)c->x[1], true); }
 void ov_ClearSystemEvent(Cpu *c) { sev_check(c->x[0]); event_clear(c->x[0]); }
 // AttachSystemEvent(sev, read handle, managed, write handle, managed, clear mode): the handle is one an HLE service
 // returned (os_handle_alloc). The guest object becomes an intra-process event bound to the handle; the service

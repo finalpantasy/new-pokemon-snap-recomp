@@ -1,6 +1,6 @@
 // Native PC options inside the game's own Settings screen (owner 2026-11-13: "native, in game menu for options, not an F1
 // menu"). The screens themselves are data: scripts/ui/make_native_options.py patches the screen's behavior file option.lmb
-// (a local mod pack, built on the user's PC from their own files) with ten PC tabs (states PcTab0..9) that follow the game's
+// (a local mod pack, built on the user's PC from their own files) with PC tabs (states PcTab0..N, sets of five; a short last set gets a 2- to 4-tab bar) that follow the game's
 // "Other" tab, plus one popup state per pulldown row (PcPull<tab>_<slot>). It also writes rows.txt (the row table) next to
 // the pack. This file drives those states from two inline hooks (MAIN_INLINE_HOOKS in recomp/snap_gen.py):
 //
@@ -101,7 +101,8 @@ bool put_short(uint64_t at, const std::string& s) {   // overwrite a short guest
 }
 
 // ---- the row table (rows.txt from the generator)
-struct Row { int tab = 0, slot = 0; char widget = 'c'; std::string store, key, def; std::vector<std::pair<std::string, std::string>> ch; };
+// pslot: the row slot whose popup (pulldown_NN_mc) a pulldown uses (rows.txt; a long list on a low row opens from a higher one)
+struct Row { int tab = 0, slot = 0, pslot = 0; char widget = 'c'; std::string store, key, def, label; std::vector<std::pair<std::string, std::string>> ch; };
 struct Tab { std::string state, name; std::vector<Row> rows; };
 std::vector<Tab> g_tabs;
 
@@ -143,6 +144,9 @@ bool rows_ready() {
             Row r;
             r.tab = atoi(v[1].c_str()); r.slot = atoi(v[2].c_str()); r.widget = v[3].empty() ? 'c' : v[3][0];
             r.store = v[4]; r.key = v[5]; r.def = v[6];
+            r.pslot = v.size() >= 9 ? atoi(v[8].c_str()) : r.slot;
+            if (r.pslot < 1 || r.pslot > 6) r.pslot = r.slot;
+            if (v.size() >= 10) r.label = v[9];
             if (!v[7].empty())
                 for (const std::string& c : split(v[7], '|')) { size_t e = c.find('='); if (e != std::string::npos) r.ch.push_back({c.substr(0, e), c.substr(e + 1)}); }
             if (r.tab < 0 || r.tab >= (int)g_tabs.size()) return false;
@@ -182,7 +186,12 @@ bool* map_bool(hle::input::Mapping& m, const std::string& k) {
 
 std::string get_value(const Row& r) {
     ensure_settings();
-    if (r.store == "opt") return snap::ui::options_test_get(r.key);
+    if (r.store == "opt") {
+        std::string v = snap::ui::options_test_get(r.key);
+        // "default" (unset: the runtime uses runtime/hle/visual_defaults.h) shows as our row default, which the pack read from there
+        if (v == "default") { bool listed = false; for (const auto& ch : r.ch) listed |= ch.first == v; if (!listed) return r.def; }
+        return v;
+    }
     if (r.store == "vol") { char b[8]; snprintf(b, sizeof b, "%d", (int)std::lround(snap_audio_get_volume(SNAP_VOL_MASTER) * 10.0f)); return b; }
     hle::input::Mapping m = hle::input::hub().mapping();
     if (r.key == "face_layout") return std::to_string(m.face_layout);
@@ -249,6 +258,7 @@ struct Saved { uint64_t x[31]; };
 uint64_t vfn(uint64_t obj, uint64_t off) { return *(const uint64_t*)(*(const uint64_t*)obj + off); }
 
 std::string g_slider_landed;   // the slider the cursor is on: its first focus event only reports the knob it shows
+std::string g_choice_row;      // "<tab>_<slot>" of the two-choice row the cursor is on (repainted when it leaves)
 alignas(16) uint8_t g_tmpl[kElemSize];   // a copy of one of the game's own element entries (all fields but the names zero)
 bool g_have_tmpl = false;
 int g_tab_id[5] = {-1, -1, -1, -1, -1};  // BuildPage tab id of each game tab position
@@ -267,6 +277,19 @@ bool find_tab_ids() {
 void add_var(Cpu* c, uint64_t desc, const std::string& k, const std::string& v) {
     GStr k1(k), k2(k), val(v);
     call_guest_nested(c, kMapEmplace, {desc + 0xa8, k1.p(), k2.p(), val.p()});
+}
+// Overwrite an existing (short) variable of the descriptor's map (libc++ std::map<string,string>: root = end node's left at
+// +8; node: left +0, right +8, key +0x20, value +0x38). Used for TabNum on a short last tab set.
+bool set_var(uint64_t desc, const std::string& k, const std::string& v) {
+    uint64_t stack[64];
+    int n = 0;
+    if (uint64_t root = *(const uint64_t*)(desc + 0xa8 + 8)) stack[n++] = root;
+    while (n > 0) {
+        uint64_t node = stack[--n];
+        if (read_str(node + 0x20) == k) return put_short(node + 0x38, v);
+        for (uint64_t off : {0ull, 8ull}) if (uint64_t ch = *(const uint64_t*)(node + off)) if (n < 64) stack[n++] = ch;
+    }
+    return false;
 }
 
 // Element entries (0x130 bytes): name at +0 and +0x18, a target state at +0x30 (Prev/Next: the tab L/R open), the
@@ -325,7 +348,9 @@ void row_vars(Cpu* c, uint64_t desc, int t, const Row& r) {
         for (int k = 0; k < 2; k++) add_var(c, desc, pre + "C" + std::to_string(k + 1), k == cur ? "lb_decide" : "lb_unselect");
         return;
     }
-    add_var(c, desc, pre + "V", cur >= 0 ? r.ch[(size_t)cur].second : v);
+    // "(env)": the row's SNAP_* variable was set by hand before start, so it wins over the saved value (settings.cpp env_wins)
+    const bool env = r.store == "opt" && hle::settings::env_wins(r.key);
+    add_var(c, desc, pre + "V", (cur >= 0 ? r.ch[(size_t)cur].second : v) + (env ? " (env)" : ""));
     for (size_t k = 0; k < r.ch.size(); k++) add_var(c, desc, pre + "I" + std::to_string(k + 1), (int)k == cur ? "lb_active" : "lb_unselect");
 }
 
@@ -341,6 +366,10 @@ void go_tab(Cpu* c, uint64_t handler, uint64_t player, int t) {
         if (uint64_t p = find_entry(desc, kGameTabs[i])) { put_short(p, g_tabs[(size_t)base + i].state); put_short(p + 0x18, g_tabs[(size_t)base + i].state); }
     set_target(desc, "Prev", t == 0 ? "Others" : g_tabs[(size_t)t - 1].state);
     set_target(desc, "Next", t + 1 < n ? g_tabs[(size_t)t + 1].state : "Game");
+    if (n - base < 5) {   // a short last set: the screen has 2- to 5-tab bars (lb_tab_02..05); the generator blanks a spare slot
+        const int cnt = n - base < 2 ? 2 : n - base;
+        if (!set_var(desc, "TabNum", std::to_string(cnt))) trace("nativeopt: could not set TabNum %d", cnt);
+    }
     for (const Row& r : tab.rows) {
         row_vars(c, desc, t, r);
         char n[32];
@@ -358,21 +387,35 @@ void go_tab(Cpu* c, uint64_t handler, uint64_t player, int t) {
     g_slider_landed.clear();
 }
 
+// player->vtable[0x1f0](player, &"PulldownMenuItemNN") puts the list cursor on item NN (main+0x776bb0).
+void focus_current_item(Cpu* c, uint64_t player, const Row& r) {
+    int cur = choice_of(r, get_value(r));
+    char n[32];
+    snprintf(n, sizeof n, "PulldownMenuItem%02d", cur >= 0 ? cur + 1 : 1);
+    GStr focus{std::string(n)};
+    call_guest_nested(c, vfn(player, 0x1f0), {player, focus.p()});
+}
+
 void open_pull(Cpu* c, uint64_t handler, uint64_t player, int t, const Row& r) {
     if (!g_have_tmpl || !find_tab_ids()) return;
     char st[32];
     snprintf(st, sizeof st, "PcPull%d_%d", t, r.slot);
     uint64_t desc = new_desc(c, handler, t % 5, st);
+    const int left = (int)g_tabs.size() - (t / 5) * 5;
+    if (left < 5) set_var(desc, "TabNum", std::to_string(left < 2 ? 2 : left));   // as go_tab: the tab bar under the popup
     row_vars(c, desc, t, r);
     add_entry(c, desc, "PulldownMenu");   // the game's own list widget (type 6): Up/Down inside it, items report PulldownMenuItemNN
+    add_entry(c, desc, "MenuArea");       // as the game's popup descriptor (main+0x730480): the list and its area
+    *(uint8_t*)(desc + 0xd8) = 1;         // the game's popup descriptor sets this flag (main+0x730438); BuildPage's tab pages leave it 0
     set_state(c, player, desc);
 }
 
-// Decide on a pulldown row, before the player switches to the popup state: as the game's list helper does at the same
-// point (main+0x776c80), register the items with player->vtable[0x148](player, &popup state, &"PulldownMenuItemNN", true).
-// (The game then calls player->vtable[0x1f0](player, &"PulldownMenuItemNN") for the current value (0x776bb0); here the
-// player focuses the list header a frame after SetState anyway, so the cursor starts above item 1; the current value is
-// marked lb_active.)
+// Decide on a pulldown row, before the player switches to the popup state, as the game's list helper does at the same
+// point (main+0x72bea8..0x72bec0): register the items with player->vtable[0x148](player, &popup state,
+// &"PulldownMenuItemNN", true) (0x776c80), put the cursor on the current value (0x776bb0), then start the list from code
+// (0x776980: player->vtable[0x90] and [0x98](player, &"pulldown_SS_mc", &"lb_start_listNN"), NN = items + 1) and put the
+// cursor on the current value again. The game's popup states have no lb_start_list enter action; when the pack played it
+// on entry, the list reset the cursor to its header a frame later.
 void prepare_pull(Cpu* c, uint64_t player, int t, const Row& r) {
     char st[32];
     snprintf(st, sizeof st, "PcPull%d_%d", t, r.slot);
@@ -383,6 +426,35 @@ void prepare_pull(Cpu* c, uint64_t player, int t, const Row& r) {
         GStr item{std::string(n)};
         call_guest_nested(c, vfn(player, 0x148), {player, sname.p(), item.p(), 1ull});
     }
+    focus_current_item(c, player, r);
+    char pd[24], lb[24];
+    snprintf(pd, sizeof pd, "pulldown_%02d_mc", r.pslot);
+    snprintf(lb, sizeof lb, "lb_start_list%02zu", r.ch.size() + 1);
+    // the popup's texts now (the list shows from this frame; two rows of a tab can share a popup slot, and the popup state's
+    // enter actions only write them a frame later): header label, current value, item labels (player->vtable[0xa8] SetText)
+    auto set_text = [&](const std::string& path, const std::string& text) {
+        GStr p{path}, tx{text};
+        alignas(8) uint64_t args[3] = {0, 0, 0};
+        call_guest_nested(c, vfn(player, 0xa8), {player, p.p(), tx.p(), (uint64_t)(uintptr_t)args});
+    };
+    const std::string base(pd);
+    if (!r.label.empty()) set_text(base + "/dt_selector_mc/dt_selector", r.label);
+    const int cur = choice_of(r, get_value(r));
+    set_text(base + "/selector_main_mc/dt_select_pulldown_mc/dt_select_pulldown", cur >= 0 ? r.ch[(size_t)cur].second : get_value(r));
+    for (size_t k = 0; k < r.ch.size(); k++) {
+        char item[48];
+        snprintf(item, sizeof item, "/selector_item_%02zu_mc/dt_select_pulldown_mc/dt_select_pulldown", k + 1);
+        set_text(base + item, r.ch[k].second);
+    }
+    {
+        GStr p{std::string(pd)}, l{std::string(lb)};
+        call_guest_nested(c, vfn(player, 0x90), {player, p.p(), l.p()});
+    }
+    {
+        GStr p{std::string(pd)}, l{std::string(lb)};
+        call_guest_nested(c, vfn(player, 0x98), {player, p.p(), l.p()});
+    }
+    focus_current_item(c, player, r);
 }
 
 // A slider moved: draw its dots and number at once (the game's own sliders do the same through these two player calls).
@@ -423,7 +495,7 @@ void redraw_row(Cpu* c, uint64_t player, const Row& r) {
         return;
     }
     std::string path = std::string(sel) + "/selector_pulldown_mc/dt_select_pulldown_mc/dt_select_pulldown";
-    GStr p(path), txt(cur >= 0 ? r.ch[(size_t)cur].second : v);
+    GStr p(path), txt((cur >= 0 ? r.ch[(size_t)cur].second : v) + (r.store == "opt" && hle::settings::env_wins(r.key) ? " (env)" : ""));
     alignas(8) uint64_t args[3] = {0, 0, 0};
     call_guest_nested(c, vfn(player, 0xa8), {player, p.p(), txt.p(), (uint64_t)(uintptr_t)args});
 }
@@ -454,7 +526,23 @@ extern "C" void rt_ui_opt_event(Cpu* c) {
     int t = atoi(st.c_str() + (tab ? 5 : 6));
     if (t < 0 || t >= (int)g_tabs.size()) { c->x[1] = 7; return; }
     Saved s; memcpy(s.x, c->x, sizeof s.x);
+    if (tab && ev == 8) {
+        // A two-choice element's focus action leaves its box at lb_select (the game's elements have no unfocus action for
+        // it; the game's handler repaints the row). So when the cursor leaves a two-choice row, repaint it from its value,
+        // or the box the cursor passed over stays yellow next to the chosen one.
+        int tt = 0, slot = 0;
+        char kind = 0;
+        std::string now;
+        if (sscanf(e.c_str(), "PcT%dS%d%c", &tt, &slot, &kind) == 3) now = std::to_string(tt) + "_" + std::to_string(slot);
+        if (!g_choice_row.empty() && g_choice_row != now) {
+            int pt = 0, ps = 0;
+            if (sscanf(g_choice_row.c_str(), "%d_%d", &pt, &ps) == 2)
+                if (const Row* r = find_row(pt, ps)) redraw_row(c, player, *r);
+        }
+        g_choice_row = (kind == 'C') ? now : std::string();
+    }
     if (ev == 5) {   // entering a PC state: its page data
+        g_choice_row.clear();
         if (tab) go_tab(c, handler, player, t);
         else if (const Row* r = find_row(t, atoi(st.c_str() + st.find('_') + 1))) open_pull(c, handler, player, t, *r);
     } else if (pull) {

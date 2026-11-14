@@ -11,7 +11,9 @@
 
 #include "nvn_internal.h"
 #include "nvn_aa.h"   // AaForgetTexture
+#include "nvn_fx.h"   // [fx]
 #include "nvn_hdr.h"   // HDR10 output (SNAP_HDR=1)
+#include "nvn_rt.h"   // [rt] SNAP_RT=1 ray tracing track
 #include "nvn_pace.h"   // [pace] frame clock for the limiter and the guest vsync (SNAP_PACE=legacy restores the old limiter)
 #include "upscale/upscale_nvn.h"   // [upscale] DLSS / FSR / XeSS (SNAP_UPSCALER)
 #include "os/perf.h"   // SNAP_PERF instrumentation (off unless the env var is set)
@@ -29,6 +31,9 @@ extern "C" void snap_look_present_none(const SnapUiFrame*) {}
 extern "C" int snap_window_frame_cap();   // host/window_opts.cpp (hook request 3)
 extern "C" int snap_window_frame_cap_none() { return 0; }
 #pragma comment(linker, "/alternatename:snap_window_frame_cap=snap_window_frame_cap_none")
+extern "C" void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp (host/boot.cpp's window-close path uses it too)
+extern "C" void snap_fs_drain_none(int) {}
+#pragma comment(linker, "/alternatename:snap_fs_drain_for_exit=snap_fs_drain_none")
 
 namespace nvn {
 
@@ -64,6 +69,15 @@ void LogError(const char* fmt, ...) {
     VkResult r_ = (x);                                                                   \
     if (r_ < 0) { LogError("%s failed: %d (%s:%d)", #x, (int)r_, __FILE__, __LINE__); } \
   } while (0)
+
+// VK_ERROR_DEVICE_LOST / SURFACE_LOST never recover here (no device or surface rebuild): without this the guest keeps running on a
+// frozen window and the log fills at frame rate. Same exit as closing the window: wait (5 s) for a save in flight, then leave.
+static void FatalGpuLoss(const char* where, VkResult r) {
+  LogError("%s: %s (%d): unrecoverable, exiting", where, r == VK_ERROR_DEVICE_LOST ? "VK_ERROR_DEVICE_LOST" : "VK_ERROR_SURFACE_LOST_KHR", (int)r);
+  fflush(stderr);
+  snap_fs_drain_for_exit(5000);
+  ExitProcess(1);
+}
 
 // ---- format table -------------------------------------------------------------------------------------------
 // NVN format -> Vulkan. Values: see nvn_types.h. Byte sizes are per texel (uncompressed formats only here).
@@ -344,6 +358,7 @@ bool Host::Init(bool wantValidation) {
     fprintf(stderr, "[nvn] maxwell checks: provokingVertexLast=%d customBorderColor=%d subgroupPin=0x%x\n", (int)g_provokingLast, (int)g_customBorder, (unsigned)g_sgPinStages);
   }
   snap_pace::AppendDeviceExt(phys, dext, &f11);   // [pace] VK_KHR_present_id + present_wait (queue depth cap)
+  snap_rt::AppendDeviceExt(phys, dext, &f11, &f12);   // [rt] SNAP_RT=1 only: acceleration structure, ray query, transform feedback, bufferDeviceAddress (nvn_rt.cpp)
   UpscaleDeviceExtensions(this, dext, &en.pNext, &f11, &f12, &f13);   // [upscale] backend extensions and features
   VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   dci.pNext = &en;
@@ -355,6 +370,7 @@ bool Host::Init(bool wantValidation) {
   vkGetDeviceQueue(device, family, 0, &queue);
   snap_hdr::LoadDeviceFuncs(device);
   snap_pace::DeviceCreated(device);   // [pace]
+  snap_rt::DeviceCreated(this);   // [rt]
   UpscaleDeviceCreated(this);   // [upscale]
   VkPipelineCacheCreateInfo pci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
   VKCHK(vkCreatePipelineCache(device, &pci, nullptr, &pipelineCache));
@@ -379,9 +395,10 @@ bool Host::Init(bool wantValidation) {
 void Host::Shutdown() {
   if (device) vkDeviceWaitIdle(device);
   if (device) UpscaleDestroy(this);   // [upscale]
+  if (device) snap_rt::DeviceShutdown(this);   // [rt]
   if (device) DestroyHostExtras(this);
   if (device) GraveDrain(this);   // [nvnfix] retired textures, samplers, pools, programs (the device is idle)
-  if (device) { TexPrefetchShutdown(); ScratchPoolDrain(this); }   // [perf] staged prefetch images, recycled scratch buffers
+  if (device) { TexPrefetchShutdown(); ScratchPoolDrain(this); SubMemDrain(this); }   // [perf] staged prefetch images, recycled scratch buffers, shared blocks
   if (pipelineCache) vkDestroyPipelineCache(device, pipelineCache, nullptr);
   if (device) vkDestroyDevice(device, nullptr);
   if (messenger) {
@@ -471,6 +488,20 @@ bool CreateTexImage(Host* host, const TextureBuilder& b, const FormatInfo* fi, u
   VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   mai.allocationSize = mr.size;
   mai.memoryTypeIndex = host->FindMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (SubMemBlockBytes(SUBMEM_IMAGE) && mai.memoryTypeIndex != UINT32_MAX) {   // [perf pass 7] shared blocks (nvn_submem.cpp)
+    VkMemoryDedicatedRequirements dr{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+    VkMemoryRequirements2 mr2{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2}; mr2.pNext = &dr;
+    VkImageMemoryRequirementsInfo2 ri{VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2}; ri.image = image;
+    vkGetImageMemoryRequirements2(host->device, &ri, &mr2);
+    uint64_t off = 0;
+    if (!dr.requiresDedicatedAllocation &&
+        SubMemAlloc(host, SUBMEM_IMAGE, (uint64_t)image, mr, mai.memoryTypeIndex, &memory, &off, nullptr)) {
+      vkBindImageMemory(host->device, image, memory, off);
+      out.image = image; out.memory = memory;
+      out.levels = ci.mipLevels; out.layers = ci.arrayLayers; out.flags = ci.flags;
+      return true;
+    }
+  }
   if (mai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(host->device, &mai, nullptr, &memory) != VK_SUCCESS) {
     LogError("image memory allocation failed"); vkDestroyImage(host->device, image, nullptr); image = VK_NULL_HANDLE; return false;
   }
@@ -575,9 +606,16 @@ VkImageView TextureImpl::View(const TexView* v, bool sampled, int shaderType, co
   kb[0] = 1; kb[1] = (char)((sampled ? 0x80 : 0) | (xAlpha ? 0x40 : 0) | ((unsigned)vt & 0x3f)); kb[2] = (char)(uint8_t)asp;
   const uint32_t vkf = (uint32_t)vf->vk; memcpy(kb + 3, &vkf, 4);
   const uint16_t lv[4] = {(uint16_t)r.lb, (uint16_t)r.ln, (uint16_t)r.yb, (uint16_t)r.yn}; memcpy(kb + 7, lv, 8);
+  // [cpuprof2 2026-11-13] last-hit check before the string hash + map probe (~600 calls per course frame, mostly repeats of the same
+  // view). SNAP_VIEW_LAST=0 restores the map lookup on every call.
+  static const bool kViewLast = [] { const char* e = getenv("SNAP_VIEW_LAST"); return !(e && *e == '0'); }();
+  if (kViewLast && viewLast && memcmp(viewLastKey, kb, sizeof kb) == 0) return viewLast;
   const std::string key(kb, sizeof kb);
   auto it = views.find(key);
-  if (it != views.end()) return it->second;
+  if (it != views.end()) {
+    if (kViewLast) { memcpy(viewLastKey, kb, sizeof kb); viewLast = it->second; }
+    return it->second;
+  }
   VkImageViewCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   ci.image = image;
   ci.viewType = vt;
@@ -615,10 +653,12 @@ void DestroyTexture(TextureImpl* t) {
   AaForgetTexture(t);   // drops the AA step's cached UNORM views of this image (the graveyard calls this once the GPU is done with it)
   if (t->bcShadow) { DestroyTexture(t->bcShadow); t->bcShadow = nullptr; }
   if (t->xferShadow) { DestroyTexture(t->xferShadow); t->xferShadow = nullptr; }
+  if (t->abAlt) { DestroyTexture(t->abAlt); t->abAlt = nullptr; }   // SNAP_MODS_AB twin (only ever sampled via the parent, so the GPU is done with it too)
   if (t->host && t->host->device) {
     for (auto& kv : t->views) vkDestroyImageView(t->host->device, kv.second, nullptr);
+    const bool sub = t->image && SubMemFree(t->host, SUBMEM_IMAGE, (uint64_t)t->image);   // [perf pass 7] before the handle can be reused
     if (t->image) vkDestroyImage(t->host->device, t->image, nullptr);
-    if (t->memory) vkFreeMemory(t->host->device, t->memory, nullptr);
+    if (t->memory && !sub) vkFreeMemory(t->host->device, t->memory, nullptr);
   }
   delete t;
 }
@@ -636,6 +676,7 @@ bool EnsureBacking(PoolImpl* p) {
   static std::mutex initMu;
   std::lock_guard<std::mutex> initLk(initMu);
   if (p->buffer) { LifeCount(LS_BACKING_RACE); return true; }
+  snap_perf::Scope perfScope(snap_perf::C_BACKING);   // [perf pass 7] creation only, any thread (loader, prefetch worker, replay)
   Host* h = p->host;
   VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   bi.size = p->size;
@@ -679,12 +720,27 @@ void Host::RegisterPool(PoolImpl* p) {
   nextVa += (p->size + 0xFFFFF) & ~0xFFFFFull;
   nextVa += 0x100000;   // guard gap
   vaMap[p->va] = p;
+  vaGen.fetch_add(1, std::memory_order_release);   // [cpuprof2]
 }
 void Host::UnregisterPool(PoolImpl* p) {
   std::lock_guard<std::mutex> lk(vaMutex);
   vaMap.erase(p->va);
+  vaGen.fetch_add(1, std::memory_order_release);   // [cpuprof2] drops every thread's cached entries
 }
+// [cpuprof2 2026-11-13] ResolveAddress was ~1.9% of JobWorker time (mutex + map walk per bound buffer). A per-thread 4-entry cache of
+// (pool, va, size) is trusted while vaGen is unchanged; pool VAs are never reused (nextVa only grows), and register/unregister bump
+// vaGen. A pool unregistered right after the check is the same race the locked lookup had (the lock was dropped before use).
+// SNAP_VA_CACHE=0 restores the locked lookup on every call.
 bool Host::ResolveAddress(uint64_t addr, PoolImpl** pool, uint64_t* off) {
+  static const bool kVaCache = [] { const char* e = getenv("SNAP_VA_CACHE"); return !(e && *e == '0'); }();
+  struct VaEnt { const Host* h; uint64_t gen, va, size; PoolImpl* p; };
+  thread_local VaEnt ents[4] = {};
+  thread_local unsigned next = 0;
+  if (kVaCache) {
+    const uint64_t gen = vaGen.load(std::memory_order_acquire);
+    for (auto& e : ents)
+      if (e.h == this && e.gen == gen && addr - e.va < e.size) { *pool = e.p; *off = addr - e.va; return true; }
+  }
   std::lock_guard<std::mutex> lk(vaMutex);
   auto it = vaMap.upper_bound(addr);
   if (it == vaMap.begin()) return false;
@@ -692,11 +748,12 @@ bool Host::ResolveAddress(uint64_t addr, PoolImpl** pool, uint64_t* off) {
   PoolImpl* p = it->second;
   if (addr - p->va >= p->size) return false;
   *pool = p; *off = addr - p->va;
+  if (kVaCache) ents[next++ & 3] = VaEnt{this, vaGen.load(std::memory_order_relaxed), p->va, p->size, p};
   return true;
 }
 void SyncPoolRange(PoolImpl* p, uint64_t off, uint64_t size) {
   if (!p || !p->Cpu() || !p->storage || off >= p->size) return;
-  if (!p->buffer && !EnsureBacking(p)) return;
+  if (!PoolBacked(p)) return;   // [audit F6] acquire: p->mapped below is visible
   if (!p->mapped) return;
   size = std::min<uint64_t>(size, p->size - off);
   snap_perf::Scope perfScope(snap_perf::C_POOLSYNC);
@@ -754,7 +811,7 @@ static uint64_t CopySkippingGpu(PoolImpl* p, uint64_t b, uint64_t e) {
 // Returns false when write watch cannot be used for this pool (the caller falls back to a full copy).
 static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
   if (!p->Cpu() || !p->storage) return true;
-  if (!p->buffer && !EnsureBacking(p)) return true;
+  if (!PoolBacked(p)) return true;   // [audit F6] acquire
   if (!p->mapped) return true;
   snap_perf::Scope perfScope(snap_perf::C_POOLSYNC);
   snap_perf::count(snap_perf::V_POOLSYNC_CALLS);
@@ -783,7 +840,9 @@ static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
   // whole-pool snapshot without reset per replay epoch; a range none of whose pages were dirty at the snapshot needs no syscall (the
   // guest wrote it before the submit or not at all; a write after the snapshot stays dirty for the next epoch, like a write after the
   // per-range reset did). Ranges with a dirty page still use GetWriteWatch with reset below, which also returns later writes.
-  static const bool kSnap = [] { const char* e = getenv("SNAP_POOLSYNC_SNAPSHOT"); return !(e && *e == '0'); }();
+  // OFF by default (SNAP_POOLSYNC_SNAPSHOT=1 turns it on): in-kernel GetWriteWatch time fell only 5.0% -> 4.4% of JobWorker cycles
+  // and poolsync_ms did not drop in A/B pairs (analysis\perf\cpu_profile.md).
+  static const bool kSnap = [] { const char* e = getenv("SNAP_POOLSYNC_SNAPSHOT"); return e && *e == '1'; }();
   if (kSnap) {
     if (p->wwSnapEpoch != g_replayEpoch) {
       p->wwSnapEpoch = g_replayEpoch;
@@ -877,11 +936,14 @@ bool InitQueue(QueueImpl* q) {
   tc.initialValue = 0;
   VkSemaphoreCreateInfo sc{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
   sc.pNext = &tc;
-  return vkCreateSemaphore(h->device, &sc, nullptr, &q->timeline) == VK_SUCCESS;
+  if (vkCreateSemaphore(h->device, &sc, nullptr, &q->timeline) != VK_SUCCESS) return false;
+  QueueLive(q, true);   // [audit F4] the graveyard stamps and waits for every live queue's own timeline
+  return true;
 }
 void DestroyQueue(QueueImpl* q) {
   Host* h = q->host;
   QueueFinishImpl(q);
+  QueueLive(q, false);   // [audit F4] everything it submitted has completed: stamps naming it count as passed
   for (auto cb : q->freeCbs) vkFreeCommandBuffers(h->device, q->pool, 1, &cb);
   for (auto dp : q->freePools) vkDestroyDescriptorPool(h->device, dp, nullptr);
   if (q->pool) vkDestroyCommandPool(h->device, q->pool, nullptr);
@@ -946,7 +1008,10 @@ static std::vector<ScratchBuf> g_scratchFree;
 static uint64_t g_scratchFreeBytes = 0;
 void ScratchPoolDrain(Host* h) {   // Host::Shutdown, before vkDestroyDevice
   std::lock_guard<std::mutex> lk(g_scratchMu);
-  for (auto& sb : g_scratchFree) { vkDestroyBuffer(h->device, sb.buf, nullptr); vkFreeMemory(h->device, sb.mem, nullptr); }
+  for (auto& sb : g_scratchFree) {
+    const bool sub = SubMemFree(h, SUBMEM_SCRATCH, (uint64_t)sb.buf);   // [perf pass 7] shared block
+    vkDestroyBuffer(h->device, sb.buf, nullptr); if (!sub) vkFreeMemory(h->device, sb.mem, nullptr);
+  }
   g_scratchFree.clear(); g_scratchFreeBytes = 0;
 }
 void ReleaseScratch(Host* h, const ScratchBuf& sb) {
@@ -954,7 +1019,8 @@ void ReleaseScratch(Host* h, const ScratchBuf& sb) {
     std::lock_guard<std::mutex> lk(g_scratchMu);
     if (g_scratchFreeBytes + sb.cap <= ScratchPoolCap()) { g_scratchFree.push_back(sb); g_scratchFreeBytes += sb.cap; return; }
   }
-  vkDestroyBuffer(h->device, sb.buf, nullptr); vkFreeMemory(h->device, sb.mem, nullptr);
+  const bool sub = SubMemFree(h, SUBMEM_SCRATCH, (uint64_t)sb.buf);   // [perf pass 7] shared block
+  vkDestroyBuffer(h->device, sb.buf, nullptr); if (!sub) vkFreeMemory(h->device, sb.mem, nullptr);
 }
 uint8_t* NewScratch(ReplayCtx& cx, uint64_t size, VkBuffer* out, VkBufferUsageFlags extra) {
   Host* h = cx.h;
@@ -983,6 +1049,17 @@ uint8_t* NewScratch(ReplayCtx& cx, uint64_t size, VkBuffer* out, VkBufferUsageFl
   mai.allocationSize = mr.size;
   mai.memoryTypeIndex = h->FindMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   void* map = nullptr;
+  {   // [perf pass 7] sub-allocate from a mapped block (nvn_submem.cpp; SNAP_SCRATCH_BLOCK_MB=0 = own memory as before)
+    uint64_t off = 0; uint8_t* sm = nullptr;
+    if (SubMemAlloc(h, SUBMEM_SCRATCH, (uint64_t)sb.buf, mr, mai.memoryTypeIndex, &sb.mem, &off, &sm) && sm) {
+      vkBindBufferMemory(h->device, sb.buf, sb.mem, off);
+      sb.map = sm;
+      cx.scratch->push_back(sb);
+      *out = sb.buf;
+      return sm;
+    }
+    sb.mem = VK_NULL_HANDLE;
+  }
   if (mai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(h->device, &mai, nullptr, &sb.mem) != VK_SUCCESS) { vkDestroyBuffer(h->device, sb.buf, nullptr); return nullptr; }
   (void)fl;
   vkBindBufferMemory(h->device, sb.buf, sb.mem, 0);
@@ -1128,6 +1205,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         RedirectCompressedTargets(cx);
         if (DebugDrawLogActive()) DebugDrawLog("SetRenderTargets rt0=%p(%dx%d f%x) depth=%p\n", (void*)rt[0], rt[0] ? rt[0]->b.width : 0, rt[0] ? rt[0]->b.height : 0, rt[0] ? rt[0]->b.format : 0, (void*)rt[8]);
         // render scale changed: viewports / scissors set for the previous targets are re-applied at the new scale
+        if (FxOnSetRenderTargets(cx)) { for (int i = 0; i < 4; i++) { if (cx.vpHave & (1u << i)) EmitViewport(cx, i); if (cx.scHave & (1u << i)) EmitScissor(cx, i); } }   // [fx] pre-tonemap slot, before the upscaler reads the scene colour; its passes changed the viewport / scissor state
         { const bool jit = UpscaleOnSetRenderTargets(cx);   // [upscale] scene / upscale point; jitter changed: re-emit viewports
           if (jit && cx.vpHave) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i); }
         if (cx.vpHave && RtScale(cx) != cx.vpScale) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i);
@@ -1244,6 +1322,7 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
   g_replayEpoch++;
   struct TidScope { TidScope() { g_replayTid.store(GetCurrentThreadId(), std::memory_order_relaxed); } ~TidScope() { g_replayTid.store(0, std::memory_order_relaxed); } } tidScope;
   q->Reap(false);
+  FxBeforeSubmit(n, lists);   // [fx] photo frames
   UpscaleBeforeSubmit(n, lists);   // [upscale] photo frames
   std::vector<VkCommandBufferSubmitInfo> infos;
   std::vector<Retired> pending;
@@ -1347,6 +1426,33 @@ static SyncWaitResult WaitSyncRaw(const SyncImpl* s, uint64_t timeoutNs) {
 // The NVN-visible window textures are ordinary offscreen images (scene resolution). Present acquires a real
 // swapchain image and blits (scales, letterboxes) the chosen slot into it. That decouples scene resolution from
 // output resolution (native 4K / DLAA / DLSS later) and makes the present blit the single composition point.
+
+// [vsync] Swapchain present mode (owner request "Vsync options", 2026-11-14). SNAP_VSYNC=on (FIFO, default) | adaptive
+// (FIFO_RELAXED) | fast (MAILBOX) | off (IMMEDIATE). snap_vsync_set() switches live: the next present recreates the swapchain.
+// Only the present mode changes; Pace() and the guest nn::vi vsync clock run the same in every mode.
+static std::atomic<int> g_vsyncMode{-1};   // 0 on, 1 adaptive, 2 fast, 3 off; -1 = not read yet
+static std::atomic<int> g_vsyncGen{0};
+static int ParseVsync(const char* e) {
+  if (!e || !*e) return 0;
+  if (!_stricmp(e, "adaptive") || !_stricmp(e, "relaxed")) return 1;
+  if (!_stricmp(e, "fast") || !_stricmp(e, "mailbox")) return 2;
+  if (!_stricmp(e, "off") || !_stricmp(e, "0") || !_stricmp(e, "immediate")) return 3;
+  return 0;   // "on", "1", anything else
+}
+static int VsyncMode() {
+  int m = g_vsyncMode.load();
+  if (m < 0) { m = ParseVsync(getenv("SNAP_VSYNC")); int exp = -1; g_vsyncMode.compare_exchange_strong(exp, m); m = g_vsyncMode.load(); }
+  return m;
+}
+}  // namespace nvn
+// Live switch for the options menu: mode = "on" | "adaptive" | "fast" | "off" (unknown = on).
+extern "C" void snap_vsync_set(const char* mode) {
+  const int m = nvn::ParseVsync(mode);
+  if (nvn::g_vsyncMode.exchange(m) != m) nvn::g_vsyncGen.fetch_add(1);
+}
+extern "C" const char* snap_vsync_get() { static const char* const k[] = {"on", "adaptive", "fast", "off"}; return k[nvn::VsyncMode()]; }
+namespace nvn {
+
 bool WindowImpl::Recreate() {
   Host* h = host;
   vkDeviceWaitIdle(h->device);
@@ -1381,6 +1487,21 @@ bool WindowImpl::Recreate() {
   VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
   if (presentInterval <= 0) mode = has(VK_PRESENT_MODE_IMMEDIATE_KHR) ? VK_PRESENT_MODE_IMMEDIATE_KHR
                                    : has(VK_PRESENT_MODE_MAILBOX_KHR) ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
+  else {   // [vsync] SNAP_VSYNC / snap_vsync_set: present mode only; the frame limiter and the guest vsync clock are unchanged
+    const int vm = VsyncMode();
+    VkPresentModeKHR want = vm == 1 ? VK_PRESENT_MODE_FIFO_RELAXED_KHR : vm == 2 ? VK_PRESENT_MODE_MAILBOX_KHR : vm == 3 ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
+    if (!has(want) && want == VK_PRESENT_MODE_IMMEDIATE_KHR) want = VK_PRESENT_MODE_MAILBOX_KHR;   // off: uncapped without tearing is next best
+    if (!has(want)) want = VK_PRESENT_MODE_FIFO_KHR;   // FIFO is always offered
+    mode = want;
+    static int logged = -2; static VkPresentModeKHR loggedMode = VK_PRESENT_MODE_MAX_ENUM_KHR;
+    if (logged != vm || loggedMode != mode) {
+      static const char* const kName[] = {"on", "adaptive", "fast", "off"};
+      fprintf(stderr, "[vsync] SNAP_VSYNC=%s -> present mode %s%s\n", kName[vm],
+              mode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO" : mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? "FIFO_RELAXED" : mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" : "IMMEDIATE",
+              (vm == 1 && mode != VK_PRESENT_MODE_FIFO_RELAXED_KHR) || (vm == 2 && mode != VK_PRESENT_MODE_MAILBOX_KHR) || (vm == 3 && mode != VK_PRESENT_MODE_IMMEDIATE_KHR) ? " (requested mode not offered, fallback)" : "");
+      logged = vm; loggedMode = mode;
+    }
+  }
 
   if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) { LogError("surface lacks TRANSFER_DST"); return false; }
   uint32_t minImages = std::max(caps.minImageCount, 3u);
@@ -1398,6 +1519,7 @@ bool WindowImpl::Recreate() {
   ci.preTransform = caps.currentTransform;
   ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   ci.presentMode = mode;
+  snap_pace::SetImmediate(mode == VK_PRESENT_MODE_IMMEDIATE_KHR);   // [pace] tearing mode: release right after the vblank
   ci.clipped = VK_TRUE;
   ci.oldSwapchain = swapchain;
   VkSwapchainKHR ns = VK_NULL_HANDLE;
@@ -1510,8 +1632,11 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   OwnPoolReap(q);   // fallback buffer pools retired by BufferFinalize (B1 safety net)
   GraveReap(q);     // [nvnfix] finalized textures, samplers, pools, programs whose last possible use has completed
   LifeStatsTick();  // [nvnfix] SNAP_NVN_STATS=1
+  { static int vsyncGen = 0; if (const int g = g_vsyncGen.load(); g != vsyncGen) { vsyncGen = g; w->needRecreate = true; } }   // [vsync] live mode switch
   g_presentCount++;
+  FxOnPresent();   // [fx]
   UpscaleOnPresent();   // [upscale]
+  snap_rt::OnPresent();   // [rt]
   if (g_hooks.on_present) g_hooks.on_present(g_hooks.user, slot, src->b.width, src->b.height);
 
   uint32_t idx = 0;
@@ -1540,6 +1665,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     { snap_perf::Scope perfScope(snap_perf::C_ACQUIRE); r = vkAcquireNextImageKHR(h->device, w->swapchain, UINT64_MAX, w->acquireSems[ak], VK_NULL_HANDLE, &idx); }
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) { if (r == VK_SUBOPTIMAL_KHR) w->needRecreate = true; break; }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) { w->needRecreate = true; if (attempt == 2) return false; continue; }
+    if (r == VK_ERROR_DEVICE_LOST || r == VK_ERROR_SURFACE_LOST_KHR) FatalGpuLoss("vkAcquireNextImageKHR", r);
     LogError("vkAcquireNextImageKHR failed: %d", (int)r);
     return false;
   }
@@ -1726,6 +1852,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   snap_pace::Stamp(snap_pace::M_QP_END);
   snap_pace::Presented(w->swapchain, pr);
   if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) w->needRecreate = true;
+  else if (pr == VK_ERROR_DEVICE_LOST || pr == VK_ERROR_SURFACE_LOST_KHR) FatalGpuLoss("vkQueuePresentKHR", pr);
   else if (pr < 0) LogError("vkQueuePresentKHR failed: %d", (int)pr);
   w->acquireValue[ak] = v;
   w->slotSem[slot] = q->timeline;

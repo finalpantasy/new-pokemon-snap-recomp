@@ -103,12 +103,47 @@ bool vamm_wait(const char *what, uint64_t size, uint64_t &waited, DWORD err) {  
     step = std::min<uint64_t>(step * 2, 100);
     return true;
 }
+// Horizon VAMM aligns a region base by its size class (SDK find-fit): < 2 MB: 64 KB, < 4 MB: 2 MB, < 32 MB: 4 MB, < 1 GB: 32 MB, else 1 GB.
+// The game's jemalloc extent hook needs 2 MB-aligned bases; with the plain 64 KB-aligned Windows base it missed ~31 times in 32,
+// freed the block and kept an interior pointer of a bigger one, whose later free (exact-base lookup) is a no-op, so 4-8 MB per extent
+// stayed committed for good (hub loop leak, 2026-11-14). SNAP_VAMM_ALIGN=0 restores the old 64 KB behavior.
+uint64_t vamm_align_for(uint64_t size) {
+    static const bool on = [] { const char *e = getenv("SNAP_VAMM_ALIGN"); return !(e && *e == '0'); }();
+    if (!on) return PAGE << 4;
+    if (size < (2ull << 20)) return 64ull << 10;
+    if (size < (4ull << 20)) return 2ull << 20;
+    if (size < (32ull << 20)) return 4ull << 20;
+    if (size < (1ull << 30)) return 32ull << 20;
+    return 1ull << 30;
+}
+struct VaAddrReq { PVOID lo, hi; SIZE_T align; };
+struct VaExtParam { DWORD64 type; PVOID ptr; };   // MEM_EXTENDED_PARAMETER: type 1 = MemExtendedParameterAddressRequirements
+void *reserve_aligned(uint64_t size, uint64_t align) {
+    const DWORD flags = MEM_RESERVE | ww_flag();
+    if (align <= (64ull << 10)) return VirtualAlloc(nullptr, size, flags, PAGE_NOACCESS);
+    typedef PVOID (WINAPI *VA2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, VaExtParam *, ULONG);
+    static const VA2 va2 = [] { HMODULE m = GetModuleHandleA("kernelbase.dll"); return m ? (VA2)(void *)GetProcAddress(m, "VirtualAlloc2") : nullptr; }();
+    if (va2) {
+        VaAddrReq req = {nullptr, nullptr, (SIZE_T)align};
+        VaExtParam ep = {1, &req};
+        return va2(GetCurrentProcess(), nullptr, size, flags, PAGE_NOACCESS, &ep, 1);
+    }
+    for (int tries = 0; tries < 16; tries++) {   // no VirtualAlloc2: reserve size+align, release, re-reserve at the aligned address
+        void *q = VirtualAlloc(nullptr, size + align, MEM_RESERVE, PAGE_NOACCESS);
+        if (!q) return nullptr;
+        const uint64_t at = ((uint64_t)(uintptr_t)q + align - 1) & ~(align - 1);
+        VirtualFree(q, 0, MEM_RELEASE);
+        if (void *p = VirtualAlloc((void *)(uintptr_t)at, size, flags, PAGE_NOACCESS)) return p;
+    }
+    return nullptr;
+}
 uint32_t vamm_alloc_region(uint64_t out, uint64_t size) {
     if (!size) return R_INVALID_RANGE;
     size = page_up(size);
     void *p = nullptr;
+    const uint64_t align = vamm_align_for(size);
     for (uint64_t waited = 0;;) {
-        p = fault_now() ? nullptr : VirtualAlloc(nullptr, size, MEM_RESERVE | ww_flag(), PAGE_NOACCESS);
+        p = fault_now() ? nullptr : reserve_aligned(size, align);
         if (p) {
             if (waited) fprintf(stderr, "[os-mem] AllocateAddressRegion(%#llx) succeeded after %llu ms\n", (unsigned long long)size, (unsigned long long)waited);
             break;
@@ -172,7 +207,15 @@ uint32_t vamm_free_pages(uint64_t a, uint64_t size) {
 uint32_t vamm_free_region(uint64_t a) {
     std::lock_guard<std::mutex> lk(g_mm);
     auto it = g_regions.find(a);
-    if (it == g_regions.end()) return R_INVALID_RANGE;
+    if (it == g_regions.end()) {
+        static std::atomic<int> bad{0};
+        const int n = ++bad;
+        if (getenv("SNAP_VAMM_TRACE") && (n <= 20 || (n & (n - 1)) == 0)) {   // trace mode: say when the address lies inside a live region
+            Region *in = region_of(a, 1);
+            fprintf(stderr, "[os-mem] FreeAddressRegion(%#llx) invalid range (#%d)%s\n",(unsigned long long)a, n, in ? ": interior pointer of a live region" : "");
+        }
+        return R_INVALID_RANGE;
+    }
     VirtualFree((void *)(uintptr_t)a, 0, MEM_RELEASE);
     g_reserved_total -= it->second.size;
     g_committed_total -= std::min(g_committed_total, it->second.committed);
@@ -191,11 +234,26 @@ uint32_t vamm_alloc_memory(uint64_t out, uint64_t size) {   // reserve + commit
     return r;
 }
 
-void ov_AllocateAddressRegion(Cpu *c) { c->x[0] = vamm_alloc_region(c->x[0], c->x[1]); }
-void ov_AllocateMemoryPages(Cpu *c) { c->x[0] = vamm_alloc_pages(c->x[0], c->x[1]); }
-void ov_FreeMemoryPages(Cpu *c) { c->x[0] = vamm_free_pages(c->x[0], c->x[1]); }
-void ov_FreeAddressRegion(Cpu *c) { c->x[0] = vamm_free_region(c->x[0]); }
-void ov_AllocateMemory(Cpu *c) { c->x[0] = vamm_alloc_memory(c->x[0], c->x[1]); }
+// SNAP_VAMM_TRACE=1 (soak leak hunt, off by default): one [vamm] line per guest alloc/free call with size and guest return address.
+bool vamm_trace() { static const bool on = getenv("SNAP_VAMM_TRACE") && atoi(getenv("SNAP_VAMM_TRACE")) > 0; return on; }
+void vtrace(const char *op, uint64_t a, uint64_t size, Cpu *c) {
+    if (!vamm_trace()) return;
+    char chain[256]; int n = 0;   // guest frame-pointer chain (x29 -> {prev fp, lr}), 8 frames at most; stops at a non-stack-looking pointer
+    uint64_t fp = c->x[29];
+    for (int i = 0; i < 8 && fp >= c->sp && fp - c->sp < 0x100000 && !(fp & 7) && n < 220; i++) {
+        uint64_t lr = gld<uint64_t>(fp + 8), nfp = gld<uint64_t>(fp);
+        n += snprintf(chain + n, sizeof chain - n, " %llx", (unsigned long long)(lr & 0xffffffffull));
+        if (nfp <= fp || nfp - fp > 0x100000) break;
+        fp = nfp;
+    }
+    chain[n] = 0;
+    fprintf(stderr, "[vamm] %s a=%#llx size=%#llx lr=%#llx chain:%s\n", op, (unsigned long long)a, (unsigned long long)size, (unsigned long long)c->x[30], chain);
+}
+void ov_AllocateAddressRegion(Cpu *c) { const uint64_t out = c->x[0], sz = c->x[1]; const uint32_t r = vamm_alloc_region(out, sz); if (!r) vtrace("allocRegion", gld<uint64_t>(out), sz, c); c->x[0] = r; }
+void ov_AllocateMemoryPages(Cpu *c) { vtrace("allocPages", c->x[0], c->x[1], c); c->x[0] = vamm_alloc_pages(c->x[0], c->x[1]); }
+void ov_FreeMemoryPages(Cpu *c) { vtrace("freePages", c->x[0], c->x[1], c); c->x[0] = vamm_free_pages(c->x[0], c->x[1]); }
+void ov_FreeAddressRegion(Cpu *c) { vtrace("freeRegion", c->x[0], 0, c); c->x[0] = vamm_free_region(c->x[0]); }
+void ov_AllocateMemory(Cpu *c) { const uint64_t out = c->x[0], sz = c->x[1]; const uint32_t r = vamm_alloc_memory(out, sz); if (!r) vtrace("allocMemory", gld<uint64_t>(out), sz, c); c->x[0] = r; }
 void ov_InitializeVam(Cpu *) {}
 void ov_IsVamEnabled(Cpu *c) { c->x[0] = 1; }
 void ov_VamUsage(Cpu *c) {   // VirtualAddressMemoryResourceUsage {assigned, used} in x0:x1

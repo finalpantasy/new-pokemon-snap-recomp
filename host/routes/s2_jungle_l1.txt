@@ -1,0 +1,48 @@
+# fixture: unlock_all
+# sweep2 route jungle_l1 nav=U entry=0 level=1 mode=ride (mk_routes2.py)
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f120 6 Up
+@f660 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 X
+@f330 6 Up
+@f420 6 Up
+@f540 6 A
+wait ride timeout=300
+repeat @f0 @f60000 24 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit:FolderSelect timeout=500
+@f150 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+# A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
+# open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders
+# (run 1-20261113_160836 timed out on a refused Pichu photo).
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Right
+@f140 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+# A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
+# open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders
+# (run 1-20261113_160836 timed out on a refused Pichu photo).
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Plus
+@f140 8 Up
+@f220 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation: A taps through the comments and the score; the run ends after the evaluation closes.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

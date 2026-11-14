@@ -28,8 +28,13 @@ const int64_t kT0 = NowNs();   // free-grid anchor (shared by the limiter and th
 
 // Sleep until t on the steady clock: high-resolution waitable timer, then at most spinNs of spinning. Without that timer
 // (pre-1803 Windows) Sleep(1) with a 1 ms system timer period.
+struct ThreadTimer {   // one high-resolution timer per waiting thread, closed when the thread exits
+  HANDLE h = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  ~ThreadTimer() { if (h) CloseHandle(h); }
+};
 void WaitUntil(int64_t t, int64_t spinNs) {
-  thread_local HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  thread_local ThreadTimer tt;
+  const HANDLE timer = tt.h;
   static std::once_flag period;
   const int64_t margin = std::max<int64_t>(spinNs, 100000);
   for (;;) {
@@ -92,10 +97,15 @@ struct VBlank {
   uint64_t seq = 0;             // vblank counter
   int64_t tvMeas = 0;           // measured period (filtered)
   bool ok = false;
+  bool refStale = false;        // measured vblanks disagree with tvRef (refresh changed): clock unusable until they agree again
+  int mism = 0, match = 0, multi = 0;   // consecutive short (early) / fitting / non-fitting intervals
+  int64_t staleAt = 0;          // last re-query request while stale
 };
 VBlank g_vb;
 std::once_flag g_vbOnce;
 std::atomic<bool> g_vbDead{false};
+std::atomic<bool> g_vbOpenFailed{false};   // D3DKMTOpenAdapterFromGdiDisplayName failed for the followed monitor
+std::atomic<bool> g_requery{false};        // VBlankMain -> UpdateDisplay: re-read the refresh rate now
 
 void VBlankMain() {
   HMODULE g = LoadLibraryW(L"gdi32.dll");
@@ -108,6 +118,8 @@ void VBlankMain() {
   wchar_t cur[32] = {};
   bool isOpen = false;
   int fails = 0;
+  int openRetry = 0;
+  bool quiet = false;   // a forced reopen of the same monitor: don't repeat the log line
   for (;;) {
     {
       std::lock_guard<std::mutex> lk(g_vb.m);
@@ -117,16 +129,30 @@ void VBlankMain() {
         o = KmtOpen{}; wcscpy_s(o.DeviceName, cur);
         isOpen = cur[0] && open(&o) == 0;
         g_vb.lastV = 0; g_vb.tvMeas = 0; g_vb.ok = false;
-        fprintf(stderr, "[pace] vblank clock on %ls: %s\n", cur, isOpen ? "open" : "D3DKMTOpenAdapterFromGdiDisplayName failed");
+        g_vb.refStale = false; g_vb.mism = g_vb.match = g_vb.multi = 0;
+        if (cur[0]) g_vbOpenFailed = !isOpen;
+        openRetry = 0;
+        if (!quiet) fprintf(stderr, "[pace] vblank clock on %ls: %s\n", cur, isOpen ? "open" : "D3DKMTOpenAdapterFromGdiDisplayName failed");
+        quiet = false;
       }
     }
-    if (!isOpen) { Sleep(50); continue; }
+    if (!isOpen) {
+      // a named monitor whose open failed (or whose stale handle was dropped) is retried about once a second
+      if (cur[0] && ++openRetry >= 20) { openRetry = 0; cur[0] = 0; quiet = true; }
+      Sleep(50); continue;
+    }
     KmtWait w{o.hAdapter, 0, o.VidPnSourceId};
     const LONG st = wait(&w);
     const int64_t t = NowNs();
     if (st != 0) {
       if (++fails == 20) fprintf(stderr, "[pace] vblank wait failing (0x%lx)\n", (unsigned long)st);
       { std::lock_guard<std::mutex> lk(g_vb.m); g_vb.ok = false; }
+      // stale handle or source id (GPU reset, topology change on the same GDI name): drop it and reopen,
+      // at 20 failures and every ~5 s after
+      if (fails >= 20 && (fails - 20) % 50 == 0) {
+        KmtClose c{o.hAdapter}; close(&c); isOpen = false; cur[0] = 0; quiet = true; openRetry = 0;
+        continue;
+      }
       Sleep(fails > 20 ? 100 : 5);
       continue;
     }
@@ -134,7 +160,31 @@ void VBlankMain() {
     {
       std::lock_guard<std::mutex> lk(g_vb.m);
       VBlank& v = g_vb;
-      const int64_t ref = v.tvRef.load();
+      const int64_t ref0 = v.tvRef.load();
+      // Check the vblanks against the reported refresh (UpdateDisplay re-reads it only on a monitor change or every 30 s, so a
+      // refresh change on the same monitor leaves a stale tvRef). Wake-ups are never early and lastV follows the earliest ones,
+      // so an interval more than 10% short of the reference means a faster display: 3 in a row mark the reference stale. A
+      // late wake-up only makes one interval long and at most the next one short, so a loaded PC does not trip it. A slower
+      // display (intervals that don't fit the reference, 30 in a row) is marked stale too; it can only lower the rate.
+      // Stale: the limiter drops to the steady-clock grid (Snapshot says not ok, so the guest vsync runs at the target rate), the
+      // period is measured instead, and UpdateDisplay re-queries now and every 2 s until 8 intervals in a row fit again.
+      if (ref0 > 0 && v.lastV != 0) {
+        const int64_t d = t - v.lastV;
+        const int64_t nr = std::max<int64_t>(1, (d + ref0 / 2) / ref0);
+        const bool early = d < ref0 - ref0 / 10;
+        const bool fits = !early && nr <= 8 && std::llabs(d / nr - ref0) < ref0 / 10;
+        if (early) { v.mism++; v.match = 0; }
+        else if (!fits) { v.multi++; v.mism = 0; v.match = 0; }
+        else { v.match++; v.mism = 0; v.multi = 0; }
+        if (!v.refStale && (v.mism >= 3 || v.multi >= 30)) {
+          v.refStale = true; v.tvMeas = 0; v.staleAt = t; g_requery = true;
+          fprintf(stderr, "[pace] vblanks disagree with %.3f Hz: steady-clock grid until the refresh is re-read\n", 1e9 / ref0);
+        } else if (v.refStale && v.match >= 8) {
+          v.refStale = false;
+          fprintf(stderr, "[pace] vblanks agree with %.3f Hz again\n", 1e9 / ref0);
+        } else if (v.refStale && t - v.staleAt > 2000000000LL) { v.staleAt = t; g_requery = true; }
+      }
+      const int64_t ref = v.refStale ? 0 : ref0;
       if (v.lastV == 0) { v.lastV = t; v.seq++; }
       else {
         const int64_t d = t - v.lastV;
@@ -146,8 +196,11 @@ void VBlankMain() {
           const int64_t pred = v.lastV + n * (ref > 0 ? ref : v.tvMeas);
           const int64_t e = t - pred;   // wake-ups are never early, so an early sample is the better phase estimate
           v.lastV = e < 0 ? t : pred + e / 16;
-        } else v.lastV = t;   // display mode change or a long stall: re-anchor
-        v.seq += (uint64_t)n;
+          v.seq += (uint64_t)n;
+        } else if (const int64_t nl = std::max<int64_t>(1, (d + tv / 10) / tv); ref > 0 && nl <= 8 && d - nl * ref >= 0 && d - nl * ref < ref / 2) {
+          v.lastV += nl * ref;   // a wake-up up to half a vblank late: keep the phase (re-anchoring on it would make the next look early)
+          v.seq += (uint64_t)nl;
+        } else { v.lastV = t; v.seq += (uint64_t)n; }   // display mode change or a long stall: re-anchor
       }
       v.ok = true;
     }
@@ -158,12 +211,13 @@ void StartVBlank() {
   if (kLegacy || EnvZero("SNAP_PACE_VBLANK")) { g_vbDead = true; return; }
   std::call_once(g_vbOnce, [] { std::thread(VBlankMain).detach(); });
 }
-struct VbSnap { bool ok; int64_t lastV, tv; uint64_t seq; };
+struct VbSnap { bool ok; int64_t lastV, tv; uint64_t seq; bool stale; };
 VbSnap Snapshot(int64_t now) {
   std::lock_guard<std::mutex> lk(g_vb.m);
   const int64_t ref = g_vb.tvRef.load();
-  VbSnap s{g_vb.ok, g_vb.lastV, ref > 0 ? ref : g_vb.tvMeas, g_vb.seq};
+  VbSnap s{g_vb.ok, g_vb.lastV, ref > 0 ? ref : g_vb.tvMeas, g_vb.seq, g_vb.refStale};
   if (s.tv <= 0 || now - s.lastV > 250000000) s.ok = false;   // no vblank for 250 ms (display off, wait failing)
+  if (g_vb.refStale) s.ok = false;                            // reported refresh is wrong: don't count vblanks against it
   return s;
 }
 
@@ -172,6 +226,8 @@ struct Clock {
   std::atomic<int64_t> U{16666667};   // guest vsync period on the free grid
   std::atomic<int> kv{0};             // vblanks per guest vsync when locked to the display (0 = free grid)
   std::atomic<uint64_t> parity{0};    // locked: vsync on vblank seqs == parity (mod kv)
+  std::atomic<int64_t> Unom{16666667};  // the game's nominal vsync period: a locked tick never comes sooner than 0.9 of it
+  std::atomic<bool> immediate{false};   // present mode IMMEDIATE (SNAP_VSYNC=off): release right after the vblank
 } g_clk;
 std::atomic<uint64_t> g_vsTicks{0};
 std::atomic<int64_t> g_vsLast{0};
@@ -199,6 +255,7 @@ struct Rel {
   int kf = 0;            // vblanks per frame when locked
   int64_t lastIdx = 0;   // free grid index of the last release
   uint64_t lastSeq = 0;  // locked: vblank seq whose mid-point released the last frame
+  int64_t lastRelT = 0;  // steady time of the last release (mode switches keep at least 0.9 of a frame after it)
   int64_t lastP = 0;
   int lastLogMode = -1, lastLogK = -1;
   double lastLogHz = -1;
@@ -211,7 +268,8 @@ struct Log {
   int64_t prevRelease = 0, prevEnd = 0, pwNs = 0, lateNs = 0;
   int pwTo = 0, mode = 0, kf = 0;
   double hz = 0;
-  uint64_t n = 0, vsPrev = 0;
+  uint64_t n = 0, vsPrev = 0, vsAtRel = 0;
+  int64_t vsLastAtRel = 0;   // vsync tick count / time sampled at the release
   bool open = false;
 } g_log;
 enum { K_PACE_BEGIN = 4, K_PACE_END = 5 };
@@ -221,8 +279,8 @@ void LogRow() {
   if (!L.f) return;
   const int64_t rel = L.mk[K_PACE_END], beg = L.mk[K_PACE_BEGIN];
   auto ms = [](int64_t a, int64_t b) { return (a && b && b >= a) ? (double)(b - a) / 1e6 : 0.0; };
-  const uint64_t vs = g_vsTicks.load();
-  const int64_t vl = g_vsLast.load();
+  const uint64_t vs = L.vsAtRel;
+  const int64_t vl = L.vsLastAtRel;
   fprintf(L.f, "%llu,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%.3f,%.3f,%llu,%.3f,%c,%d,%.3f,%.3f\n", (unsigned long long)L.n, (double)(rel - kT0) / 1e6,
           ms(L.prevRelease, rel), ms(L.prevEnd, beg), ms(beg, rel), (double)L.pwNs / 1e6, L.pwTo, ms(L.mk[M_ACQ_BEGIN], L.mk[M_ACQ_END]),
           ms(L.mk[M_QP_BEGIN], L.mk[M_QP_END]), (unsigned long long)(vs - L.vsPrev), vl && rel ? (double)(rel - vl) / 1e6 : 0.0,
@@ -240,7 +298,8 @@ void UpdateDisplay(void* hwnd, int64_t now) {
   static const char* monEnv = getenv("SNAP_PACE_MONITOR");   // test override: monitor number (\\.\DISPLAY<n>)
   static const double hzEnv = getenv("SNAP_PACE_REFRESH") ? atof(getenv("SNAP_PACE_REFRESH")) : 0.0;
   HMONITOR m = MonitorFromWindow((HWND)hwnd, MONITOR_DEFAULTTOPRIMARY);
-  if (m == R.mon && now - R.hzAt < 30000000000LL) return;
+  const bool force = g_requery.exchange(false);   // the vblank thread saw the refresh disagree with tvRef
+  if (!force && m == R.mon && now - R.hzAt < 30000000000LL) return;
   R.mon = m;
   R.hzAt = now;
   wchar_t name[32] = {};
@@ -303,7 +362,11 @@ void DeviceCreated(VkDevice dev) {
   if (g_pwOn) g_waitPresent = (PFN_vkWaitForPresentKHR)vkGetDeviceProcAddr(dev, "vkWaitForPresentKHR");
   if (!g_waitPresent) g_pwOn = false;
   if (!kLegacy) fprintf(stderr, "[pace] model display (SNAP_PACE=legacy for the old limiter), present wait %s\n", g_pwOn ? "on" : "off");
+  if (const char* e = getenv("SNAP_PACE")) if (*e && !kLegacy && _stricmp(e, "display"))
+    fprintf(stderr, "[pace] warning: SNAP_PACE=%s is not a known value (legacy or display); using display\n", e);
 }
+
+void SetImmediate(bool on) { g_clk.immediate = on; }
 
 void SwapchainCreated(VkSwapchainKHR sc, void*) {
   g_sc = sc;
@@ -346,6 +409,7 @@ void Release(void* hwnd, VkSwapchainKHR sc, int64_t base, int64_t vsyncNs) {
   // vsync thread and of the limiter below stay on one clock even without the vblank thread.
   const int kvD = (tvD > 0 && vsyncNs > 0) ? multiple(vsyncNs / tvD) : 0;
   g_clk.U = kvD ? (int64_t)std::llround(kvD * tvD) : (vsyncNs > 0 ? vsyncNs : 16666667);
+  g_clk.Unom = vsyncNs > 0 ? vsyncNs : 16666667;
   const int kv = vb.ok ? kvD : 0;
   const int kf = (kv && base > 0) ? multiple(base / tvD) : 0;
   g_clk.kv = kv;
@@ -356,10 +420,22 @@ void Release(void* hwnd, VkSwapchainKHR sc, int64_t base, int64_t vsyncNs) {
     const uint64_t sNow = vb.seq + (uint64_t)(std::max<int64_t>(0, now - vb.lastV) / tv);
     uint64_t next = R.lastSeq + (uint64_t)kf;
     // Release half a vblank after vblank `next`: the frame shows on vblank next+1 whichever side of the mid-point jitter puts it.
-    T = vb.lastV + ((int64_t)next - (int64_t)vb.seq) * tv + tv / 2;
+    // IMMEDIATE presents at once, so there a mid-point release puts the tear line mid-screen: release just after the vblank
+    // instead, which keeps the tear near the top of the screen.
+    const int64_t off = g_clk.immediate.load() ? std::min<int64_t>(500000, tv / 8) : tv / 2;
+    T = vb.lastV + ((int64_t)next - (int64_t)vb.seq) * tv + off;
     if (R.mode != 2 || R.kf != kf || R.lastSeq == 0 || next + (uint64_t)kf <= sNow || next > sNow + 2 * (uint64_t)kf) {
       next = sNow;   // (re)start, or more than a frame behind: release now (waiting for a mid-point would only slow a late game)
       T = now;
+      // ...but never sooner than 0.9 of a frame after the last release (switching from the free grid would otherwise give a
+      // short frame): then the first vblank mid-point after that
+      const int64_t floorT = R.lastRelT ? R.lastRelT + base * 9 / 10 : 0;
+      if (T < floorT) {
+        const int64_t m = (floorT - off - vb.lastV + tv - 1) / tv;
+        next = vb.seq + (uint64_t)std::max<int64_t>(0, m);
+        if (next < sNow) next = sNow;
+        T = vb.lastV + ((int64_t)next - (int64_t)vb.seq) * tv + off;
+      }
     }
     R.lastSeq = next;
     R.mode = 2; R.kf = kf;
@@ -368,7 +444,11 @@ void Release(void* hwnd, VkSwapchainKHR sc, int64_t base, int64_t vsyncNs) {
     // Free grid on the steady clock. With a known whole-multiple refresh but no vblank clock, use the display's exact period.
     int64_t P = base;
     if (kvD) if (const int k = multiple(base / tvD)) P = (int64_t)std::llround(k * tvD);
-    if (R.mode != 1 || R.lastP != P) R.lastIdx = (now - kT0) / P - 1;
+    if (R.mode != 1 || R.lastP != P) {
+      R.lastIdx = (now - kT0) / P - 1;
+      // entering the grid (from the locked clock): first grid point at least 0.9 of a frame after the last release
+      if (R.lastRelT) R.lastIdx = std::max<int64_t>(R.lastIdx, (R.lastRelT + base * 9 / 10 - kT0 + P - 1) / P - 1);
+    }
     int64_t idx = R.lastIdx + 1;
     T = kT0 + idx * P;
     if (now - T > P) { idx = (now - kT0) / P; T = kT0 + idx * P; }   // more than a period behind: drop the schedule
@@ -377,12 +457,13 @@ void Release(void* hwnd, VkSwapchainKHR sc, int64_t base, int64_t vsyncNs) {
   }
   if (R.mode != R.lastLogMode || R.kf != R.lastLogK || R.hz != R.lastLogHz) {
     fprintf(stderr, "[pace] %s, %ls %.3f Hz, vblank clock %s, frame %.3f ms\n", R.mode == 2 ? "locked to vblank" : "steady-clock grid", R.name, R.hz,
-            vb.ok ? "ok" : (g_vbDead ? "unavailable" : "not ready"), R.mode == 2 ? kf * vb.tv / 1e6 : R.lastP / 1e6);
+            vb.ok ? "ok" : g_vbDead ? "unavailable" : g_vbOpenFailed ? "failed" : vb.stale ? "disagrees with the refresh" : "not ready", R.mode == 2 ? kf * vb.tv / 1e6 : R.lastP / 1e6);
     R.lastLogMode = R.mode; R.lastLogK = R.kf; R.lastLogHz = R.hz;
   }
   QueueCap(sc, T + (R.mode == 2 ? vb.tv / 2 : base / 2));
   now = NowNs();
   if (T > now) WaitUntil(T, 300000);
+  R.lastRelT = std::max(T, now);
   if (LogOn()) { g_log.mode = R.mode; g_log.kf = R.kf; g_log.hz = R.hz; g_log.lateNs = std::max<int64_t>(0, now - T); }
 }
 
@@ -399,7 +480,7 @@ void PaceMark(bool end) {
     if (L.f) fprintf(L.f, "n,t_ms,dt_ms,work_ms,pace_ms,pw_ms,pw_to,acq_ms,qp_ms,vs_n,vs_ph_ms,mode,kf,hz,late_ms\n");
   }
   if (!end) { if (L.mk[K_PACE_END]) LogRow(); L.mk[K_PACE_BEGIN] = NowNs(); }
-  else L.mk[K_PACE_END] = NowNs();
+  else { L.mk[K_PACE_END] = NowNs(); L.vsAtRel = g_vsTicks.load(); L.vsLastAtRel = g_vsLast.load(); }
 }
 }  // namespace snap_pace
 
@@ -416,6 +497,8 @@ extern "C" int snap_pace_vsync_wait(int64_t* last) {
   if (kLegacy) return 0;
   StartVBlank();
   static uint64_t lastSeq = 0;
+  static int64_t lastTickV = 0;   // vblank time of the last locked tick (0 after a free-grid tick)
+  static int64_t lastGridT = 0;   // grid point of the last free-grid tick (0 after a locked tick)
   const int kv = g_clk.kv.load();
   bool ticked = false;
   if (kv > 0 && !g_vbDead) {
@@ -424,9 +507,21 @@ extern "C" int snap_pace_vsync_wait(int64_t* last) {
     const uint64_t s0 = g_vb.seq;
     // Next vblank with the limiter's parity after the last tick; the current one only if the last tick was right before it.
     const uint64_t lo = (lastSeq && s0 >= lastSeq && s0 - lastSeq <= k) ? std::max(lastSeq + 1, s0) : s0 + 1;
-    const uint64_t want = lo + (par + k - lo % k) % k;
-    ticked = g_vb.cv.wait_for(lk, std::chrono::milliseconds(100), [&] { return g_vb.seq >= want; });
-    if (ticked) lastSeq = g_vb.seq - ((g_vb.seq - want) % k);
+    uint64_t want = lo + (par + k - lo % k) % k;
+    // Rate guard, measured on the filtered vblank times (no wake-up jitter): between locked ticks at least 0.75 of the game's
+    // vsync period, so vblanks faster than the reported refresh can't speed the game up before the vblank thread flags them.
+    // First locked tick after a free-grid tick: at least 0.9 of a period after it, so relocking never gives a short frame.
+    const int64_t Un = g_clk.Unom.load();
+    for (;;) {
+      ticked = g_vb.cv.wait_for(lk, std::chrono::milliseconds(100), [&] { return g_vb.seq >= want; });
+      if (!ticked) break;
+      lastSeq = g_vb.seq - ((g_vb.seq - want) % k);
+      const int64_t vt = g_vb.lastV;
+      const int64_t ref = lastTickV ? lastTickV : *last;
+      if (!ref || !vt || vt - ref >= (lastTickV ? Un * 3 / 4 : Un * 9 / 10)) { lastTickV = vt; break; }
+      want = lastSeq + k;
+      ticked = false;
+    }
   }
   if (!ticked) {   // free grid shared with the limiter (also the fallback when the vblank clock stops)
     const int64_t U = g_clk.U.load(), now = NowNs();
@@ -434,10 +529,11 @@ extern "C" int snap_pace_vsync_wait(int64_t* last) {
     // the release made the order of the two a coin flip).
     const int64_t a = kT0 - std::min<int64_t>(1000000, U / 8);
     int64_t next = a + ((now - a) / U + 1) * U;
-    if (*last && next < *last + U / 2) next += U;
+    // after a free tick compare grid points (the wake-up may be late); after a locked tick keep at least 0.9 of a period
+    if (lastGridT ? next < lastGridT + U / 2 : (*last && next < *last + U * 9 / 10)) next += U;
     WaitUntil(next, 0);
-    lastSeq = 0;
-  }
+    lastSeq = 0; lastTickV = 0; lastGridT = next;
+  } else lastGridT = 0;
   *last = NowNs();
   snap_pace_vsync_note();
   return 1;

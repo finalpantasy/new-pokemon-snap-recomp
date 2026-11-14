@@ -94,8 +94,11 @@ void ov_GetCurrentCoreNumber(Cpu *c) {
     c->x[0] = (uint64_t)guest_core_number(t);
 }
 void ov_YieldThread(Cpu *) { yield_thread(self()); }
+extern "C" int64_t snap_highfps_sleep_ns(uint64_t lr, int64_t ns);   // host/mods/highfps.cpp: identity unless SNAP_FPS=120|144
+extern "C" int64_t snap_highfps_sleep_none(uint64_t, int64_t ns) { return ns; }   // for targets that do not link host/mods
+#pragma comment(linker, "/alternatename:snap_highfps_sleep_ns=snap_highfps_sleep_none")
 void ov_SleepThread(Cpu *c) {   // TimeoutHelperImplByHorizon::Sleep sdk+0x34a020: 0 returns at once
-    int64_t ns = (int64_t)c->x[0];
+    int64_t ns = snap_highfps_sleep_ns(c->x[30], (int64_t)c->x[0]);
     Thread *t = self();
     if (ns > 0) sleep_ns(t, ns);
     else poll_preempt(t);
@@ -346,9 +349,11 @@ void ov_SetInitialThreadName(Cpu *c) { set_default_thread_name(c->x[1]); }
 void ov_GetThreadAvailableCoreMask(Cpu *c) {
     c->x[0] = g_cfg.app_cores > 0 && g_cfg.app_cores < 64 ? (1ull << g_cfg.app_cores) - 1 : 7;   // guest cores only (spare cores hidden)
 }
+extern "C" __attribute__((weak)) void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp (host build); null where it is not linked (tests/os)
 void ov_QuickExit(Cpu *) {
     log("guest QuickExit / ExitProcess");
     fflush(nullptr);
+    if (snap_fs_drain_for_exit) snap_fs_drain_for_exit(3000);   // let a save commit / photo export in flight finish (bounded) before the process ends
     TerminateProcess(GetCurrentProcess(), 0);
 }
 void ov_nnosInitialize(Cpu *) {}   // the host runtime is initialised by os_init before any guest code runs

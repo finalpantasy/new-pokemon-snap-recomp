@@ -184,6 +184,7 @@ bool g_neo_log;
 struct RailState { uint64_t obj; float last; bool have; };
 RailState g_rails[8];
 int g_nrails;
+int g_rail_evict;
 bool g_neo_inited;
 
 void neo_init() {
@@ -207,8 +208,8 @@ extern "C" void rt_gm_neo_speed(Cpu *c) {
     RailState *rs = nullptr;
     for (int i = 0; i < g_nrails; i++) if (g_rails[i].obj == obj) { rs = &g_rails[i]; break; }
     if (!rs) {
-        if (g_nrails >= 8) return;
-        rs = &g_rails[g_nrails++];
+        if (g_nrails < 8) rs = &g_rails[g_nrails++];
+        else { rs = &g_rails[g_rail_evict]; g_rail_evict = (g_rail_evict + 1) % 8; }   // recycle oldest slot: rails are never freed, so a full table must not disable the speed override
         rs->obj = obj; rs->have = false;
         if (g_neo_log) fprintf(stderr, "[neo] rail object %#llx (progress %g)\n", (unsigned long long)obj, *pp);
     }

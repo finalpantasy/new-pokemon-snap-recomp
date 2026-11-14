@@ -20,6 +20,9 @@ void menu_closed();                 // saves pending edits
 void menu_tick_save();              // debounced save of live edits
 // Small notice at the bottom of the screen (invalid input file, migration, save errors); true while it is on screen.
 bool draw_toast(ImVec2 size, double now);
+// Shiny capture effect (runtime/ui/ui_shiny.cpp): badge, sparkles; active for ~2.6 s after snap_shiny_fx_trigger.
+bool shiny_fx_active();
+void draw_shiny_fx(ImVec2 size);
 void menu_select_tab(const char* name);   // scripted test: Bindings, Mouse, Controller, Accessibility, Test
 // Rebinding as the UI performs it (a click on a slot); used by the scripted test.
 bool menu_begin_rebind(int action, hle::input::Device dev, int slot);

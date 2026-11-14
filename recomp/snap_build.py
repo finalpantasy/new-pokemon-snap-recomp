@@ -84,13 +84,21 @@ def main():
     ap.add_argument('--only', default='*.c')
     ap.add_argument('--lib', default='snap_main')
     ap.add_argument('--no-lib', action='store_true')
+    # PGO (2026-11-13, host/README.md "PGO and ThinLTO"): 'auto' optimizes with build/pgo/snap.profdata when it exists (local,
+    # trained on a Florio course run); 'off' = the plain -O2 build. Skipped when --cflags already has a -fprofile flag.
+    ap.add_argument('--pgo', choices=('auto', 'off'), default='auto')
     args = ap.parse_args()
     lower_priority()
     obj_dir, lib_dir = args.out / 'obj', args.out / 'lib'
     obj_dir.mkdir(parents=True, exist_ok=True)
     lib_dir.mkdir(parents=True, exist_ok=True)
     flags = [args.opt, '-fno-strict-aliasing', '-w', '-I', str(RUNTIME), '-D_CRT_SECURE_NO_WARNINGS'] + args.cflags.split()
-    stamp = hashlib.sha256((' '.join(flags) + ''.join(
+    prof = ROOT / 'build' / 'pgo' / 'snap.profdata'
+    prof_hash = ''
+    if args.pgo == 'auto' and prof.exists() and '-fprofile' not in args.cflags:
+        flags.append('-fprofile-use=' + str(prof))
+        prof_hash = hashlib.sha256(prof.read_bytes()).hexdigest()   # a new profile rebuilds everything
+    stamp = hashlib.sha256((' '.join(flags) + prof_hash + ''.join(
         hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(RUNTIME.glob('*.h')))).encode()).hexdigest()
     stamp_f = args.out / 'flags.stamp'
     stale_all = not stamp_f.exists() or stamp_f.read_text() != stamp

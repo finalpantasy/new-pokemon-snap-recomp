@@ -33,6 +33,8 @@ void UpscaleDestroy(Host* h);   // device idle
 bool UpscaleOnSetRenderTargets(ReplayCtx& cx);
 // The jitter in host pixels for the bound targets (0, 0 when none); added to every viewport 0..3 emitted for them.
 void UpscaleViewportJitter(const ReplayCtx& cx, float* jx, float* jy);
+// [fx] jitter of this frame's scene draws in host pixels (nvn_fx.cpp), 0, 0 when the upscaler is off or the frame is held.
+void UpscaleSceneJitter(float* jx, float* jy);
 // nvn_draw.cpp ResolveHandle: the texture to sample instead of t (the upscaled scene for the game's final pass), or nullptr.
 TextureImpl* UpscaleSubstitute(const ReplayCtx& cx, TextureImpl* t);
 // nvn_vk.cpp SubmitLists: before the lists of one submit are replayed (photo frames are found by looking ahead in them).

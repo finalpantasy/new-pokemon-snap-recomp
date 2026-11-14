@@ -22,4 +22,6 @@ void AaForgetTexture(const struct TextureImpl* t);
 void AaPatchFragment(std::vector<uint32_t>& words, const char* key12);
 // Called after every draw; runs SMAA and/or CAS in place on render target 0 when the draw used one of the game's tonemap programs.
 void AaAfterDraw(ReplayCtx& cx, const char* fragKey12);
+// True for the game's tonemap programs (the four FXAA ones and the plain / LUT ones); the Fx post-tonemap slot (nvn_fx.cpp) uses it.
+bool AaIsTonemapKey(const char* fragKey12);
 }  // namespace nvn

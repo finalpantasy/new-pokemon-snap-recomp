@@ -1,5 +1,5 @@
 # fixture: unlock_all
-# sweep2 route volcano nav=R R R R R U U D entry=0 level=0 mode=ride (mk_routes2.py)
+# sweep2 route volcano nav=R R R R U entry=0 level=0 mode=ride (mk_routes2.py)
 wait ui=title timeout=200
 repeat @f60 @f30000 40 4 A
 wait ui=map_select:StageSelect timeout=300
@@ -7,11 +7,8 @@ wait ui=map_select:StageSelect timeout=300
 @f480 6 Right
 @f840 6 Right
 @f1200 6 Right
-@f1560 6 Right
-@f1920 6 Up
-@f2280 6 Up
-@f2640 6 Down
-@f3180 6 A
+@f1560 6 Up
+@f2100 6 A
 wait ui=map_select:CourseSelect timeout=60
 @f180 6 A
 wait ride timeout=300
@@ -19,8 +16,7 @@ repeat @f0 @f60000 24 4 A
 repeat @f0 @f60000 400 60 rx=0.25
 repeat @f200 @f60000 400 60 rx=-0.25
 wait ui=photo_submit:FolderSelect timeout=500
-@f150 8 Right
-@f230 8 A
+@f150 8 A
 wait ui=photo_submit:PhotoSubmit timeout=30
 # A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
 # open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders

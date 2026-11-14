@@ -1,0 +1,13 @@
+# fixture: unlock_all
+# sweep2 route jungle_s3 nav=U entry=0 level=3 mode=scout (mk_routes2.py)
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f120 6 Up
+@f660 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 X
+@f360 6 A
+wait ride timeout=300
+wait ride_end timeout=500
+end @f300
