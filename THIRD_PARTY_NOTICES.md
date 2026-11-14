@@ -32,6 +32,12 @@ Reference only, not copied: Kirikae (https://github.com/Cor3Duo/kirikae) @ `304a
 - Unicorn 2.1.4 (GPL-2.0), test-only reference emulator in a private venv; never linked into or shipped with the generator or runtime.
 - Capstone (BSD-3-Clause), pyelftools (public domain), NumPy (BSD-3-Clause).
 
+## Project logo
+
+`docs/logo/snap-recomp-logo.svg` is original artwork made for this project. Its lettering is outlines drawn from the Rubik Bold typeface,
+Copyright (c) 2015 by Hubert & Fischer, licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org). The font
+software itself is not included.
+
 ## License texts
 
 ### TotK Recomp (MIT)

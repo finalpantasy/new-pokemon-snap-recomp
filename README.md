@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo/snap-recomp-logo.svg" alt="Snap Recomp: native PC recompilation" width="600">
+</p>
+
 <h1 align="center">New Pokémon Snap PC Recomp</h1>
 
 <p align="center">
@@ -290,6 +294,6 @@ The native settings tabs are patched into a copy of the game's own settings UI f
 
 ## License and credits
 
-MIT, see [LICENSE](LICENSE). The lifter and CPU runtime adapt TotK Recomp and LAS Recomp (both MIT); the shader harness builds on the Ryujinx shader translator; the SSBH layout follows ssbh_lib. Full notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT, see [LICENSE](LICENSE). The lifter and CPU runtime adapt TotK Recomp and LAS Recomp (both MIT); the shader harness builds on the Ryujinx shader translator; the SSBH layout follows ssbh_lib. The project logo is original artwork; its lettering is drawn from the Rubik typeface (SIL Open Font License 1.1). Full notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 New Pokémon Snap is a trademark of Nintendo and The Pokémon Company. This project is unaffiliated with them.
