@@ -2,10 +2,10 @@
   <img src="docs/logo/snap-recomp-logo.svg" alt="Snap Recomp: native PC recompilation" width="600">
 </p>
 
-<h1 align="center">New Pokémon Snap PC Recomp</h1>
+<h1 align="center">Snap Recomp</h1>
 
 <p align="center">
-  <b>A native Windows static recompilation of New Pokémon Snap (Switch).</b><br>
+  <b>A native Windows static recompilation of a 2021 Switch photography game. Works with your own copy of New Pokémon Snap 2.0.1.</b><br>
   The game's AArch64 code is lifted to C, built with clang, and run on a hand-written Horizon OS and NVN-to-Vulkan runtime.
 </p>
 
