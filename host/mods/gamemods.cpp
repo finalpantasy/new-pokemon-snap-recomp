@@ -36,7 +36,7 @@
 #include <vector>
 
 #include "loader.h"
-#include "hle/visual_defaults.h"   // default font scale (SNAP_PROFILE)
+#include "hle/visual_defaults.h"   // default font scale (SNAP_VISUALS)
 
 using namespace loader;
 

@@ -288,11 +288,11 @@ pulldowns with their popup), tab bar, help line, sounds and Restore Default Sett
   one change each (pulldown picks with Down inside the popup, choices), Minus on Photos, B twice (the first leaves the Reset button) closes. Run it with
   `SNAP_MODS_DIR=build\w\<owner>_mods` (pack built with `--out` there) plus the three switches above.
 
-## Visual defaults and SNAP_PROFILE (2026-11-13, `runtime/hle/visual_defaults.h`)
+## Visual defaults and SNAP_VISUALS (2026-11-13, `runtime/hle/visual_defaults.h`)
 
-The settings whose defaults can differ from the original game live in one table. The owner chose the original look as the default on 2026-11-13. Each extra still works on its own through its own switch (an F1 menu choice, which `settings.cpp` exports as env, or a hand-set env var), and that always wins over the profile. `SNAP_PROFILE=enhanced` turns every extra on at once; `SNAP_PROFILE=original` forces the original look if the default is ever flipped back. To change the default for everyone, flip `snapdef::kDefaultEnhanced` in that header (one line); the F1 menu labels, the Normal preset and the code paths all read the table.
+The settings whose defaults can differ from the original game live in one table. The owner chose the original look as the default on 2026-11-13. Each extra still works on its own through its own switch (an F1 menu choice, which `settings.cpp` exports as env, or a hand-set env var), and that always wins over the profile. `SNAP_VISUALS=enhanced` turns every extra on at once; `SNAP_VISUALS=original` forces the original look if the default is ever flipped back. To change the default for everyone, flip `snapdef::kDefaultEnhanced` in that header (one line); the F1 menu labels, the Normal preset and the code paths all read the table.
 
-| Setting (env) | Original (default) | Enhanced (`SNAP_PROFILE=enhanced`) | Read by |
+| Setting (env) | Original (default) | Enhanced (`SNAP_VISUALS=enhanced`) | Read by |
 |---|---|---|---|
 | Anti-aliasing (`SNAP_AA`) | `original`: the game's own FXAA | `ssaa2+smaa`: 2x window height, capped (below), plus SMAA | `nvn_aa.cpp` (`AaParseEnv`) |
 | Sharpening (`SNAP_SHARPEN`) | 0 (off) | 0.30 (CAS) | `nvn_aa.cpp`; off with an upscaler unless `SNAP_SHARPEN` is set |
@@ -309,9 +309,9 @@ The row picks Very Low, Low, Normal, High, Ultra or Maximum and sets nine rows a
 | Row (env) | Very Low | Low | Normal | High | Ultra | Maximum |
 |---|---|---|---|---|---|---|
 | Render scale (`SNAP_RENDER_SCALE`) | 0.50 | 1 | default | default | 2.00 | 4.00 |
-| Anti-aliasing (`SNAP_AA`) | none | off (game FXAA) | default (the game's own FXAA; ssaa2+smaa with `SNAP_PROFILE=enhanced`) | ssaa2,smaa | smaa | smaa |
+| Anti-aliasing (`SNAP_AA`) | none | off (game FXAA) | default (the game's own FXAA; ssaa2+smaa with `SNAP_VISUALS=enhanced`) | ssaa2,smaa | smaa | smaa |
 | Sharpening (`SNAP_SHARPEN`) | 0 | 0 | default | 0.30 | 0.30 | 0.50 |
-| Aniso (`SNAP_ANISO`) | off | 4 | default (off; 16 with `SNAP_PROFILE=enhanced`) | 16 | 16 | 16 |
+| Aniso (`SNAP_ANISO`) | off | 4 | default (off; 16 with `SNAP_VISUALS=enhanced`) | 16 | 16 | 16 |
 | Texture sharpness (`SNAP_LOD_BIAS`) | +1 | auto | auto | auto | auto | auto |
 | Shadow map (`SNAP_SHADOW_RES`) | 512 | 1024 | 1024 | 2048 | 4096 | 8192 |
 | AO quality (`SNAP_SSAO_QUALITY`) | default | default | default | high | ultra | ultra |

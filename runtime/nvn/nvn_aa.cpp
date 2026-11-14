@@ -300,7 +300,7 @@ float AaParseEnv() {
   g_log = getenv("SNAP_AA_LOG") && getenv("SNAP_AA_LOG")[0] != '0';
   float scale = 0.f;
   {
-    // Default (SNAP_AA unset) comes from hle/visual_defaults.h: the game's own FXAA ("original") or ssaa2+smaa+CAS ("enhanced", SNAP_PROFILE).
+    // Default (SNAP_AA unset) comes from hle/visual_defaults.h: the game's own FXAA ("original") or ssaa2+smaa+CAS ("enhanced", SNAP_VISUALS).
     // SNAP_AA=off is the original FXAA path. An explicit SNAP_RENDER_SCALE wins over the enhanced default's ssaa2.
     const char* e = getenv("SNAP_AA"); if (e && !*e) e = nullptr;
     std::string s = e ? e : snapdef::get("SNAP_AA");

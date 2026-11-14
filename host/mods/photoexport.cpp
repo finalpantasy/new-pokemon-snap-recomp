@@ -6,7 +6,7 @@
 // <photos>\photo_<date>_<time>_<n>.png (Windows Imaging Component, lossless) plus a .json sidecar with the size, the game's
 // JPEG byte size and its CRC32 (the gallery links an export to its album entry through that CRC).
 //
-//   SNAP_PHOTO_EXPORT=1|0   enables / disables the export (default per hle/visual_defaults.h: off, on with SNAP_PROFILE=enhanced; when off the overrides are not registered at all).
+//   SNAP_PHOTO_EXPORT=1|0   enables / disables the export (default per hle/visual_defaults.h: off, on with SNAP_VISUALS=enhanced; when off the overrides are not registered at all).
 //   SNAP_PHOTO_DIR=<dir>    output folder (default %APPDATA%\SnapRecomp\photos; test runs should set it).
 //   SNAP_PHOTO_MIN_W=<n>    smallest width that counts as a photo (default 640; thumbnails are smaller).
 //   SNAP_PHOTO_LOG=1        logs every encoder call (format, size, stride) to stderr.
@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "loader.h"
-#include "hle/visual_defaults.h"   // default on/off (SNAP_PROFILE)
+#include "hle/visual_defaults.h"   // default on/off (SNAP_VISUALS)
 
 #pragma comment(lib, "windowscodecs")
 

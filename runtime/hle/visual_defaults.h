@@ -3,7 +3,8 @@
 //
 // Each row has two values: the original game's ("original") and this port's extras ("enhanced"). kDefaultEnhanced picks which column is
 // the default when nothing is set. The owner chose the original look as the default on 2026-11-13; flip the one constant below to change that.
-// SNAP_PROFILE=original|enhanced overrides the choice for one run (all rows at once). A value set on its own (env var, or a saved F1 menu
+// SNAP_VISUALS=original|enhanced overrides the choice for one run (all rows at once). (It was SNAP_PROFILE until 2026-11-13, which
+// clashed with the save-profile name read by hle_config.cpp; SNAP_PROFILE now means only the save profile.) A value set on its own (env var, or a saved F1 menu
 // choice, which settings.cpp exports as env) always wins over the profile, so every extra still works through its own switch.
 //
 // Readers use snapdef::get("SNAP_...") instead of getenv: it returns the env value when set (non-empty), else the profile's value.
@@ -35,7 +36,7 @@ inline const Def* table(int* n) {
   return t;
 }
 inline bool enhanced() {
-  const char* p = getenv("SNAP_PROFILE");
+  const char* p = getenv("SNAP_VISUALS");
   if (p && *p) {
     if (!_stricmp(p, "enhanced")) return true;
     if (!_stricmp(p, "original")) return false;

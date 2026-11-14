@@ -47,7 +47,7 @@ using Choices = std::vector<std::pair<std::string, std::string>>;   // (stored v
 
 // Text that must outlive the Opt tables (they hold const char*): kept for the life of the process.
 const char* keep(const std::string& s) { static std::deque<std::string> store; store.push_back(s); return store.back().c_str(); }
-// "Default (<what the default is>)": read from the shared defaults table, so the label follows SNAP_PROFILE and the table's one-line flip.
+// "Default (<what the default is>)": read from the shared defaults table, so the label follows SNAP_VISUALS and the table's one-line flip.
 std::string default_label(const char* envKey) { return std::string("Default (") + snapdef::def_text(envKey) + ")"; }
 
 struct Opt {
@@ -169,7 +169,7 @@ std::vector<Opt>& graphics_opts() {
       {"gfx_preset", "Quality preset", kChoice, kRestart,
        "Sets the picture-quality rows below together: render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution and ambient occlusion. "
        "Very Low: for really weak hardware (draws the 3D scene at half size, 960 x 540, then stretches it to the window; no anti-aliasing, no filtering, softer textures, 512 shadows, few occlusion samples). "
-       "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Normal: the defaults (the game's own look unless SNAP_PROFILE=enhanced). "
+       "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Normal: the defaults (the game's own look unless SNAP_VISUALS=enhanced). "
        "High: 2x supersampling, SMAA, 2048 shadows, High occlusion. Ultra: 2x scale, 4096 shadows, Ultra occlusion. "
        "Maximum: 4x scale (7680 x 4320), 8192 shadows and the most occlusion samples. It will slow even a very fast graphics card and needs a lot of video memory. "
        "In the course the costly rows are render scale, anti-aliasing, filtering and texture sharpness; shadow size only sharpens Pokemon shadows and the occlusion rows only act on the photo-select screen. "
