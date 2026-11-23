@@ -627,12 +627,26 @@ class Emitter:
                         own[i] += line
             clean = {i for i, ins in enumerate(insns) if entry + 4 * i not in self.patched
                      and (ins.kind in ('bl', 'blr') or (ins.kind == 'op' and regs.RELOAD in own[i]))}
-            rp = regs.plan(texts, succ, clean, self.reg_locals, self.kept)
+            vsets = None
+            if regs.V_LOCALS:
+                vsets = [regs.vregs(mod.word(entry + 4 * i)) for i in range(n)]
+                nv = sum(1 for v in vsets if v)
+                ncall = sum(1 for ins in insns if ins.kind in ('bl', 'blr'))
+                if nv < regs.V_MIN or nv < regs.V_PER_CALL * ncall or len(frozenset().union(*(v[0] for v in vsets if v))) > regs.V_MAX:
+                    vsets = None
+                elif any(entry + 4 * i in self.patched and regs.VANY.search(texts[i]) for i in range(n)):
+                    vsets = None   # a patched site's alternatives are other words than the one vregs() decodes
+                else:
+                    regs.check_vsets(entry, texts, vsets)
+            rp = regs.plan(texts, succ, clean, self.reg_locals, self.kept, vsets)
             if rp.regs:
                 out.append('    ' + rp.decl())
             self.stats['local_reg_functions'] += bool(rp.regs)
+            self.stats['local_v_functions'] += bool(rp.vregs)
             self.stats['reg_spills'] += sum(len(s) for s in rp.spill)
             out += [line if i is None else rp.resolve(i, line) for i, line in body]
+            if rp.vregs:
+                out.append(rp.end())
         else:
             out += [line for _, line in body]
         out.append('}')

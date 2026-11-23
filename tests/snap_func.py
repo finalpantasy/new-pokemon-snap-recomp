@@ -493,6 +493,7 @@ def main():
         called = set()
         for e, en, _, _ in gp:
             called |= callees(emitter, e, en)
+        called |= {int(f[2:], 16) for f in undefined}   # also tail exits and fall-throughs into functions outside the subset
         table = GEN / f'table_harness_{gname}.c'
         table.write_text('#include "cpu.h"\n' + ''.join(f'void {gen.fname(e)}(Cpu *c);\n' for e, _, _, _ in gp) +
                          'GuestFn tests[] = {' + ','.join(gen.fname(e) for e, _, _, _ in gp) + '};\n' +
