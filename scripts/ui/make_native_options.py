@@ -275,8 +275,8 @@ TABS = [
             (('tl', 'Top left'), ('tr', 'Top right'), ('bl', 'Bottom left'), ('br', 'Bottom right')),
             'Where the performance overlay sits on the screen.'),
         row('Frame rate target', 'p', 'opt', 'fps_target', 'default',
-            (('default', "60 (the game's own)"),) + nums('72', '90', '120', '144', '165', '240'),
-            'How fast the game runs. 90 and up run the game itself faster and need a fast processor.'),
+            (('default', "60 (the game's own)"),) + nums('90', '120', '144', '165', '180', '240', '360') + (('monitor', 'Match monitor'), ('unlocked', 'Unlocked')),
+            'How fast the game runs, in real frames. Needs a fast processor. Unlocked: as fast as the PC allows.'),
     ]),
     # (the upscaler and its quality are the Anti-aliasing and Performance scaling rows of the Quality tab now; Sharpening moved here to make room for SMAA quality)
     ('Upscaler', 'Sharpening and frame generation.', [

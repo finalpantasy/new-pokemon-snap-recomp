@@ -67,6 +67,12 @@ std::atomic<uint32_t> g_valErrors{0}, g_valWarnings{0};
 NvnHostHooks g_hooks{};
 int g_validationRequest = -1;
 double g_paceHz = 60.0;
+// [hifps2] The rate the presents really follow, for the interface pacing (host/mods/uipace.cpp) and the smooth interface (nvn_uismooth.h).
+// Paced: the target, or the frame rate limit when that is lower. Unlocked (g_paceUnlocked, set by host/mods/highfps.cpp for SNAP_FPS=unlocked
+// and SNAP_FPS_UNCAPPED): the measured present rate. 0 = unknown (the fast boot window: limiter off but not unlocked), which keeps them off.
+double g_paceEffHz = 60.0;
+bool g_paceUnlocked = false;
+static double g_presentRateHz = 0.0;   // measured present rate (average of about 16 presents)
 
 static bool LogEnabled() {
   static int v = -1;
@@ -1819,15 +1825,33 @@ static void PaceLegacy(WindowImpl* w) {
 
 // [pace] Frame limiter. Default: one frame clock locked to the display's vblanks when the refresh is a whole multiple of the
 // rate (else a steady-clock grid), shared with the guest vsync event (nvn_pace.h). SNAP_PACE=legacy: PaceLegacy above.
+static void UpdateEffHz(int64_t period) {
+  using namespace std::chrono;
+  static int64_t last = 0;
+  const int64_t now = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+  if (last && now > last) {
+    const double hz = 1e9 / (double)std::min<int64_t>(now - last, 100000000);   // a hitch counts as 10 fps, not as a pause
+    g_presentRateHz = g_presentRateHz > 0 ? g_presentRateHz + (hz - g_presentRateHz) / 16.0 : hz;
+  }
+  last = now;
+  if (period > 0) g_paceEffHz = 1e9 / (double)period;
+  else g_paceEffHz = g_paceUnlocked ? g_presentRateHz : 0.0;
+}
+
 static void Pace(WindowImpl* w) {
   snap_pace::PaceMark(false);   // SNAP_PACE_LOG
-  if (snap_pace::Legacy()) PaceLegacy(w);
-  else {
+  if (snap_pace::Legacy()) {
+    int64_t period = 0;
+    if (g_paceHz > 0) { period = (int64_t)(1e9 / g_paceHz); if (const int cap = snap_window_frame_cap(); cap > 0) period = std::max(period, (int64_t)(1e9 / cap)); }
+    UpdateEffHz(period);
+    PaceLegacy(w);
+  } else {
     int64_t period = 0;
     if (g_paceHz > 0 && w->presentInterval > 0) {
       period = (int64_t)(1e9 * w->presentInterval / g_paceHz);
       if (const int cap = snap_window_frame_cap(); cap > 0) period = std::max(period, (int64_t)(1e9 / cap));   // hook request 3
     }
+    UpdateEffHz(w->presentInterval > 0 ? period / w->presentInterval : period);
     snap_pace::Release(w->hwnd, w->swapchain, period, g_paceHz > 0 ? (int64_t)(1e9 / g_paceHz) : 0);
   }
   snap_pace::PaceMark(true);
@@ -2045,6 +2069,56 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
       spRecorded = true;
     }
   }
+  // [hifps2] SNAP_FRAME_SIG=<file> (test aid, off when unset): a 32 x 18 grid of single pixels of the window texture at every real present,
+  // read back a few presents later and written as records (u32 present, f64 ms, 576 x u8 luma) to <file>. scripts/hifps/frame_sig.py finds
+  // flashes: a present that differs from both neighbours while they agree (a frame shown for one or two presents). Cheap (one copy of
+  // 576 pixels), so it runs at the full frame rate, which frame dumps cannot.
+  struct FsigSlot { VkBuffer buf = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; void* map = nullptr; uint64_t val = 0; int present = 0; double ms = 0; bool busy = false; };
+  static FILE* fsigF = [] { const char* e = getenv("SNAP_FRAME_SIG"); return e && *e ? fopen(e, "wb") : (FILE*)nullptr; }();
+  static FsigSlot fsig[16];
+  static int fsigSlotNow = -1;
+  constexpr int kFsW = 32, kFsH = 18;
+  fsigSlotNow = -1;
+  if (fsigF && realPass && src->fi && src->fi->bytes == 4 && src->fi->aspect == VK_IMAGE_ASPECT_COLOR_BIT && src->HW() >= 64 && src->HH() >= 64) {
+    uint64_t cur = 0;
+    vkGetSemaphoreCounterValue(h->device, q->timeline, &cur);
+    for (FsigSlot& f : fsig) {
+      if (!f.busy || cur < f.val) continue;
+      const uint8_t* px = static_cast<const uint8_t*>(f.map);
+      uint8_t luma[kFsW * kFsH];
+      const bool bgra = src->fi->vk == VK_FORMAT_B8G8R8A8_UNORM || src->fi->vk == VK_FORMAT_B8G8R8A8_SRGB;
+      for (int i = 0; i < kFsW * kFsH; i++) {
+        const int r = px[i * 4 + (bgra ? 2 : 0)], g = px[i * 4 + 1], b = px[i * 4 + (bgra ? 0 : 2)];
+        luma[i] = (uint8_t)((r * 77 + g * 150 + b * 29) >> 8);
+      }
+      const uint32_t pn = (uint32_t)f.present;
+      fwrite(&pn, 4, 1, fsigF); fwrite(&f.ms, 8, 1, fsigF); fwrite(luma, 1, sizeof luma, fsigF);
+      f.busy = false;
+    }
+    for (int i = 0; i < 16; i++) if (!fsig[i].busy) { fsigSlotNow = i; break; }
+    if (fsigSlotNow >= 0) {
+      FsigSlot& f = fsig[fsigSlotNow];
+      if (f.buf || CreateHostBuffer(h, (uint64_t)kFsW * kFsH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &f.buf, &f.mem, &f.map)) {
+        VkBufferImageCopy rg[kFsW * kFsH] = {};
+        const int32_t cw = (int32_t)src->HW(), ch = (int32_t)src->HH();
+        for (int y = 0; y < kFsH; y++)
+          for (int x = 0; x < kFsW; x++) {
+            VkBufferImageCopy& r = rg[y * kFsW + x];
+            r.bufferOffset = (VkDeviceSize)(y * kFsW + x) * 4;
+            r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            r.imageOffset = {(int32_t)((x + 0.5) * cw / kFsW), (int32_t)((y + 0.5) * ch / kFsH), 0}; r.imageExtent = {1, 1, 1};
+          }
+        vkCmdCopyImageToBuffer(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, f.buf, kFsW * kFsH, rg);
+        VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT; mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; mb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cb, &di);
+        f.present = g_presentCount;
+        f.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+      } else fsigSlotNow = -1;
+    }
+  }
   PerfMark(h, cb, "present clear+blit");
   bool hdrDone = false;   // HDR10 swapchain (SNAP_HDR=1): nvn_hdr.cpp draws the PQ pass instead of the clear + blit below (set after the rects are known)
   if (!w->hdr) {
@@ -2155,6 +2229,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   if (subR >= 0) RetargetAfterSubmit();   // the old images go to the graveyard behind this submit
   else { static bool once; if (!once) { once = true; LogError("present submit failed (%d): render-target resize not retired this frame", (int)subR); } RetargetSubmitFailed(); }
   if (spRecorded) { spFlight = true; spVal = v; }   // the starting-note sample above is readable once the timeline reaches v
+  if (fsigSlotNow >= 0) { fsig[fsigSlotNow].busy = true; fsig[fsigSlotNow].val = v; }   // SNAP_FRAME_SIG: readable once the timeline reaches v
   q->inflight.push_back({v, cb, nullptr});
   if (fdBuf && fdHdr) {
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};

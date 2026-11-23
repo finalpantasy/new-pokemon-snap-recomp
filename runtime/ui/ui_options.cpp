@@ -625,12 +625,16 @@ std::vector<Opt>& graphics_opts() {
        "Far-away Pokemon animate every 2nd or 4th frame in the original. On animates them every frame: smoother, a little more CPU. May change photo scores, being tested.", "0", {}, 0, 0, "", "SNAP_FULL_RATE_ANIM"},
       {"", "Frame rate", kSection, kLive, "", ""},
       {"fps_target", "Frame rate target", kChoice, kLive,
-       "How fast the game runs. Default is the game's own 60 FPS. 90, 120, 144, 165 and 240 run the game itself faster and need a fast CPU; the menus and dialogue keep their original speed. "
-       "The frame rate limit below still applies. On a variable refresh rate (G-Sync, FreeSync) monitor any of them is smooth.", "default",
-       {{"default", "60 (the game's own)"}, {"72", "72"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}}, 0, 0, "", "SNAP_FPS"},
+       "How fast the game runs. Default is the game's own 60 FPS. Higher rates run the game itself faster (real frames, not interpolated) and need a fast CPU; "
+       "rides, Pokemon, scores, menus and dialogue keep their original speed. Match monitor uses your monitor's refresh rate; Unlocked runs as fast as the PC allows. "
+       "Any rate from 61 to 1000 also works with --fps <n> or fps_target=<n> in settings.cfg. The frame rate limit below still applies. "
+       "On a variable refresh rate (G-Sync, FreeSync) monitor any of them is smooth; on a fixed-refresh monitor pick the refresh rate or Match monitor.", "default",
+       {{"default", "60 (the game's own)"}, {"72", "72"}, {"90", "90"}, {"100", "100"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"180", "180"}, {"200", "200"},
+        {"240", "240"}, {"300", "300"}, {"360", "360"}, {"480", "480"}, {"monitor", "Match monitor"}, {"unlocked", "Unlocked"}}, 0, 0, "", "SNAP_FPS"},
       {"frame_cap", "Frame rate limit", kChoice, kLive,
        "Stops the game from drawing faster than this. Off keeps the game's own 60 FPS pacing. Remembered in window.json.", "0",
-       {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}}, 0, 0, "",
+       {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"},
+        {"180", "180"}, {"200", "200"}, {"240", "240"}, {"360", "360"}}, 0, 0, "",
        "SNAP_WINDOW_FRAME_CAP", get_cap, set_cap},
       {"vsync", "Vsync", kChoice, kLive,
        "On: no tearing (the default). Adaptive: tears only while below the refresh rate. Fast: no tearing and lower latency, renders extra frames. "
@@ -957,7 +961,7 @@ Hit draw_choice(const Opt& o) {
   const Choices& list = o.dyn ? (dyn = o.dyn()) : o.choices;
   std::string label = cur.empty() && o.choices.empty() ? "" : cur;
   for (auto& c : list) if (c.first == cur) label = c.second;
-  if (label == cur && !cur.empty() && !std::strcmp(o.key, "frame_cap")) label = cur + " fps (custom)";
+  if (label == cur && !cur.empty() && (!std::strcmp(o.key, "frame_cap") || !std::strcmp(o.key, "fps_target"))) label = cur + " fps (custom)";
   if (label == cur && !cur.empty() && !std::strcmp(o.key, "gfx_render_scale") && std::atof(cur.c_str()) > 0) label = snappic::dims((float)std::atof(cur.c_str())) + " (typed in)";
   // two or three short answers show as pills side by side (like On / Off); a longer list is a drop-down
   bool pills = !list.empty() && list.size() <= 3 && !o.dyn;

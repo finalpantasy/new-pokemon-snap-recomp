@@ -340,6 +340,10 @@ double PanelHz() {
   const int64_t t = g_vb.tvRef.load();
   return t > 0 ? 1e9 / (double)t : 0.0;
 }
+}  // namespace snap_pace
+// Refresh of the window's monitor for the "match the monitor" frame rate target (host/mods/highfps.cpp); 0 until the first present.
+extern "C" double snap_pace_panel_hz() { return snap_pace::PanelHz(); }
+namespace snap_pace {
 
 void AppendDeviceExt(VkPhysicalDevice phys, std::vector<const char*>& dext, VkPhysicalDeviceVulkan11Features* f11) {
   if (kLegacy || EnvZero("SNAP_PACE_WAIT") || snap_quirks::Off("present_wait")) return;

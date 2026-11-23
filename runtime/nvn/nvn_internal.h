@@ -582,6 +582,8 @@ extern bool g_lodBiasAuto;      // SNAP_LOD_BIAS=auto: -log2(render scale)
 extern void ApplyHostEnvPolicy();   // SNAP_ANISO, SNAP_LOD_BIAS, SNAP_RENDER_SCALE, SNAP_SHADOW_RES (called from DeviceInitialize)
 extern float g_anisoOverride;   // 0 = off; else forced max anisotropy for mipmapped, non-compare samplers
 extern double g_paceHz;          // rate of present interval 1; 0 = display-paced only
+extern double g_paceEffHz;       // rate the presents really follow (cap applied; measured when unlocked); 0 = unknown
+extern bool g_paceUnlocked;      // limiter off on purpose (SNAP_FPS=unlocked), not only the fast boot window
 
 // ---- Vulkan-side operations used by the entry points ------------------------------------------------------
 void SubmitLists(QueueImpl* q, int n, CmdList* const* lists);

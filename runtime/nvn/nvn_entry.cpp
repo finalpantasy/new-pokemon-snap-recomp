@@ -638,6 +638,8 @@ NVN_HOST_EXPORT void nvnHostSetValidation(int enable) { nvn::g_validationRequest
 NVN_HOST_EXPORT uint32_t nvnHostValidationErrors(void) { return nvn::g_valErrors.load(); }
 NVN_HOST_EXPORT uint32_t nvnHostValidationWarnings(void) { return nvn::g_valWarnings.load(); }
 NVN_HOST_EXPORT void nvnHostSetFramePacing(double hz) { nvn::g_paceHz = hz < 0 ? 0 : hz; }
+NVN_HOST_EXPORT void nvnHostSetFramePacingUnlocked(int on) { nvn::g_paceUnlocked = on != 0; }
+NVN_HOST_EXPORT double nvnHostEffectivePaceHz(void) { return nvn::g_paceEffHz; }
 
 // ---- render-scale policy and anisotropy override (docs/nvn-vulkan-design.md, "Render-target scaling") ----------------
 namespace nvn {

@@ -30,6 +30,14 @@ $p3 = Start-Process -FilePath $exe3 -NoNewWindow -PassThru
 $p3.PriorityClass = 'BelowNormal'
 if (-not $p3.WaitForExit(60000)) { taskkill /PID $p3.Id /T /F | Out-Null; throw "uismooth_test timed out" }
 if ($p3.ExitCode -ne 0) { $code = $p3.ExitCode }
+# Frame rate target parsing and pacing rate, interface steps at every rate (host/mods/highfps_core.h, uipace_core.h).
+$exe5 = Join-Path $out 'highfps_test.exe'
+& clang++ -std=c++20 -O1 -g (Join-Path $PSScriptRoot 'highfps_test.cpp') -o $exe5
+if ($LASTEXITCODE -ne 0) { throw "highfps_test build failed" }
+$p5 = Start-Process -FilePath $exe5 -NoNewWindow -PassThru
+$p5.PriorityClass = 'BelowNormal'
+if (-not $p5.WaitForExit(60000)) { taskkill /PID $p5.Id /T /F | Out-Null; throw "highfps_test timed out" }
+if ($p5.ExitCode -ne 0) { $code = $p5.ExitCode }
 # Pose-event / request tag probe (host/mods/evprobe_core.h).
 $exe4 = Join-Path $out 'evprobe_test.exe'
 & clang++ -std=c++20 -O1 -g (Join-Path $PSScriptRoot 'evprobe_test.cpp') -o $exe4

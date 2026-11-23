@@ -1,8 +1,9 @@
 // Native test of the smooth interface above 60 fps (runtime/nvn/nvn_uismooth.h). No game needed.
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
-namespace nvn { double g_paceHz = 144.0; int g_presentCount = 0; }
+namespace nvn { double g_paceHz = 144.0, g_paceEffHz = 144.0; int g_presentCount = 0; }
 #include "../../runtime/nvn/nvn_uismooth.h"
 
 static int g_fail;
@@ -76,12 +77,36 @@ int main() {
         }
         CHECK(grown > 40);
     }
-    // At 60 fps and below, and with no pace, nothing is shifted (UiSmoothOn is false there; the draw function itself needs g_paceHz).
-    nvn::g_paceHz = 60.0;
+    // Measured time (nvn_draw.cpp passes the present's time): unlocked at an uneven 170-230 fps, 6 px steps every 16.67 ms of real time.
+    // Every held present is drawn its elapsed share of the step ahead, never past the next step and never behind the last one.
+    {
+        nvn::g_paceHz = 0.0;   // unlocked: no pace rate at all, the time alone decides
+        nvn::UiSmoothState st; float x = 100, s4[4]; int64_t t = 1000000000, lastStep = t; double worst = 0; int shifted = 0;
+        for (int p = 0; p < 600; p++) {
+            t += (p % 3 == 0) ? 5900000 : 4300000;   // 5.9 / 4.3 / 4.3 ms
+            const bool step = t - lastStep >= 16666667 - 250000 || p == 0;
+            if (step) { x += 6.0f; lastStep = t; }
+            const float box[4] = {x, 200, x + 40, 240};
+            nvn::UiSmoothOnDraw(st, p, 6, box, s4, t);
+            if (p > 30 && !step) {
+                const double want = 6.0 * (double)(t - lastStep) / 16666667.0;
+                CHECK(s4[0] >= 0.0f && s4[0] <= 6.0f);
+                worst = std::fmax(worst, std::fabs(s4[0] - want));
+                shifted += s4[0] > 0.0f;
+            }
+        }
+        CHECK(worst < 0.01);
+        CHECK(shifted > 200);
+        nvn::g_paceHz = 144.0;
+    }
+    // At 60 fps and below, and with no pace, nothing is shifted (UiSmoothOn reads the effective rate: the limit applied, measured when unlocked).
+    nvn::g_paceEffHz = 60.0;
     CHECK(!nvn::UiSmoothOn());
-    nvn::g_paceHz = 0.0;
+    nvn::g_paceEffHz = 0.0;
     CHECK(!nvn::UiSmoothOn());
-    nvn::g_paceHz = 144.0;
+    nvn::g_paceEffHz = 144.0;
+    CHECK(nvn::UiSmoothOn());
+    nvn::g_paceEffHz = 120.0;   // a 144 target under a 120 limit, or an unlocked 120
     CHECK(nvn::UiSmoothOn());
     nvn::UiSmoothUser().store(0);
     CHECK(!nvn::UiSmoothOn());

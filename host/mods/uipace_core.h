@@ -14,6 +14,10 @@ namespace uipace {
 constexpr uint64_t kStepNs = 16666667ull;     // one interface step as the game paces it
 constexpr uint64_t kSlackNs = 250000ull;      // a frame this close to a whole step still takes it
 constexpr uint64_t kMaxDtNs = 100000000ull;   // a hitch never banks steps
+// Real time kept for later steps after a step (2026-11-23, hifps2): one step more than the one taken. Uneven frames (an unlocked
+// 80 fps of 3, 3, 3 and 40 ms frames) lost a step in every long frame with no backlog (41 steps a second); with one step of backlog the
+// short frames that follow take it (61 a second). A hitch still never banks more than one extra step.
+constexpr uint64_t kBacklogNs = 2 * kStepNs - 1;
 
 // True when frames shorter than a step are possible: the pace period is known and clearly below 1/60 s.
 inline bool above60(uint64_t period_ns) { return period_ns != 0 && period_ns + kSlackNs < kStepNs; }
@@ -42,7 +46,7 @@ inline int decide(Pace& p, uint64_t frame, uint64_t now_ns, uint64_t period_ns) 
     p.acc_ns += dt > kMaxDtNs ? kMaxDtNs : dt;
     if (p.acc_ns + kSlackNs < kStepNs) return p.step = 0;
     p.acc_ns = p.acc_ns > kStepNs ? p.acc_ns - kStepNs : 0;
-    if (p.acc_ns >= kStepNs) p.acc_ns = kStepNs - 1;
+    if (p.acc_ns > kBacklogNs) p.acc_ns = kBacklogNs;
     return p.step = 1;
 }
 

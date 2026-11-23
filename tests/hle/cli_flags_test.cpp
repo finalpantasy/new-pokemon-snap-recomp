@@ -86,6 +86,13 @@ int main() {
     { auto s = snap_cli::parse({"--shiny", "64"}); CHECK(s.error.empty() && s.env.size() == 2 && s.env[1].second == "64"); }
     CHECK(!snap_cli::parse({"--shiny", "often"}).error.empty());
     CHECK(!snap_cli::parse({"--frame-cap", "fast"}).error.empty());
+    // --fps: any rate from 61 to 1000, unlocked, monitor or default (host/mods/highfps_core.h)
+    for (const char* r : {"120", "128", "143.988", "180", "240", "360", "1000", "unlocked", "monitor", "default", "60"}) {
+      auto f = snap_cli::parse({"--play", "--fps", r});
+      CHECK(f.error.empty() && env_of(f, "SNAP_FPS") == r);
+    }
+    for (const char* r : {"30", "0", "1001", "fast", "144fps"}) CHECK(!snap_cli::parse({"--fps", r}).error.empty());
+    CHECK(!snap_cli::parse({"--fps"}).error.empty());
     { auto g = snap_cli::parse({"--gpl", "on"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].first == "SNAP_GPL" && g.env[0].second == "on"); }
     { auto g = snap_cli::parse({"--gpl", "0"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].second == "off"); }
     { auto g = snap_cli::parse({"--gpl", "auto"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].second == "auto"); }

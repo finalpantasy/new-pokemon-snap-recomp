@@ -13,6 +13,8 @@
 //   --steam-deck                  the Steam Deck preset (host/steamdeck.h, docs/steam-deck.md): borderless 1280 x 800, handheld picture settings,
 //                                 bigger HUD, Xbox button icons. Flags after it win (--set hud_scale=200, --width ...).
 //   --pause-in-background on|off  --mute-in-background on|off  --frame-cap <fps>   the F1 / launcher Window rows (0 = no extra limit); this run only
+//   --fps <n|unlocked|monitor|default>  frame rate target (SNAP_FPS, host/mods/highfps_core.h): any rate from 61 to 1000, unlocked, the monitor's
+//                                 refresh, or the game's own 60; real frames, the game keeps its speed; this run only
 //   --hdr-photos on|off           also write <name>.hdr.png (PQ, BT.2020) beside HD photo copies and screenshots; needs HDR output (docs/hdr-photos.md)
 //   --vsync on|adaptive|fast|off  --aniso off|2|4|8|16   present mode and texture filtering (SNAP_VSYNC, SNAP_ANISO); this run only
 //   --gpl auto|on|off             Vulkan graphics pipeline libraries (fast-linked pipelines, SNAP_GPL); this run only
@@ -41,6 +43,7 @@
 #include <utility>
 #include <vector>
 
+#include "mods/highfps_core.h"
 #include "steamdeck.h"
 
 namespace snap_cli {
@@ -140,6 +143,10 @@ inline Parsed parse(const std::vector<std::string>& args) {
       const std::string b = on_off(v);
       if (b.empty()) { p.error = a + " needs on or off, got \"" + v + "\""; break; }
       p.env.push_back({a == "--pause-in-background" ? "SNAP_WINDOW_PAUSE" : a == "--mute-in-background" ? "SNAP_WINDOW_MUTE_BG" : a == "--crash-prompt" ? "SNAP_CRASH_PROMPT" : a == "--mods-readahead" ? "SNAP_MODS_READAHEAD" : "SNAP_UPDATE_CHECK", b});
+    } else if (a == "--fps") {
+      if (!value(i, &v)) break;
+      if (highfps::parse(v.c_str()).kind == highfps::K_INVALID) { p.error = a + " needs a rate from 61 to 1000, unlocked, monitor or default, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_FPS", v});
     } else if (a == "--frame-cap") {
       if (!value(i, &v)) break;
       if (!is_number(v)) { p.error = a + " needs a whole number of frames per second (0 = no extra limit), got \"" + v + "\""; break; }
@@ -282,6 +289,8 @@ inline const char* help_text() {
          "  --width <px> --height <px>   window size\n"
          "  --pause-in-background on|off  pause the game while its window is in the background\n"
          "  --mute-in-background on|off   mute the game while its window is in the background\n"
+         "  --fps <n>|unlocked|monitor   frame rate target: any rate from 61 to 1000 (real frames, the game keeps its speed), unlocked,\n"
+         "                               the monitor's refresh rate, or default (the game's own 60)\n"
          "  --frame-cap <fps>            frame rate limit, 0 = no extra limit\n"
          "  --vsync on|adaptive|fast|off present mode (FIFO, FIFO_RELAXED, MAILBOX, IMMEDIATE); a missing mode falls back to FIFO\n"
          "  --gpl auto|on|off            Vulkan graphics pipeline libraries (fast-linked pipelines); auto = on where the driver has fast linking\n"

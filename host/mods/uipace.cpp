@@ -4,7 +4,8 @@
 // The game's interface runs once per game frame and counts frames, so with SNAP_FPS=120|144 it ran 2 to 2.4 times too fast (menus,
 // dialogue, hint panels) while the 3D scene, which uses the measured timer, kept its speed. Three inline hooks in main (recomp/snap_gen.py
 // UI_PACE_INLINE; they exist only in a main generated with SNAP_GEN_UI_PACE=1) fix that. Each returns at once when the effective pace is
-// 60 fps or below (SNAP_FPS unset or 60, or a frame limit under 60), so the default game is unchanged.
+// 60 fps or below (SNAP_FPS unset or 60, or a frame limit under 60), so the default game is unchanged. With SNAP_FPS=unlocked the measured
+// present rate decides (nvnHostEffectivePaceHz), so the interface keeps 60 steps a second at any uncapped rate.
 //
 //   rt_gm_ui_enter    handler main+0x7835d0 after it saved its object (x0). x16 = 1 run the handler, 0 branch to its drawing section
 //                     (0x794b4c): the object's logic, timeline advance and event 22 are skipped, the movies are still drawn. Only an
@@ -40,8 +41,8 @@
 #include "uipace_core.h"
 
 extern "C" uint64_t snap_present_count();   // host/boot.cpp
-extern "C" int snap_window_frame_cap();     // host/window_opts.cpp: fps, 0 = none (nvn Pace() reads it too)
-namespace nvn { extern double g_paceHz; }   // runtime/nvn/nvn_vk.cpp: rate of present interval 1, 0 = display-paced only
+extern "C" double nvnHostEffectivePaceHz();   // runtime/nvn/nvn_entry.cpp: the rate the presents follow (pace target or the lower frame
+                                              // rate limit; the measured rate when unlocked), 0 = unknown (fast boot window)
 
 namespace {
 
@@ -64,15 +65,11 @@ void cfg_once() {
     g_cfg.store(true, std::memory_order_release);
 }
 
-// The pace period the presents follow (nvn_vk.cpp Pace(): the target's period, never shorter than the frame limit's). 0 = unpaced.
+// The period the presents follow (nvn_vk.cpp Pace(): the target's period, never shorter than the frame limit's; with the frame rate unlocked
+// the measured present interval, so an unlocked 200 fps interface still takes 60 steps a second). 0 = unknown: every frame steps.
 uint64_t period_ns() {
-    const double hz = nvn::g_paceHz;
-    uint64_t p = hz > 0 ? (uint64_t)(1e9 / hz) : 0;
-    if (const int cap = snap_window_frame_cap(); cap > 0 && p) {
-        const uint64_t c = (uint64_t)(1e9 / cap);
-        if (c > p) p = c;
-    }
-    return p;
+    const double hz = nvnHostEffectivePaceHz();
+    return hz > 1.0 ? (uint64_t)(1e9 / hz) : 0;
 }
 
 // The game frame: the pad update runs once in each, so the decision is made there and the handlers until its next update use it.

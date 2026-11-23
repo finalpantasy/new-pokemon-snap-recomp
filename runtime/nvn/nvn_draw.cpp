@@ -1520,7 +1520,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
             }
           }
           float sh[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-          if (sm) { UiSmoothOnDraw(smooth, g_presentCount, c.i[2], tb, sh); for (int k = 0; k < 4; k++) { cx.sm[k] = sh[k]; cx.smBox[k] = tb[k]; } }
+          if (sm) { UiSmoothOnDraw(smooth, g_presentCount, c.i[2], tb, sh, (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); for (int k = 0; k < 4; k++) { cx.sm[k] = sh[k]; cx.smBox[k] = tb[k]; } }
           if (trace) fprintf(stderr, "[hudtrace] f=%d i=%d n=%d %.2f %.2f %.2f %.2f   %.2f %.2f %.2f %.2f t=%.2f s=%d\n", g_presentCount, smooth.ord - 1, c.i[2], tb[0] + sh[0], tb[1] + sh[1], tb[2] + sh[2], tb[3] + sh[3], tb[0], tb[1], tb[2], tb[3],
                                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(), (int)sm);   // drawn box, the game's box, ms, smoothing on
         }

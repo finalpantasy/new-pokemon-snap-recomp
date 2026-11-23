@@ -22,6 +22,11 @@ NVN_HOST_EXPORT uint32_t nvnHostValidationWarnings(void);
 // Frame limiter: rate in Hz of NVN present interval 1 (the Switch panel is 60 Hz). Interval n paces to n/hz s.
 // 0 disables the limiter (presentation then follows the display's FIFO vsync only). Default 60.
 NVN_HOST_EXPORT void nvnHostSetFramePacing(double hz);
+// Unlocked frame rate (SNAP_FPS=unlocked): the limiter is off on purpose, so the interface pacing follows the measured present rate.
+// The fast boot window turns the limiter off too but leaves this clear.
+NVN_HOST_EXPORT void nvnHostSetFramePacingUnlocked(int on);
+// The rate the presents follow: the pacing rate or the frame rate limit when that is lower; the measured rate when unlocked; 0 = unknown.
+NVN_HOST_EXPORT double nvnHostEffectivePaceHz(void);
 // Render-target resolution scale (off by default: 1.0 matches the original). Applies to plain render targets
 // (TextureFlags COMPRESSIBLE, not DISPLAY/LINEAR, 2D or 2D array, single sample) created after the call, so set it before the
 // game creates its textures. The guest still sees the original size from every NVN getter; viewports, scissors and clear

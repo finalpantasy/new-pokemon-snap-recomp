@@ -413,32 +413,58 @@ void set_preset(const std::string& v) {
   }
 }
 
-// The Device row (host/steamdeck.h, docs/steam-deck.md): "steamdeck" writes the whole Steam Deck table, "desktop" erases it again. The row shows
-// Steam Deck only while every value of the table is stored, so changing any one of them afterwards shows Desktop.
-std::string get_device() {
-  for (const snapdeck::Kv& kv : snapdeck::cfg()) if (g.cfg.get(kv.key, "") != kv.val) return "desktop";
-  const hle::Json* m = g.win.j.get("mode");
-  const hle::Json* w = g.win.j.get("width");
-  const hle::Json* h = g.win.j.get("height");
-  if (!m || m->type != hle::Json::Str || m->s != snapdeck::window_mode()) return "desktop";
-  if (!w || w->type != hle::Json::Num || (int)w->n != snapdeck::kWidth || !h || h->type != hle::Json::Num || (int)h->n != snapdeck::kHeight) return "desktop";
-  return "steamdeck";
-}
-void set_device(const std::string& v) {
-  if (v == "steamdeck") {
-    for (const snapdeck::Kv& kv : snapdeck::cfg()) g.cfg.set(kv.key, kv.val);
-    g.win.j.set("mode", hle::Json::string(snapdeck::window_mode()));
-    g.win.j.set("width", hle::Json::number(snapdeck::kWidth));
-    g.win.j.set("height", hle::Json::number(snapdeck::kHeight));
-    g.win.j.set("maximized", hle::Json::boolean_(false));
-  } else if (v == "desktop") {
-    for (const snapdeck::Kv& kv : snapdeck::cfg()) g.cfg.erase(kv.key);
-    g.win.j.set("mode", hle::Json::string("windowed"));
-  } else return;
-  g.cfg.save();
-  g.win.save();
-}
-
+// The Device row (host/steamdeck.h, docs/steam-deck.md): "steamdeck" writes the whole Steam Deck table, "desktop" erases it again. The row shows
+
+// Steam Deck only while every value of the table is stored, so changing any one of them afterwards shows Desktop.
+
+std::string get_device() {
+
+  for (const snapdeck::Kv& kv : snapdeck::cfg()) if (g.cfg.get(kv.key, "") != kv.val) return "desktop";
+
+  const hle::Json* m = g.win.j.get("mode");
+
+  const hle::Json* w = g.win.j.get("width");
+
+  const hle::Json* h = g.win.j.get("height");
+
+  if (!m || m->type != hle::Json::Str || m->s != snapdeck::window_mode()) return "desktop";
+
+  if (!w || w->type != hle::Json::Num || (int)w->n != snapdeck::kWidth || !h || h->type != hle::Json::Num || (int)h->n != snapdeck::kHeight) return "desktop";
+
+  return "steamdeck";
+
+}
+
+void set_device(const std::string& v) {
+
+  if (v == "steamdeck") {
+
+    for (const snapdeck::Kv& kv : snapdeck::cfg()) g.cfg.set(kv.key, kv.val);
+
+    g.win.j.set("mode", hle::Json::string(snapdeck::window_mode()));
+
+    g.win.j.set("width", hle::Json::number(snapdeck::kWidth));
+
+    g.win.j.set("height", hle::Json::number(snapdeck::kHeight));
+
+    g.win.j.set("maximized", hle::Json::boolean_(false));
+
+  } else if (v == "desktop") {
+
+    for (const snapdeck::Kv& kv : snapdeck::cfg()) g.cfg.erase(kv.key);
+
+    g.win.j.set("mode", hle::Json::string("windowed"));
+
+  } else return;
+
+  g.cfg.save();
+
+  g.win.save();
+
+}
+
+
+
 // ---- the display (for VRR and "fit to display") ----------------------------------------------------------------------
 BOOL CALLBACK mon_handle_cb(HMONITOR m, HDC, LPRECT, LPARAM lp) { ((std::vector<HMONITOR>*)lp)->push_back(m); return TRUE; }
 void read_display() {
@@ -984,10 +1010,13 @@ void build_pages() {
       p.items.push_back(pc);
     }
     p.items.push_back(choice("Frame rate target", "fps_target", S_CFG, "default",
-                             {{"default", "60 (the game's own)"}, {"72", "72"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
-                             "How fast the game runs. 90 to 240 run the game itself faster and need a fast processor. Menus and dialogue keep their original speed."));
+                             {{"default", "60 (the game's own)"}, {"72", "72"}, {"90", "90"}, {"100", "100"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"180", "180"},
+                              {"200", "200"}, {"240", "240"}, {"300", "300"}, {"360", "360"}, {"480", "480"}, {"monitor", "Match monitor"}, {"unlocked", "Unlocked"}},
+                             "How fast the game runs, in real frames. Higher rates need a fast processor; rides, Pokemon, scores, menus and dialogue keep their original speed. "
+                             "Match monitor uses the monitor's refresh rate, Unlocked runs as fast as the PC allows. Any rate from 61 to 1000 works with --fps <n>."));
     p.items.push_back(choice("Frame rate limit", "frame_cap", S_WIN, "0",
-                             {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
+                             {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"},
+                              {"180", "180"}, {"200", "200"}, {"240", "240"}, {"360", "360"}},
                              "Stops the game from drawing faster than this. Off keeps the game's own pacing.", E_INT));
     p.items.push_back(choice("Vsync", "vsync", S_CFG, "on", {{"on", "On"}, {"adaptive", "Adaptive"}, {"fast", "Fast"}, {"off", "Off"}},
                              "On: no tearing. Adaptive: tears only below the refresh rate. Fast: no tearing, lower latency. Off: lowest latency, may tear."));
