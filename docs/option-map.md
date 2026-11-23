@@ -68,7 +68,7 @@ Every player option and where it lives: the launcher page, the F1 menu tab and s
 | Soft particles | `soft_particles` | - | Graphics / Textures and shadows | Shadows & AO | `--set soft_particles` | restart |
 | Performance overlay | `fps_overlay` | Frame rate | Graphics / Frame rate | Performance | `--set fps_overlay` | live |
 | Overlay corner | `fps_overlay_corner` | - | Graphics / Frame rate | Performance | `--set fps_overlay_corner` | live |
-| Frame rate target | `fps_target` | Frame rate | Graphics / Frame rate | Performance | `--set fps_target` | live |
+| Frame rate target | `fps_target` | Frame rate | Graphics / Frame rate | Performance | `--fps <n\|unlocked\|monitor>` or `--set fps_target` | live |
 | Sharpening | `gfx_sharpen` | Picture | Graphics / Picture quality | Upscaler | `--set gfx_sharpen` | live |
 | Frame generation | `frame_generation` | Upscaling | Graphics / Picture quality | Upscaler | `--set frame_generation` | restart |
 | HUD scale | `hud_scale` | Display | Display / Window | Interface | `--set hud_scale` | live |

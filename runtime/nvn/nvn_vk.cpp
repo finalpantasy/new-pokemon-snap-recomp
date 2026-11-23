@@ -1828,10 +1828,14 @@ static void PaceLegacy(WindowImpl* w) {
 static void UpdateEffHz(int64_t period) {
   using namespace std::chrono;
   static int64_t last = 0;
+  static double avgNs = 0.0;
   const int64_t now = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
   if (last && now > last) {
-    const double hz = 1e9 / (double)std::min<int64_t>(now - last, 100000000);   // a hitch counts as 10 fps, not as a pause
-    g_presentRateHz = g_presentRateHz > 0 ? g_presentRateHz + (hz - g_presentRateHz) / 16.0 : hz;
+    // average the frame TIME, not the rate: bursts of short frames between long ones (a loaded PC) averaged as rates read as
+    // 165 fps while 30 frames a second were shown (2026-11-23, sweep run bunl)
+    const double ns = (double)std::min<int64_t>(now - last, 100000000);   // a hitch counts as 10 fps, not as a pause
+    avgNs = avgNs > 0 ? avgNs + (ns - avgNs) / 16.0 : ns;
+    g_presentRateHz = 1e9 / avgNs;
   }
   last = now;
   if (period > 0) g_paceEffHz = 1e9 / (double)period;
